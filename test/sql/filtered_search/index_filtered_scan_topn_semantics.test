@@ -1,7 +1,5 @@
 # name: test/sql/filtered_search/index_filtered_scan_topn_semantics.test
-# description: The index scans keep the semantics of the TopN they replace: an OFFSET skips the nearest rows exactly
-#              like the brute-force search, and an order that puts NULL distances first (NULLS FIRST, or
-#              default_null_order) is not rewritten, since rows without an embedding are not in the index.
+# description: The index scans keep the semantics of the TopN they replace: an OFFSET skips the nearest rows exactly like the brute-force search, and an order that puts NULL distances first (NULLS FIRST, or default_null_order) is not rewritten, since rows without an embedding are not in the index.
 # group: [filtered_search]
 
 require parquet

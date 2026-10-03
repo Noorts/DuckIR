@@ -272,4 +272,7 @@ public:
 	}
 };
 
+// The table columns a search fetches by rowid, for EXPLAIN: one name per line, like a SEQ_SCAN's projections.
+string ColumnNamesToString(const TableCatalogEntry &table, const vector<ColumnIndex> &column_ids);
+
 } // namespace duckdb

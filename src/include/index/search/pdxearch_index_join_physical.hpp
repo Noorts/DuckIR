@@ -28,6 +28,7 @@ public:
 	// The query vector's column in the query rows.
 	const idx_t query_column;
 	// The table columns fetched by rowid for the results.
+	vector<ColumnIndex> column_ids;
 	vector<StorageIndex> fetch_column_ids;
 
 public:

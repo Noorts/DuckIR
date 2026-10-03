@@ -12,7 +12,6 @@
     - [Install OpenMP](#install-openmp)
   - [Build](#build)
     - [Building the Extension](#building-the-extension)
-    - [PDXearch Variants](#pdxearch-variants)
     - [Clangd Language Server Support](#clangd-language-server-support)
   - [Clean, Format, Tidy-Check](#clean-format-tidy-check)
   - [Test](#test)
@@ -173,10 +172,13 @@ make clean
 ```
 
 ```sh
-make format
+make format-fix
 ```
 
-Portable `make format` alternative:
+CI runs `make format-check`, which reports the files that need formatting. A test's `# description:` must fit on one
+line: the formatter cannot handle more.
+
+Portable `make format-fix` alternative:
 
 ```sh
 uv run --with black --with clang_format==11.0.1 --with cmake-format duckdb/scripts/format.py --all --fix --noconfirm --directories src test

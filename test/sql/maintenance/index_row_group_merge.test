@@ -1,8 +1,5 @@
 # name: test/sql/maintenance/index_row_group_merge.test
-# description: A checkpoint merges adjacent partial row groups (no deleted rows, sum within the row group size) and drops
-#              trailing row groups whose rows are all deleted, even under an index: row ids stay, row-group membership
-#              changes. The next search rebuilds the mirrors of the merged row groups from the table and drops the ones
-#              of vanished row groups.
+# description: A checkpoint merges adjacent partial row groups (no deleted rows, sum within the row group size) and drops trailing row groups whose rows are all deleted, even under an index: row ids stay, row-group membership changes. The next search rebuilds the mirrors of the merged row groups from the table and drops the ones of vanished row groups.
 # group: [maintenance]
 
 require parquet

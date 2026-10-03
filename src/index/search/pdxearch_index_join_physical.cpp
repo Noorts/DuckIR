@@ -21,7 +21,7 @@ PhysicalPDXearchIndexJoin::PhysicalPDXearchIndexJoin(PhysicalPlan &physical_plan
                                                      idx_t query_column, const vector<ColumnIndex> &column_ids,
                                                      idx_t estimated_cardinality)
     : PhysicalOperator(physical_plan, PhysicalPDXearchIndexJoin::TYPE, std::move(types), estimated_cardinality),
-      table(table), index(index), limit(limit), query_column(query_column) {
+      table(table), index(index), limit(limit), query_column(query_column), column_ids(column_ids) {
 	D_ASSERT(limit <= STANDARD_VECTOR_SIZE);
 	fetch_column_ids.reserve(column_ids.size());
 	for (auto &id : column_ids) {
@@ -47,7 +47,7 @@ public:
 		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
 	}
 
-	// Held for the duration of execution to serialize searches against index maintenance. 
+	// Held for the duration of execution to serialize searches against index maintenance.
 	// Taken once per operator: a thread must not take it again while it holds it.
 	unique_ptr<StorageLockKey> search_lock;
 
@@ -225,7 +225,7 @@ static bool TryReadQuery(const PhysicalPDXearchIndexJoin &op, DataChunk &input, 
 	const auto query_data = FlatVector::GetData<float>(query_elements);
 	const auto &query_validity = FlatVector::Validity(query_elements);
 	const auto offset = query_idx * num_dimensions;
-	// TODO: This is a bit inefficient, especially with high dimensionality. 
+	// TODO: This is a bit inefficient, especially with high dimensionality.
 	// Maybe an optimistic memcpy and then a validity check?
 	for (idx_t i = 0; i < num_dimensions; i++) {
 		// A NULL element is searched as 0: the distance function raises its error for the rows we return.
@@ -372,6 +372,7 @@ InsertionOrderPreservingMap<string> PhysicalPDXearchIndexJoin::ParamsToString() 
 	InsertionOrderPreservingMap<string> result;
 	result["Table"] = table.name;
 	result["PDXearch Index"] = index.GetIndexName();
+	result["Projections"] = ColumnNamesToString(table, column_ids);
 	result["K"] = StringUtil::Format("%llu", limit);
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;

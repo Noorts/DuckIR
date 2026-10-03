@@ -1,6 +1,5 @@
 # name: test/sql/maintenance/index_insert_incremental.test
-# description: Rows that arrive in small commits: into an index built on a one-row table, in one commit that straddles a
-#              row group boundary, and one commit at a time with a search after each.
+# description: Rows that arrive in small commits: into an index built on a one-row table, in one commit that straddles a row group boundary, and one commit at a time with a search after each.
 # group: [maintenance]
 
 require parquet

@@ -1,6 +1,5 @@
 # name: test/sql/maintenance/index_delete_update.test
-# description: DELETEs remove rows from the index at commit; an UPDATE of the embedding column is a delete plus an insert
-#              (the row gets a new row id and is indexed by the next search).
+# description: DELETEs remove rows from the index at commit; an UPDATE of the embedding column is a delete plus an insert (the row gets a new row id and is indexed by the next search).
 # group: [maintenance]
 
 require parquet

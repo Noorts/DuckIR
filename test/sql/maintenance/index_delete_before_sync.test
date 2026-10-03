@@ -1,6 +1,5 @@
 # name: test/sql/maintenance/index_delete_before_sync.test
-# description: Rows deleted before the search that would have indexed them, a whole staged commit deleted, and a table
-#              emptied and checkpointed before new rows arrive.
+# description: Rows deleted before the search that would have indexed them, a whole staged commit deleted, and a table emptied and checkpointed before new rows arrive.
 # group: [maintenance]
 
 require parquet

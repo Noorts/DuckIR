@@ -1,8 +1,5 @@
 # name: test/sql/filtered_search/index_filtered_scan_subqueries.test
-# description: Subqueries used as filters feed the filtered index search when DuckDB plans them as a SEMI, ANTI or MARK
-#              join with the indexed table on the probe side: the join stays below the search, keeps its runtime
-#              filters on the table scan, and the results equal the brute-force search. Results are compared as sets
-#              (rowsort): SIFT has duplicate vectors, so some neighbours tie.
+# description: Subqueries used as filters feed the filtered index search when DuckDB plans them as a SEMI, ANTI or MARK join with the indexed table on the probe side: the join stays below the search, keeps its runtime filters on the table scan, and the results equal the brute-force search. Results are compared as sets (rowsort): SIFT has duplicate vectors, so some neighbours tie.
 # group: [filtered_search]
 
 require parquet

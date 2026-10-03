@@ -1,7 +1,5 @@
 # name: test/sql/maintenance/index_alter_table.test
-# description: ALTER TABLE ADD COLUMN replaces the table's DataTable while the index object lives on; the index must follow
-#              the table's current storage so later commits are indexed and searches stay exact. (It is the only ALTER
-#              DuckDB allows on a table with an index.)
+# description: ALTER TABLE ADD COLUMN replaces the table's DataTable while the index object lives on; the index must follow the table's current storage so later commits are indexed and searches stay exact. (It is the only ALTER DuckDB allows on a table with an index.)
 # group: [maintenance]
 
 require parquet

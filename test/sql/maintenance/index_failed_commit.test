@@ -1,7 +1,5 @@
 # name: test/sql/maintenance/index_failed_commit.test
-# description: A commit that fails after the PDXearch index has staged its row ids (a unique ART index created after it
-#              rejects the batch at COMMIT): the rows never land, the next commit reuses their row ids, and the index
-#              must neither keep the phantom ids nor index the reused ones twice.
+# description: A commit that fails after the PDXearch index has staged its row ids (a unique ART index created after it rejects the batch at COMMIT): the rows never land, the next commit reuses their row ids, and the index must neither keep the phantom ids nor index the reused ones twice.
 # group: [maintenance]
 
 require parquet

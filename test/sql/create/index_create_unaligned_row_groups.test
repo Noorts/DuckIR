@@ -1,6 +1,5 @@
 # name: test/sql/create/index_create_unaligned_row_groups.test
-# description: The index mirrors the table's physical row groups, which are not always full and aligned: a bulk insert
-#              onto a half-full row group leaves it half full (4096/4096/8192/8192/8192).
+# description: The index mirrors the table's physical row groups, which are not always full and aligned: a bulk insert onto a half-full row group leaves it half full (4096/4096/8192/8192/8192).
 # group: [create]
 
 require parquet

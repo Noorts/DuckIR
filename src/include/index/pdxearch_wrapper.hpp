@@ -40,7 +40,7 @@ private:
 
 	// The fields below are index options that can be set during index creation:
 	// `CREATE INDEX ON t USING PDXearch(vec) WITH (n_probe = 10, seed = 42)`.
-	// See `pdxearch_index_plan.cpp` for the validation logic, and
+	// See `create/pdxearch_index_create_plan.cpp` for the validation logic, and
 	// `pdxearch_index.cpp` for the usage.
 	const PDX::DistanceMetric distance_metric;
 	const PDX::Quantization quantization;

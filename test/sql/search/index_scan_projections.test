@@ -1,0 +1,129 @@
+# name: test/sql/search/index_scan_projections.test
+# description: A search fetches only the table columns the query reads, and returns the rows a search without the index returns.
+# group: [search]
+
+require parquet
+
+require pdxearch
+
+test-env DIMS 128
+
+test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20,8,3,5,67,17,19,26,5,0,1,22,60,26,7,1,18,22,84,53,85,119,119,4,24,18,7,7,1,81,106,102,72,30,6,0,9,1,9,119,72,1,4,33,119,29,6,1,0,1,14,52,119,30,3,0,0,55,92,111,2,5,4,9,22,89,96,14,1,0,1,82,59,16,20,5,25,14,11,4,0,0,1,26,47,23,4,0,0,4,38,83,30,14,9,4,9,17,23,41,0,0,2,8,19,25,23,1]
+
+statement ok
+CREATE TABLE t AS SELECT id, 'label_' || id AS label, emb::FLOAT[${DIMS}] AS emb
+FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 4096;
+
+statement ok
+CREATE TABLE t_bf AS FROM t;
+
+# Probing every cluster of an f32 index returns the exact nearest rows.
+statement ok
+CREATE INDEX t_idx ON t USING PDXEARCH (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+
+# Reading only the id fetches only the id.
+query II
+EXPLAIN (FORMAT json) SELECT id FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": "id",.*
+
+query I nosort id_only
+SELECT id FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+query I nosort id_only
+SELECT id FROM t_bf ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+# Selecting the distance fetches the embedding.
+query II
+EXPLAIN (FORMAT json) SELECT id, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10;
+----
+physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
+
+query II nosort distance
+SELECT id, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10;
+----
+
+query II nosort distance
+SELECT id, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t_bf ORDER BY d LIMIT 10;
+----
+
+# Selecting the embedding and the distance fetches the embedding.
+query III nosort embedding_and_distance
+SELECT id, emb, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10;
+----
+
+query III nosort embedding_and_distance
+SELECT id, emb, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t_bf ORDER BY d LIMIT 10;
+----
+
+# With an OFFSET, the TopN sorts by the distance, so the embedding is fetched.
+query II
+EXPLAIN (FORMAT json) SELECT id FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 3;
+----
+physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
+
+# A subquery that forwards the distance nobody reads fetches only the columns read.
+query II
+EXPLAIN (FORMAT json) SELECT id, label FROM (SELECT id, label, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10);
+----
+physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"label"\s*\].*
+
+query II nosort subquery
+SELECT id, label FROM (SELECT id, label, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10);
+----
+
+query II nosort subquery
+SELECT id, label FROM (SELECT id, label, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t_bf ORDER BY d LIMIT 10);
+----
+
+# A subquery whose distance is read fetches the embedding.
+query II
+EXPLAIN (FORMAT json) SELECT id, d FROM (SELECT id, label, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10);
+----
+physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
+
+# Reading no column fetches only the rowid.
+query II
+EXPLAIN (FORMAT json) SELECT 42 FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": "rowid",.*
+
+# The rowid fetch still drops a row deleted in the transaction.
+statement ok
+SET VARIABLE nearest = (SELECT id FROM t_bf ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 1);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM t WHERE id = getvariable('nearest');
+
+query I
+SELECT count(*) FROM (SELECT 42 FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 1);
+----
+0
+
+statement ok
+ROLLBACK;
+
+# A filtered search reading only the id fetches only the id.
+query II
+EXPLAIN (FORMAT json) SELECT id FROM t WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+physical_plan	<REGEX>:.*"PDXEARCH_INDEX_FILT_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": "id",.*
+
+query I nosort filtered
+SELECT id FROM t WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+query I nosort filtered
+SELECT id FROM t_bf WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+# A filtered search selecting the distance fetches the embedding.
+query II
+EXPLAIN (FORMAT json) SELECT id, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t WHERE id % 3 = 0 ORDER BY d LIMIT 10;
+----
+physical_plan	<REGEX>:.*"PDXEARCH_INDEX_FILT_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*

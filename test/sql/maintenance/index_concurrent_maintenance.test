@@ -1,6 +1,5 @@
 # name: test/sql/maintenance/index_concurrent_maintenance.test
-# description: Connections inserting, searching and deleting at the same time: every search triggers a sync under the
-#              exclusive lock while other searches hold the shared one, and nothing is lost or duplicated.
+# description: Connections inserting, searching and deleting at the same time: every search triggers a sync under the exclusive lock while other searches hold the shared one, and nothing is lost or duplicated.
 # group: [maintenance]
 
 require parquet

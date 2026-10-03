@@ -1,7 +1,5 @@
 # name: test/sql/filtered_search/index_filtered_scan_in_lists.test
-# description: IN lists of at least five constants, which DuckDB turns into a MARK join against the list of constants
-#              and a FILTER on the join's marker, feed the filtered index search: the join stays below the search and
-#              evaluates the list, and the results equal the brute-force search.
+# description: IN lists of at least five constants, which DuckDB turns into a MARK join against the list of constants and a FILTER on the join's marker, feed the filtered index search: the join stays below the search and evaluates the list, and the results equal the brute-force search.
 # group: [filtered_search]
 
 require parquet
@@ -56,7 +54,7 @@ statement ok
 SET threads = ${threads};
 
 # ============================================
-# Where DuckDB (v1.5.5) switches to the MARK join: 4 constants are an OR of equalities in a FILTER, 5 a MARK join.
+# Where DuckDB (v1.5.6) switches to the MARK join: 4 constants are an OR of equalities in a FILTER, 5 a MARK join.
 # ============================================
 
 query II

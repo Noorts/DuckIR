@@ -1,6 +1,5 @@
 # name: test/sql/maintenance/index_insert_null_only.test
-# description: A commit whose rows all have a NULL embedding has nothing to index; once the next search has looked at it, the
-#              index is in sync again and CALL pdxearch_sync_index has nothing left to do.
+# description: A commit whose rows all have a NULL embedding has nothing to index; once the next search has looked at it, the index is in sync again and CALL pdxearch_sync_index has nothing left to do.
 # group: [maintenance]
 
 require parquet

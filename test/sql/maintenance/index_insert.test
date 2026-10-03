@@ -1,7 +1,5 @@
 # name: test/sql/maintenance/index_insert.test
-# description: INSERTs after CREATE INDEX are recorded at commit and indexed by the first search that follows, into the
-#              DuckDB row groups they actually landed in (a bulk insert leaves the partial row group alone and its new row
-#              groups are built from scratch, not grown row by row); rows with a NULL embedding are skipped.
+# description: INSERTs after CREATE INDEX are recorded at commit and indexed by the first search that follows, into the DuckDB row groups they actually landed in (a bulk insert leaves the partial row group alone and its new row groups are built from scratch, not grown row by row); rows with a NULL embedding are skipped.
 # group: [maintenance]
 
 require parquet

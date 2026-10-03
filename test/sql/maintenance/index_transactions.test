@@ -1,6 +1,5 @@
 # name: test/sql/maintenance/index_transactions.test
-# description: The index only sees committed rows: a rolled-back insert, or a row inserted and deleted in the same
-#              transaction, never reaches it; a multi-statement transaction reaches it at COMMIT.
+# description: The index only sees committed rows: a rolled-back insert, or a row inserted and deleted in the same transaction, never reaches it; a multi-statement transaction reaches it at COMMIT.
 # group: [maintenance]
 
 require parquet

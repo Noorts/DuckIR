@@ -1,6 +1,5 @@
 # name: test/sql/maintenance/index_sync.test
-# description: CALL pdxearch_sync_index indexes the rows committed since the last search eagerly, and reports whether
-#              there was anything to do.
+# description: CALL pdxearch_sync_index indexes the rows committed since the last search eagerly, and reports whether there was anything to do.
 # group: [maintenance]
 
 require parquet
