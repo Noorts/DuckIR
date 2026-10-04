@@ -165,14 +165,14 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 
 # ============================================
 # Subqueries as filters: IN (a SEMI join), NOT EXISTS (an ANTI join) and NOT IN (a MARK join) below the index join.
-# Debug builds compress the key of every SEMI and ANTI join, and a search that reads the key (here id) then runs
-# without the index (see the README): the plan checks also accept that decompression.
+# Debug builds compress the key of every SEMI and ANTI join: the search reads it through the decompression and still
+# uses the index.
 # ============================================
 
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id IN (SELECT x FROM small) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*(PDXEARCH_INDEX_JOIN.*SEMI|__internal_decompress).*
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*SEMI.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id IN (SELECT x FROM small) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -203,7 +203,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE NOT EXISTS (SELECT 1 FROM small WHERE small.x = t.id) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*(PDXEARCH_INDEX_JOIN.*ANTI|__internal_decompress).*
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*ANTI.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE NOT EXISTS (SELECT 1 FROM small WHERE small.x = t.id) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -440,3 +440,49 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 endloop
 
 endloop
+
+# ============================================
+# A compressed join key in release builds too: DuckDB compresses the key of a subquery of at least 1,048,576 rows.
+# t_big has more rows than big_ids, so the hash table is built on big_ids; only t's rows have an embedding.
+# ============================================
+
+statement ok
+CREATE TABLE t_big AS SELECT range::BIGINT AS id, t.emb FROM range(1200000) LEFT JOIN t ON t.id = range;
+
+statement ok
+CREATE TABLE big_ids AS SELECT (range + 16384)::BIGINT AS id FROM range(1100000);
+
+statement ok
+CREATE INDEX t_big_idx ON t_big USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
+
+# The index join reads the compressed key through its decompression.
+query II
+EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t_big.id FROM t_big WHERE t_big.id IN (SELECT id FROM big_ids) ORDER BY array_distance(t_big.emb, q.vec) LIMIT 10) s;
+----
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*__internal_decompress.*SEMI.*
+
+statement ok
+CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t_big.id FROM t_big WHERE t_big.id IN (SELECT id FROM big_ids) ORDER BY array_distance(t_big.emb, q.vec) LIMIT 10) s;
+
+statement ok
+CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
+
+loop i 0 10
+
+statement ok
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+
+statement ok
+INSERT INTO single_result SELECT ${i}, id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+
+endloop
+
+query I
+SELECT count(*) FROM join_result;
+----
+100
+
+query I
+SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL (FROM join_result EXCEPT ALL FROM single_result));
+----
+0

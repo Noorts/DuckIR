@@ -6,6 +6,7 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
@@ -377,12 +378,32 @@ public:
 		}
 	}
 
+	// DuckDB's compressed materialization (compressed_materialization.cpp) narrows a join key: `__internal_compress_*`
+	// below the join, and `__internal_decompress_*` above it to read the key back. True when `expression` is such a
+	// call, picked by `prefix`, on a column reference; `call` receives it.
+	static bool TryUnwrapCompression(const Expression &expression, const string &prefix,
+	                                 optional_ptr<const BoundFunctionExpression> &call) {
+		if (expression.type != ExpressionType::BOUND_FUNCTION) {
+			return false;
+		}
+		auto &function = expression.Cast<BoundFunctionExpression>();
+		if (!StringUtil::StartsWith(function.function.name, prefix) || function.children.empty() ||
+		    function.children[0]->type != ExpressionType::BOUND_COLUMN_REF) {
+			return false;
+		}
+		call = &function;
+		return true;
+	}
+
 	// Follows a binding read above chain.front() down the chain (ordered from the top down to the table scan) to the
 	// table scan's binding it comes from. A filter forwards its child's bindings, and a projection forwards a binding
-	// when its expression is a plain column reference. False when a projection computes the value instead.
+	// when its expression is a plain column reference. A join key decompressed above a join is followed to its compress
+	// below the join: the pair is the identity. False when a projection computes the value instead.
 	// To support: Filtered subquery, Subquery or view with a residual filter, View or subquery without a predicate,
 	// Renamed embedding.
 	static bool TryTraceToTableScan(const vector<reference<LogicalOperator>> &chain, ColumnBinding &binding) {
+		// Each waits for the compress below its join.
+		vector<reference<const BoundFunctionExpression>> pending_decompressions;
 		for (auto &op : chain) {
 			if (op.get().type != LogicalOperatorType::LOGICAL_PROJECTION) {
 				continue;
@@ -393,12 +414,38 @@ public:
 				return false;
 			}
 			auto &expression = *projection.expressions[binding.column_index];
-			if (expression.type != ExpressionType::BOUND_COLUMN_REF) {
+			if (expression.type == ExpressionType::BOUND_COLUMN_REF) {
+				binding = expression.Cast<BoundColumnRefExpression>().binding;
+				continue;
+			}
+			optional_ptr<const BoundFunctionExpression> call;
+			if (TryUnwrapCompression(expression, "__internal_decompress_", call)) {
+				pending_decompressions.push_back(*call);
+			} else if (!pending_decompressions.empty() &&
+			           TryUnwrapCompression(expression, "__internal_compress_", call)) {
+				// It must undo the decompress: the key's own type and, for integral keys, the same `min`.
+				auto &decompress = pending_decompressions.back().get();
+				if (decompress.return_type != call->children[0]->return_type ||
+				    decompress.children.size() != call->children.size()) {
+					return false;
+				}
+				if (call->children.size() == 2) {
+					auto &decompress_min = *decompress.children[1];
+					auto &compress_min = *call->children[1];
+					if (decompress_min.type != ExpressionType::VALUE_CONSTANT ||
+					    compress_min.type != ExpressionType::VALUE_CONSTANT ||
+					    !Value::NotDistinctFrom(decompress_min.Cast<BoundConstantExpression>().value,
+					                            compress_min.Cast<BoundConstantExpression>().value)) {
+						return false;
+					}
+				}
+				pending_decompressions.pop_back();
+			} else {
 				return false;
 			}
-			binding = expression.Cast<BoundColumnRefExpression>().binding;
+			binding = call->children[0]->Cast<BoundColumnRefExpression>().binding;
 		}
-		return true;
+		return pending_decompressions.empty();
 	}
 
 	// Collects the bindings the projection reads from its child, and the table scan's column each one traces to: an
