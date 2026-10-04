@@ -223,60 +223,19 @@ SELECT id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, 
 endloop
 
 # ============================================
-# Compressed join keys in release builds too: DuckDB compresses the key of a subquery of at least 1,048,576 rows.
-# t_big has more rows than big_ids, so the hash table is built on big_ids; only t's rows have an embedding.
+# verify_parallelism hands out single vectors: a row group reaches the search as several runs on several threads.
 # ============================================
 
 statement ok
-CREATE TABLE t_big AS SELECT range::BIGINT AS id, 'k' || range AS k, t.emb FROM range(1200000) LEFT JOIN t ON t.id = range;
+PRAGMA verify_parallelism;
+
+query I rowsort verify_parallelism_in_subquery
+SELECT id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+----
+
+query I rowsort verify_parallelism_in_subquery
+SELECT id FROM t_bf WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+----
 
 statement ok
-CREATE TABLE t_big_bf AS FROM t_big;
-
-statement ok
-CREATE TABLE big_ids AS SELECT (range + 16384)::BIGINT AS id, 'k' || (range + 16384) AS k FROM range(1100000);
-
-statement ok
-CREATE INDEX t_big_idx ON t_big USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
-
-# The search reads the compressed integer key through its decompression.
-query II
-EXPLAIN SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
-
-query I rowsort compressed_integral_key
-SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
-
-query I rowsort compressed_integral_key
-SELECT id FROM t_big_bf WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
-
-# A short VARCHAR key is compressed too.
-query II
-EXPLAIN SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
-
-query I rowsort compressed_string_key
-SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
-
-query I rowsort compressed_string_key
-SELECT k FROM t_big_bf WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
-
-# A value computed from the decompressed key is not a table column: the search runs without the index.
-query II
-EXPLAIN SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
-physical_plan	<!REGEX>:.*PDXEARCH.*
-
-query I rowsort computed_from_compressed_key
-SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
-
-query I rowsort computed_from_compressed_key
-SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big_bf WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
-----
+PRAGMA disable_verify_parallelism;

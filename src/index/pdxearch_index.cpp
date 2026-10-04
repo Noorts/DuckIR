@@ -385,16 +385,27 @@ void PDXearchIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const floa
 	}
 }
 
-unique_ptr<PDX::IIterativeSearch>
-PDXearchIndex::BeginSearchForRowGroup(const idx_t row_group_idx, const float *const preprocessed_query,
-                                      const idx_t limit, PDX::TopKHeap &top_k_heap,
-                                      const std::vector<size_t> *const passing_row_ids) {
+unique_ptr<PDX::IIterativeSearch> PDXearchIndex::BeginSearchForRowGroup(
+    const idx_t row_group_idx, const float *const preprocessed_query, const idx_t limit, PDX::TopKHeap &top_k_heap,
+    const std::vector<size_t> *const passing_row_ids, const std::vector<uint32_t> *const clusters_access_order) {
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		return static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		    ->BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids);
+		    ->BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids,
+		                             clusters_access_order);
 	}
 	return static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-	    ->BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids);
+	    ->BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids,
+	                             clusters_access_order);
+}
+
+std::vector<uint32_t> PDXearchIndex::GetClustersAccessOrderForRowGroup(const idx_t row_group_idx,
+                                                                       const float *const preprocessed_query) {
+	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+		return static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
+		    ->GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query);
+	}
+	return static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
+	    ->GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query);
 }
 
 /******************************************************************

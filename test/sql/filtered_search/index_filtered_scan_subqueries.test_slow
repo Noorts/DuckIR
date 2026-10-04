@@ -1,0 +1,116 @@
+# name: test/sql/filtered_search/index_filtered_scan_subqueries.test_slow
+# description: Subqueries used as filters over a table of more than 1,048,576 rows: release builds compress the join key only from that size, and a hash join of that size can spill to disk. Results are compared as sets (rowsort): SIFT has duplicate vectors, so some neighbours tie.
+# group: [filtered_search]
+
+require parquet
+
+require pdxearch
+
+# Row groups of 8192 rows.
+statement ok
+ATTACH '__TEST_DIR__/subqueries_slow.db' AS subqueries_slow (ROW_GROUP_SIZE 8192);
+
+statement ok
+USE subqueries_slow;
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Variables
+test-env DIMS 128
+
+test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20,8,3,5,67,17,19,26,5,0,1,22,60,26,7,1,18,22,84,53,85,119,119,4,24,18,7,7,1,81,106,102,72,30,6,0,9,1,9,119,72,1,4,33,119,29,6,1,0,1,14,52,119,30,3,0,0,55,92,111,2,5,4,9,22,89,96,14,1,0,1,82,59,16,20,5,25,14,11,4,0,0,1,26,47,23,4,0,0,4,38,83,30,14,9,4,9,17,23,41,0,0,2,8,19,25,23,1]
+
+statement ok
+CREATE TABLE t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+
+# ============================================
+# Compressed join keys in release builds too: DuckDB compresses the key of a subquery of at least 1,048,576 rows.
+# t_big has more rows than big_ids, so the hash table is built on big_ids; only t's rows have an embedding.
+# ============================================
+
+statement ok
+CREATE TABLE t_big AS SELECT range::BIGINT AS id, 'k' || range AS k, t.emb FROM range(1200000) LEFT JOIN t ON t.id = range;
+
+statement ok
+CREATE TABLE t_big_bf AS FROM t_big;
+
+statement ok
+CREATE TABLE big_ids AS SELECT (range + 16384)::BIGINT AS id, 'k' || (range + 16384) AS k FROM range(1100000);
+
+statement ok
+CREATE INDEX t_big_idx ON t_big USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
+
+# The search reads the compressed integer key through its decompression.
+query II
+EXPLAIN SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
+
+query I rowsort compressed_integral_key
+SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+query I rowsort compressed_integral_key
+SELECT id FROM t_big_bf WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+# A short VARCHAR key is compressed too.
+query II
+EXPLAIN SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
+
+query I rowsort compressed_string_key
+SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+query I rowsort compressed_string_key
+SELECT k FROM t_big_bf WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+# A value computed from the decompressed key is not a table column: the search runs without the index.
+query II
+EXPLAIN SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+physical_plan	<!REGEX>:.*PDXEARCH.*
+
+query I rowsort computed_from_compressed_key
+SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+query I rowsort computed_from_compressed_key
+SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big_bf WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+# ============================================
+# A hash join below the search that spills replays its rows after the scan, so a row group can get several searches.
+# ============================================
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET debug_force_external = true;
+
+query I rowsort spilled_in_subquery
+SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+query I rowsort spilled_in_subquery
+SELECT id FROM t_big_bf WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+query I rowsort spilled_not_exists
+SELECT id FROM t_big WHERE NOT EXISTS (SELECT 1 FROM big_ids b WHERE b.id = t_big.id) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+query I rowsort spilled_not_exists
+SELECT id FROM t_big_bf WHERE NOT EXISTS (SELECT 1 FROM big_ids b WHERE b.id = t_big_bf.id) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+----
+
+statement ok
+RESET debug_force_external;
+
+statement ok
+RESET threads;

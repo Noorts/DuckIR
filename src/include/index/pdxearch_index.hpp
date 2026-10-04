@@ -157,10 +157,13 @@ public:
 	                           idx_t count);
 
 	// !`passing_row_ids` are size_t because they go straight into PDX's IPDXIndex::BeginIterativeSearch.
-	unique_ptr<PDX::IIterativeSearch> BeginSearchForRowGroup(idx_t row_group_idx,
-	                                                         const float *preprocessed_query_embedding, idx_t limit,
-	                                                         PDX::TopKHeap &top_k_heap,
-	                                                         const std::vector<size_t> *passing_row_ids);
+	// `clusters_access_order`: the row group's GetClustersAccessOrderForRowGroup for this query (nullptr: rank).
+	unique_ptr<PDX::IIterativeSearch>
+	BeginSearchForRowGroup(idx_t row_group_idx, const float *preprocessed_query_embedding, idx_t limit,
+	                       PDX::TopKHeap &top_k_heap, const std::vector<size_t> *passing_row_ids,
+	                       const std::vector<uint32_t> *clusters_access_order = nullptr);
+	std::vector<uint32_t> GetClustersAccessOrderForRowGroup(idx_t row_group_idx,
+	                                                        const float *preprocessed_query_embedding);
 
 	/******************************************************************
 	 * Index maintenance
