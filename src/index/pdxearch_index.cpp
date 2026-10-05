@@ -871,6 +871,22 @@ void PDXearchModule::RegisterIndex(DatabaseInstance &db) {
 	                             "override the n_probe parameter when scanning PDXearch indexes (default: " +
 	                                 to_string(PDXearchWrapper::DEFAULT_N_PROBE) + ", must be >= 0)",
 	                             LogicalType::INTEGER, Value());
+	db.config.AddExtensionOption(
+	    "pdxearch_rank_clusters_across_row_groups",
+	    "LATERAL index joins probe the n_probe x (row groups searched) clusters nearest to the "
+	    "query across all row groups (default: true); false probes the n_probe nearest of "
+	    "each row group",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
+	db.config.AddExtensionOption(
+	    "pdxearch_max_passing_rows_per_cluster_for_flat_search",
+	    "filtered LATERAL index joins search the passing rows exhaustively, gathered into one Flat index, when "
+	    "they number at most this many per cluster of the row groups they are in, and at most "
+	    "pdxearch_max_passing_rows_for_flat_search (default: 2, 0 disables it)",
+	    LogicalType::DOUBLE, Value::DOUBLE(2.0));
+	db.config.AddExtensionOption("pdxearch_max_passing_rows_for_flat_search",
+	                             "the most passing rows a filtered LATERAL index join gathers into one Flat index "
+	                             "(default: 100000, 0 disables it)",
+	                             LogicalType::UBIGINT, Value::UBIGINT(100000));
 
 	// Register the index type
 	db.config.GetIndexTypes().RegisterIndexType(index_type);

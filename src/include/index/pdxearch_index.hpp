@@ -241,6 +241,13 @@ public:
 		return static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->GetNumRowGroups();
 	}
 
+	const PDX::IPDXIndex &GetRowGroupIndex(const idx_t row_group_idx) const {
+		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+			return static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->GetRowGroupIndex(row_group_idx);
+		}
+		return static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->GetRowGroupIndex(row_group_idx);
+	}
+
 	string GetQuantization() const;
 
 	idx_t GetNumDimensions() const {

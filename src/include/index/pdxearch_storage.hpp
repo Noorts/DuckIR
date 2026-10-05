@@ -70,7 +70,7 @@ private:
 	BufferHandle pinned_block;
 };
 
-static constexpr uint32_t PDXEARCH_STORAGE_VERSION = 1;
+static constexpr uint32_t PDXEARCH_STORAGE_VERSION = 2;
 
 // The root chain: where the rotation and the row groups are.
 struct PDXearchDirectory {

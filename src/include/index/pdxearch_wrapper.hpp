@@ -218,6 +218,10 @@ public:
 		                                                                /*is_query_transformed=*/true);
 	}
 
+	const PDX::IPDXIndex &GetRowGroupIndex(const idx_t row_group_idx) const {
+		return *row_groups[row_group_idx]->index;
+	}
+
 	// Maintenance, one writer at a time (the index's exclusive lock). The row belongs to the DuckDB row group that
 	// `row_groups[row_group_idx]` mirrors; the row group's end grows with it.
 	// If the rowgroup is a Flat index and it has enough embeddings, it is promoted to an IVF index.

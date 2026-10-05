@@ -19,6 +19,10 @@ SET checkpoint_threshold = '10GB';
 # Variables
 test-env DIMS 128
 
+# The join ranks clusters across row groups and single-query searches do not: they match when both probe all clusters.
+statement ok
+SET pdxearch_n_probe = 0;
+
 statement ok
 CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
@@ -440,3 +444,39 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 endloop
 
 endloop
+
+# ============================================
+# Few passing rows (328, at most 2 per cluster of their row groups): the join searches them in one Flat index (f32).
+# ============================================
+
+statement ok
+DROP INDEX t_idx;
+
+statement ok
+CREATE INDEX t_idx ON t USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = 0);
+
+statement ok
+CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 100 = 0 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
+
+statement ok
+CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
+
+loop i 0 10
+
+statement ok
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+
+statement ok
+INSERT INTO single_result SELECT ${i}, id FROM t WHERE id % 100 = 0 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+
+endloop
+
+query I
+SELECT count(*) FROM join_result;
+----
+100
+
+query I
+SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL (FROM join_result EXCEPT ALL FROM single_result));
+----
+0

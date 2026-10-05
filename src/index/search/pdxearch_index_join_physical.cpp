@@ -13,6 +13,7 @@
 #include "pdx/ivf_searcher.hpp"
 
 #include <algorithm>
+#include <numeric>
 
 namespace duckdb {
 
@@ -45,6 +46,25 @@ public:
 		const idx_t num_clusters_for_full_row_group = PDXearchIndex::GetNumClustersForFullRowGroup();
 		clusters_to_probe_on_first_iteration =
 		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
+		Value rank_clusters_across_row_groups_setting;
+		if (context.TryGetCurrentSetting("pdxearch_rank_clusters_across_row_groups",
+		                                 rank_clusters_across_row_groups_setting) &&
+		    !rank_clusters_across_row_groups_setting.IsNull()) {
+			rank_clusters_across_row_groups = rank_clusters_across_row_groups_setting.GetValue<bool>();
+		}
+		Value max_passing_rows_per_cluster_for_flat_search_setting;
+		if (context.TryGetCurrentSetting("pdxearch_max_passing_rows_per_cluster_for_flat_search",
+		                                 max_passing_rows_per_cluster_for_flat_search_setting) &&
+		    !max_passing_rows_per_cluster_for_flat_search_setting.IsNull()) {
+			max_passing_rows_per_cluster_for_flat_search =
+			    max_passing_rows_per_cluster_for_flat_search_setting.GetValue<double>();
+		}
+		Value max_passing_rows_for_flat_search_setting;
+		if (context.TryGetCurrentSetting("pdxearch_max_passing_rows_for_flat_search",
+		                                 max_passing_rows_for_flat_search_setting) &&
+		    !max_passing_rows_for_flat_search_setting.IsNull()) {
+			max_passing_rows_for_flat_search = max_passing_rows_for_flat_search_setting.GetValue<uint64_t>();
+		}
 	}
 
 	// Held for the duration of execution to serialize searches against index maintenance.
@@ -59,9 +79,16 @@ public:
 
 	idx_t clusters_to_probe_on_first_iteration {0};
 	static constexpr idx_t CLUSTERS_TO_PROBE_PER_FOLLOW_UP_ITERATION = 5;
+	bool rank_clusters_across_row_groups {true};
+	double max_passing_rows_per_cluster_for_flat_search {2.0};
+	idx_t max_passing_rows_for_flat_search {100000};
 
 	bool is_filtered {false};
-	vector<std::vector<size_t>> passing_row_ids; // per row group
+	vector<std::vector<size_t>> passing_row_ids_per_row_group;
+	vector<std::unique_ptr<PDX::PredicateEvaluator>> shared_predicate_evaluators;
+	std::unique_ptr<PDX::ADSamplingPruner> passing_rows_flat_index_pruner;
+	std::unique_ptr<PDX::FlatIndex> passing_rows_flat_index;
+	vector<row_t> passing_rows_flat_row_ids;
 };
 
 // Holds the search state when the table is filtered (the sink runs first).
@@ -70,7 +97,7 @@ public:
 	PDXearchIndexJoinGlobalSinkState(ClientContext &context, const PhysicalPDXearchIndexJoin &op)
 	    : search(context, op) {
 		search.is_filtered = true;
-		search.passing_row_ids.resize(search.index.GetNumRowGroups());
+		search.passing_row_ids_per_row_group.resize(search.index.GetNumRowGroups());
 	}
 
 	PDXearchIndexJoinSearch search;
@@ -103,11 +130,12 @@ unique_ptr<GlobalSinkState> PhysicalPDXearchIndexJoin::GetGlobalSinkState(Client
 
 class PDXearchIndexJoinLocalSinkState : public LocalSinkState {
 public:
-	explicit PDXearchIndexJoinLocalSinkState(const PDXearchIndex &index) : passing_row_ids(index.GetNumRowGroups()) {
+	explicit PDXearchIndexJoinLocalSinkState(const PDXearchIndex &index)
+	    : passing_row_ids_per_row_group(index.GetNumRowGroups()) {
 	}
 	idx_t current_row_group_id {0};
 	PDXearchRowRange current_row_group_range {0, 0};
-	vector<std::vector<size_t>> passing_row_ids;
+	vector<std::vector<size_t>> passing_row_ids_per_row_group;
 };
 
 unique_ptr<LocalSinkState> PhysicalPDXearchIndexJoin::GetLocalSinkState(ExecutionContext &context) const {
@@ -136,7 +164,7 @@ SinkResultType PhysicalPDXearchIndexJoin::Sink(ExecutionContext &context, DataCh
 			l_sink.current_row_group_id = row_group_idx.GetIndex();
 			l_sink.current_row_group_range = pdxearch_index.GetRowGroupRange(l_sink.current_row_group_id);
 		}
-		l_sink.passing_row_ids[l_sink.current_row_group_id].push_back(static_cast<size_t>(row_id));
+		l_sink.passing_row_ids_per_row_group[l_sink.current_row_group_id].push_back(static_cast<size_t>(row_id));
 	}
 	return SinkResultType::NEED_MORE_INPUT;
 }
@@ -147,22 +175,93 @@ SinkCombineResultType PhysicalPDXearchIndexJoin::Combine(ExecutionContext &conte
 	auto &l_sink = input.local_state.Cast<PDXearchIndexJoinLocalSinkState>();
 
 	const auto guard = g_sink.Lock();
-	for (idx_t row_group_idx = 0; row_group_idx < l_sink.passing_row_ids.size(); row_group_idx++) {
-		auto &local_row_ids = l_sink.passing_row_ids[row_group_idx];
-		auto &global_row_ids = g_sink.search.passing_row_ids[row_group_idx];
+	for (idx_t row_group_idx = 0; row_group_idx < l_sink.passing_row_ids_per_row_group.size(); row_group_idx++) {
+		auto &local_row_ids = l_sink.passing_row_ids_per_row_group[row_group_idx];
+		auto &global_row_ids = g_sink.search.passing_row_ids_per_row_group[row_group_idx];
 		global_row_ids.insert(global_row_ids.end(), local_row_ids.begin(), local_row_ids.end());
 	}
 	return SinkCombineResultType::FINISHED;
 }
 
+// Gathers the embeddings of the passing rows from their row groups' indexes into one Flat index, which every query
+// then searches exhaustively instead of the row groups. Its rows are numbered by position in passing_rows_flat_row_ids.
+static void GatherPassingRowsIntoFlatIndex(PDXearchIndexJoinSearch &search) {
+	const idx_t num_dimensions = search.index.GetNumDimensions();
+	auto &passing_row_ids_per_row_group = search.passing_row_ids_per_row_group;
+	// Rows without an embedding are not in the index.
+	idx_t num_rows = 0;
+	for (idx_t row_group_idx = 0; row_group_idx < passing_row_ids_per_row_group.size(); row_group_idx++) {
+		const auto &row_group_index = search.index.GetRowGroupIndex(row_group_idx);
+		auto &row_ids = passing_row_ids_per_row_group[row_group_idx];
+		row_ids.erase(std::remove_if(row_ids.begin(), row_ids.end(),
+		                             [&](const size_t row_id) { return !row_group_index.Contains(row_id); }),
+		              row_ids.end());
+		num_rows += row_ids.size();
+	}
+	if (num_rows == 0) {
+		return;
+	}
+	auto embeddings = make_uniq_array_uninitialized<float>(num_rows * num_dimensions);
+	auto &flat_row_ids = search.passing_rows_flat_row_ids;
+	flat_row_ids.reserve(num_rows);
+	for (idx_t row_group_idx = 0; row_group_idx < passing_row_ids_per_row_group.size(); row_group_idx++) {
+		const auto &row_ids = passing_row_ids_per_row_group[row_group_idx];
+		search.index.GetRowGroupIndex(row_group_idx)
+		    .GetEmbeddingsFromIndexByRowIds(row_ids, embeddings.get() + flat_row_ids.size() * num_dimensions);
+		flat_row_ids.insert(flat_row_ids.end(), row_ids.begin(), row_ids.end());
+	}
+	PDX::PDXIndexConfig config;
+	config.num_dimensions = static_cast<uint32_t>(num_dimensions);
+	config.distance_metric = PDX::DistanceMetric::L2SQ;
+	config.is_data_transformed = true;
+	// FlatIndex sets PDX's process-wide thread count from its config.
+	config.n_threads = 1;
+	search.passing_rows_flat_index_pruner =
+	    std::make_unique<PDX::ADSamplingPruner>(num_dimensions, search.index.GetRotationMatrix());
+	search.passing_rows_flat_index = std::make_unique<PDX::FlatIndex>(config, *search.passing_rows_flat_index_pruner);
+	std::vector<size_t> positions(num_rows);
+	std::iota(positions.begin(), positions.end(), 0);
+	search.passing_rows_flat_index->BuildIndex(positions.data(), embeddings.get(), num_rows);
+}
+
 SinkFinalizeType PhysicalPDXearchIndexJoin::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                                      OperatorSinkFinalizeInput &input) const {
-	auto &g_sink = input.global_state.Cast<PDXearchIndexJoinGlobalSinkState>();
-	const auto &passing_row_ids = g_sink.search.passing_row_ids;
-	const bool any_row_passes = std::any_of(passing_row_ids.begin(), passing_row_ids.end(),
+	auto &search = input.global_state.Cast<PDXearchIndexJoinGlobalSinkState>().search;
+	const auto &passing_row_ids_per_row_group = search.passing_row_ids_per_row_group;
+	const bool any_row_passes = std::any_of(passing_row_ids_per_row_group.begin(), passing_row_ids_per_row_group.end(),
 	                                        [](const std::vector<size_t> &row_ids) { return !row_ids.empty(); });
-	// Without rows no query has neighbours, and DuckDB skips the pipeline of the query rows.
-	return any_row_passes ? SinkFinalizeType::READY : SinkFinalizeType::NO_OUTPUT_POSSIBLE;
+	search.shared_predicate_evaluators.resize(passing_row_ids_per_row_group.size());
+	// Without rows no query has neighbours.
+	if (!any_row_passes) {
+		return SinkFinalizeType::NO_OUTPUT_POSSIBLE;
+	}
+	// Few passing rows are searched faster exhaustively than through the clusters of their row groups. The cap bounds
+	// the Flat index's memory and per-query scan, which the ratio alone lets grow with the number of row groups.
+	idx_t num_passing_rows = 0;
+	idx_t num_clusters_of_row_groups_with_passing_rows = 0;
+	for (idx_t row_group_idx = 0; row_group_idx < passing_row_ids_per_row_group.size(); row_group_idx++) {
+		if (!passing_row_ids_per_row_group[row_group_idx].empty()) {
+			num_passing_rows += passing_row_ids_per_row_group[row_group_idx].size();
+			num_clusters_of_row_groups_with_passing_rows +=
+			    search.index.GetRowGroupIndex(row_group_idx).GetNumClusters();
+		}
+	}
+	if (num_passing_rows <= search.max_passing_rows_for_flat_search &&
+	    static_cast<double>(num_passing_rows) <=
+	        search.max_passing_rows_per_cluster_for_flat_search *
+	            static_cast<double>(num_clusters_of_row_groups_with_passing_rows)) {
+		GatherPassingRowsIntoFlatIndex(search);
+		return search.passing_rows_flat_index ? SinkFinalizeType::READY : SinkFinalizeType::NO_OUTPUT_POSSIBLE;
+	}
+	// Each row group's filter is the same for every query: built once here.
+	for (idx_t row_group_idx = 0; row_group_idx < passing_row_ids_per_row_group.size(); row_group_idx++) {
+		if (!passing_row_ids_per_row_group[row_group_idx].empty()) {
+			search.shared_predicate_evaluators[row_group_idx] =
+			    search.index.GetRowGroupIndex(row_group_idx)
+			        .CreateSharedPredicateEvaluator(passing_row_ids_per_row_group[row_group_idx]);
+		}
+	}
+	return SinkFinalizeType::READY;
 }
 
 // ------------------------------
@@ -186,6 +285,10 @@ public:
 	const unique_ptr<float[]> query;
 	PDX::TopKHeap heap;
 	std::vector<unique_ptr<PDX::IIterativeSearch>> search_cursors;
+	// Scratch of ProbeNearestClustersAcrossRowGroups, reused by every query.
+	std::vector<float> centroid_distances;
+	std::vector<uint32_t> clusters_access_order;
+	std::vector<std::pair<float, idx_t>> clusters_ranked_across_row_groups;
 
 	// The input chunk being processed: its query column, and the next row to search.
 	bool input_started {false};
@@ -234,6 +337,87 @@ static bool TryReadQuery(const PhysicalPDXearchIndexJoin &op, DataChunk &input, 
 	return true;
 }
 
+// The first round of a query's search: the n_probe x (row groups searched) clusters nearest to the query across all
+// row groups (when filtered, only clusters with passing rows), probed nearest first so that the shared heap tightens
+// early. Each row group's cursor starts from its own ranking and stays in state.search_cursors.
+static void ProbeNearestClustersAcrossRowGroups(const PDXearchIndexJoinSearch &search,
+                                                PDXearchIndexJoinOperatorState &state) {
+	auto &clusters_ranked = state.clusters_ranked_across_row_groups;
+	clusters_ranked.clear();
+	idx_t num_row_groups_searched = 0;
+	for (idx_t row_group_idx = 0; row_group_idx < search.index.GetNumRowGroups(); row_group_idx++) {
+		const PDX::PredicateEvaluator *evaluator = nullptr;
+		if (search.is_filtered) {
+			evaluator = search.shared_predicate_evaluators[row_group_idx].get();
+			if (!evaluator) {
+				continue;
+			}
+		}
+		const auto &row_group_index = search.index.GetRowGroupIndex(row_group_idx);
+		const uint32_t num_clusters = row_group_index.GetNumClusters();
+		auto &distances = state.centroid_distances;
+		distances.resize(num_clusters);
+		row_group_index.GetDistancesToCentroids(state.query.get(), /*is_query_transformed=*/true, distances.data());
+		auto &clusters_access_order = state.clusters_access_order;
+		clusters_access_order.resize(num_clusters);
+		std::iota(clusters_access_order.begin(), clusters_access_order.end(), 0);
+		std::sort(clusters_access_order.begin(), clusters_access_order.end(),
+		          [&distances](const uint32_t a, const uint32_t b) { return distances[a] < distances[b]; });
+		// The cursor copies the order, so the scratch vectors serve the next row group.
+		auto search_cursor =
+		    evaluator ? row_group_index.BeginIterativeSearchWithSharedEvaluator(
+		                    state.query.get(), static_cast<uint32_t>(search.limit), state.heap, *evaluator,
+		                    /*is_query_transformed=*/true, &clusters_access_order)
+		              : row_group_index.BeginIterativeSearch(state.query.get(), static_cast<uint32_t>(search.limit),
+		                                                     state.heap, nullptr, /*is_query_transformed=*/true,
+		                                                     &clusters_access_order);
+		const idx_t cursor_idx = state.search_cursors.size();
+		state.search_cursors.push_back(unique_ptr<PDX::IIterativeSearch>(search_cursor.release()));
+		// The clusters the cursor queues: not empty and, when filtered, with passing rows.
+		for (uint32_t cluster_id = 0; cluster_id < num_clusters; cluster_id++) {
+			if (row_group_index.GetClusterSize(cluster_id) > 0 &&
+			    (!evaluator || evaluator->n_passing_tuples[cluster_id] > 0)) {
+				clusters_ranked.emplace_back(distances[cluster_id], cursor_idx);
+			}
+		}
+		num_row_groups_searched++;
+	}
+	const idx_t total_n_probe_budget =
+	    MinValue<idx_t>(search.clusters_to_probe_on_first_iteration * num_row_groups_searched, clusters_ranked.size());
+	std::partial_sort(clusters_ranked.begin(),
+	                  clusters_ranked.begin() + static_cast<std::ptrdiff_t>(total_n_probe_budget),
+	                  clusters_ranked.end());
+	// Each cursor queues its clusters nearest first, so its next cluster is the one listed here.
+	for (idx_t i = 0; i < total_n_probe_budget; i++) {
+		state.search_cursors[clusters_ranked[i].second]->Next(1);
+	}
+}
+
+// The first round with each row group searched alone: its own n_probe nearest clusters (when filtered, with passing
+// rows). Used when pdxearch_rank_clusters_across_row_groups is false.
+static void ProbeNearestClustersPerRowGroup(const PDXearchIndexJoinSearch &search,
+                                            PDXearchIndexJoinOperatorState &state) {
+	for (idx_t row_group_idx = 0; row_group_idx < search.index.GetNumRowGroups(); row_group_idx++) {
+		unique_ptr<PDX::IIterativeSearch> search_cursor;
+		if (!search.is_filtered) {
+			search_cursor = search.index.BeginSearchForRowGroup(row_group_idx, state.query.get(), search.limit,
+			                                                    state.heap, nullptr);
+		} else {
+			const auto *evaluator = search.shared_predicate_evaluators[row_group_idx].get();
+			if (!evaluator) {
+				continue;
+			}
+			search_cursor = unique_ptr<PDX::IIterativeSearch>(
+			    search.index.GetRowGroupIndex(row_group_idx)
+			        .BeginIterativeSearchWithSharedEvaluator(state.query.get(), static_cast<uint32_t>(search.limit),
+			                                                 state.heap, *evaluator, /*is_query_transformed=*/true)
+			        .release());
+		}
+		search_cursor->Next(search.clusters_to_probe_on_first_iteration);
+		state.search_cursors.push_back(std::move(search_cursor));
+	}
+}
+
 // Searches the index for the query in raw_query, and writes the row ids of its nearest rows (nearest first) to
 // row_ids. Returns their number, at most K.
 static idx_t SearchQuery(const PDXearchIndexJoinSearch &search, PDXearchIndexJoinOperatorState &state) {
@@ -242,25 +426,19 @@ static idx_t SearchQuery(const PDXearchIndexJoinSearch &search, PDXearchIndexJoi
 
 	state.heap.heap = PDX::Heap();
 	state.search_cursors.clear();
-	if (!search.is_filtered) {
-		// As in the index scan: the n_probe nearest clusters of every row group.
-		for (idx_t row_group_idx = 0; row_group_idx < search.index.GetNumRowGroups(); row_group_idx++) {
-			auto search_cursor = search.index.BeginSearchForRowGroup(row_group_idx, state.query.get(), search.limit,
-			                                                         state.heap, nullptr);
-			search_cursor->Next(search.clusters_to_probe_on_first_iteration);
-		}
+	if (search.passing_rows_flat_index) {
+		// Its one cluster holds every passing row.
+		search.passing_rows_flat_index
+		    ->BeginIterativeSearch(state.query.get(), static_cast<uint32_t>(search.limit), state.heap, nullptr,
+		                           /*is_query_transformed=*/true)
+		    ->Next(1);
+	} else if (search.rank_clusters_across_row_groups) {
+		ProbeNearestClustersAcrossRowGroups(search, state);
 	} else {
-		// As in the filtered scan: the n_probe nearest clusters with passing rows of every row group that has passing
-		// rows, then more clusters until the heap holds K rows or no cluster with passing rows is left.
-		for (idx_t row_group_idx = 0; row_group_idx < search.passing_row_ids.size(); row_group_idx++) {
-			if (search.passing_row_ids[row_group_idx].empty()) {
-				continue;
-			}
-			auto search_cursor = search.index.BeginSearchForRowGroup(
-			    row_group_idx, state.query.get(), search.limit, state.heap, &search.passing_row_ids[row_group_idx]);
-			search_cursor->Next(search.clusters_to_probe_on_first_iteration);
-			state.search_cursors.push_back(std::move(search_cursor));
-		}
+		ProbeNearestClustersPerRowGroup(search, state);
+	}
+	if (search.is_filtered) {
+		// Then more clusters until the heap holds K rows or no cluster with passing rows is left.
 		while (state.heap.heap.size() < search.limit) {
 			bool probed = false;
 			for (auto &search_cursor : state.search_cursors) {
@@ -278,7 +456,8 @@ static idx_t SearchQuery(const PDXearchIndexJoinSearch &search, PDXearchIndexJoi
 	const auto nearest = PDX::BuildResultSetFromHeap(search.limit, state.heap.heap);
 	const auto row_ids = FlatVector::GetData<row_t>(state.row_ids);
 	for (size_t i = 0; i < nearest.size(); i++) {
-		row_ids[i] = nearest[i].index;
+		row_ids[i] =
+		    search.passing_rows_flat_index ? search.passing_rows_flat_row_ids[nearest[i].index] : nearest[i].index;
 	}
 	return nearest.size();
 }
