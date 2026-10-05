@@ -181,8 +181,7 @@ raises an error: drop it and create it again.
   view or a subquery of the table. Searches that read a value such a subquery
   computes (e.g. `id * 2 AS x`), subqueries whose result is larger than the
   indexed table, correlated subqueries, and joins with other tables still run
-  without the index. Searches also stay on the index when the hash join of a
-  subquery spills to disk (we optimize if rows arrive out of order). You can check whether your query is
+  without the index. You can check whether your query is
   currently being optimized by prepending the `EXPLAIN` keyword to your search
   query and checking if a PDXearch operator is part of the query plan.
 

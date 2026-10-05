@@ -291,8 +291,8 @@ public:
 	}
 };
 
-// A task that starts the one more search of a row group, over the row ids of its runs that arrived after its first
-// search started, and runs that search's first iteration.
+// A task that starts the late search of a row group,
+// over the row ids of its runs that arrived after its first search started.
 class PhysicalFilteredScanLateSearchTask : public ExecutorTask {
 public:
 	PhysicalFilteredScanLateSearchTask(shared_ptr<Event> event_p, ClientContext &context,
@@ -323,8 +323,7 @@ private:
 	const idx_t row_group_idx;
 };
 
-// An event that starts, in parallel, the one more search of every row group with buffered row ids. The search
-// iterations then continue as usual.
+// An event that starts, in parallel, the additional search of every row group with buffered row ids.
 class PhysicalFilteredScanLateSearchEvent : public BasePipelineEvent {
 public:
 	PhysicalFilteredScanLateSearchEvent(Pipeline &pipeline_p, PhysicalFilteredScanGlobalSinkState &g_sink_p)

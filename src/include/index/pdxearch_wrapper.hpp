@@ -211,7 +211,7 @@ public:
 		return unique_ptr<PDX::IIterativeSearch>(search_cursor.release());
 	}
 
-	// The row group's clusters, nearest to the query first: searches of one query share it.
+	// The row group's clusters, nearest to the query first (searches of one query share it).
 	std::vector<uint32_t> GetClustersAccessOrderForRowGroup(const idx_t row_group_idx,
 	                                                        const float *const preprocessed_query_embedding) {
 		return row_groups[row_group_idx]->index->GetClustersAccessOrder(preprocessed_query_embedding,
