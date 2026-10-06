@@ -482,7 +482,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 0
 
 # ============================================
-# Many passing rows (16,384) with pdxearch_on_the_fly_indexing = 'always': the join searches indexes built over only them, one over all row groups and one per 2 row groups.
+# Many passing rows (16,384) with pdxearch_experimental_on_the_fly_indexing = 'always': the join searches indexes built over only them, one over all row groups and one per 2 row groups.
 # ============================================
 
 statement ok
@@ -499,7 +499,7 @@ INSERT INTO single_result SELECT ${i}, id FROM t WHERE id % 2 = 0 ORDER BY array
 endloop
 
 statement ok
-SET pdxearch_on_the_fly_indexing = 'always';
+SET pdxearch_experimental_on_the_fly_indexing = 'always';
 
 foreach max_row_groups 0 2
 
@@ -521,12 +521,12 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 
 endloop
 
-# 'auto' builds them when the queries are estimated to be enough per passing row (10 against 16,384 x 0.0001 here).
+# 'auto' builds them when the passing rows per estimated query are few enough (16,384 / 10 against 10,000 here).
 statement ok
-SET pdxearch_on_the_fly_indexing = 'auto';
+SET pdxearch_experimental_on_the_fly_indexing = 'auto';
 
 statement ok
-SET pdxearch_on_the_fly_indexing_threshold = 0.0001;
+SET pdxearch_on_the_fly_indexing_threshold = 10000;
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 2 = 0 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -537,7 +537,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 0
 
 statement ok
-RESET pdxearch_on_the_fly_indexing;
+RESET pdxearch_experimental_on_the_fly_indexing;
 
 statement ok
 RESET pdxearch_on_the_fly_indexing_threshold;

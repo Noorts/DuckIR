@@ -37,7 +37,7 @@ PhysicalPDXearchIndexJoin::PhysicalPDXearchIndexJoin(PhysicalPlan &physical_plan
 	}
 }
 
-// pdxearch_on_the_fly_indexing: whether a filtered join builds indexes over the passing rows.
+// pdxearch_experimental_on_the_fly_indexing: whether a filtered join builds indexes over the passing rows.
 enum class OnTheFlyIndexMode : uint8_t { NEVER, ALWAYS, AUTO };
 
 // The part of the search that is the same for every query, set up once per operator.
@@ -70,19 +70,18 @@ public:
 			max_passing_rows_for_flat_search = max_passing_rows_for_flat_search_setting.GetValue<uint64_t>();
 		}
 		Value on_the_fly_index_setting;
-		if (context.TryGetCurrentSetting("pdxearch_on_the_fly_indexing", on_the_fly_index_setting) &&
+		if (context.TryGetCurrentSetting("pdxearch_experimental_on_the_fly_indexing", on_the_fly_index_setting) &&
 		    !on_the_fly_index_setting.IsNull()) {
 			const auto mode = on_the_fly_index_setting.ToString();
 			on_the_fly_index = mode == "always" ? OnTheFlyIndexMode::ALWAYS
 			                   : mode == "auto" ? OnTheFlyIndexMode::AUTO
 			                                    : OnTheFlyIndexMode::NEVER;
 		}
-		Value min_queries_per_passing_row_for_on_the_fly_index_setting;
+		Value on_the_fly_indexing_threshold_setting;
 		if (context.TryGetCurrentSetting("pdxearch_on_the_fly_indexing_threshold",
-		                                 min_queries_per_passing_row_for_on_the_fly_index_setting) &&
-		    !min_queries_per_passing_row_for_on_the_fly_index_setting.IsNull()) {
-			min_queries_per_passing_row_for_on_the_fly_index =
-			    min_queries_per_passing_row_for_on_the_fly_index_setting.GetValue<double>();
+		                                 on_the_fly_indexing_threshold_setting) &&
+		    !on_the_fly_indexing_threshold_setting.IsNull()) {
+			on_the_fly_indexing_threshold = on_the_fly_indexing_threshold_setting.GetValue<uint64_t>();
 		}
 		Value max_row_groups_per_on_the_fly_index_setting;
 		if (context.TryGetCurrentSetting("pdxearch_on_the_fly_indexing_max_row_groups",
@@ -108,7 +107,7 @@ public:
 	double max_passing_rows_per_cluster_for_flat_search {2.0};
 	idx_t max_passing_rows_for_flat_search {100000};
 	OnTheFlyIndexMode on_the_fly_index {OnTheFlyIndexMode::NEVER};
-	double min_queries_per_passing_row_for_on_the_fly_index {0.05};
+	idx_t on_the_fly_indexing_threshold {20};
 	idx_t max_row_groups_per_on_the_fly_index {0};
 	// The build's peak memory beyond the indexes, in embeddings of the largest window: its gathered embeddings (1) and
 	// the k-means scratch (0.1).
@@ -387,12 +386,13 @@ SinkFinalizeType PhysicalPDXearchIndexJoin::Finalize(Pipeline &pipeline, Event &
 		return search.passing_rows_otf_indexes.empty() ? SinkFinalizeType::NO_OUTPUT_POSSIBLE : SinkFinalizeType::READY;
 	}
 	// Many passing rows: indexes over only them, searched instead of the row groups, when their build fits in memory.
-	// 'auto' builds them only for enough queries (as estimated) to pay for the build.
+	// 'auto' builds them only for enough queries (as estimated) to pay for the build: at most the threshold's passing
+	// rows per query.
 	const bool build_otf_indexes =
 	    search.on_the_fly_index == OnTheFlyIndexMode::ALWAYS ||
 	    (search.on_the_fly_index == OnTheFlyIndexMode::AUTO &&
-	     static_cast<double>(children[0].get().estimated_cardinality) >=
-	         search.min_queries_per_passing_row_for_on_the_fly_index * static_cast<double>(num_passing_rows));
+	     static_cast<double>(num_passing_rows) <= static_cast<double>(search.on_the_fly_indexing_threshold) *
+	                                                  static_cast<double>(children[0].get().estimated_cardinality));
 	if (build_otf_indexes) {
 		const idx_t row_groups_per_otf_index =
 		    ChooseRowGroupsPerOtfIndexWithinMemoryBudget(context, search, num_passing_rows);

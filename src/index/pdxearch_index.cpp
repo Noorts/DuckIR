@@ -871,12 +871,11 @@ void PDXearchModule::RegisterIndex(DatabaseInstance &db) {
 	                             "override the n_probe parameter when scanning PDXearch indexes (default: " +
 	                                 to_string(PDXearchWrapper::DEFAULT_N_PROBE) + ", must be >= 0)",
 	                             LogicalType::INTEGER, Value());
-	db.config.AddExtensionOption(
-	    "pdxearch_rank_clusters_across_row_groups",
-	    "LATERAL index joins probe the n_probe x (row groups searched) clusters nearest to the "
-	    "query across all row groups (default: true); false probes the n_probe nearest of "
-	    "each row group",
-	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
+	db.config.AddExtensionOption("pdxearch_rank_clusters_across_row_groups",
+	                             "LATERAL index joins probe clusters nearest to the "
+	                             "query across all row groups (default: true); false probes the n_probe nearest of "
+	                             "each row group",
+	                             LogicalType::BOOLEAN, Value::BOOLEAN(true));
 	db.config.AddExtensionOption(
 	    "pdxearch_bruteforce_rows_per_cluster",
 	    "filtered LATERAL index joins search the passing rows by brute force, without the index, when they number "
@@ -888,23 +887,24 @@ void PDXearchModule::RegisterIndex(DatabaseInstance &db) {
 	                             "(default: 100000, 0 disables it)",
 	                             LogicalType::UBIGINT, Value::UBIGINT(100000));
 	db.config.AddExtensionOption(
-	    "pdxearch_on_the_fly_indexing",
+	    "pdxearch_experimental_on_the_fly_indexing",
 	    "filtered LATERAL index joins whose passing rows are too many for a brute-force search build indexes over only "
-	    "the passing rows and search them instead of the row groups: 'always', 'never' or 'auto' (when the queries "
-	    "are estimated to be at least pdxearch_on_the_fly_indexing_threshold per passing row; default: never)",
+	    "the passing rows and search them instead of the row groups: 'always', 'never' or 'auto' (when there are at "
+	    "most pdxearch_on_the_fly_indexing_threshold passing rows per query, queries as estimated; default: never)",
 	    LogicalType::VARCHAR, Value("never"), [](ClientContext &, SetScope, Value &parameter) {
 		    const auto mode = StringUtil::Lower(parameter.ToString());
 		    if (mode != "always" && mode != "never" && mode != "auto") {
 			    throw InvalidInputException(
-			        "pdxearch_on_the_fly_indexing must be 'always', 'never' or 'auto', not '%s'", parameter.ToString());
+			        "pdxearch_experimental_on_the_fly_indexing must be 'always', 'never' or 'auto', not '%s'",
+			        parameter.ToString());
 		    }
 		    parameter = Value(mode);
 	    });
 	db.config.AddExtensionOption(
 	    "pdxearch_on_the_fly_indexing_threshold",
-	    "with pdxearch_on_the_fly_indexing = 'auto', the indexes over the passing rows are built when the queries are "
-	    "estimated to be at least this many per passing row (default: 0.05)",
-	    LogicalType::DOUBLE, Value::DOUBLE(0.05));
+	    "with pdxearch_experimental_on_the_fly_indexing = 'auto', the indexes over the passing rows are built when "
+	    "there are at most this many passing rows per query, queries as estimated (default: 20)",
+	    LogicalType::UBIGINT, Value::UBIGINT(20));
 	db.config.AddExtensionOption("pdxearch_on_the_fly_indexing_max_row_groups",
 	                             "the most consecutive row groups whose passing rows go into one index built on the "
 	                             "fly (default: 0, no limit: the memory left decides)",
