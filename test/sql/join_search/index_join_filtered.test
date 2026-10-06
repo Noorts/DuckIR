@@ -480,3 +480,67 @@ query I
 SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL (FROM join_result EXCEPT ALL FROM single_result));
 ----
 0
+
+# ============================================
+# Many passing rows (16,384) with pdxearch_on_the_fly_index = 'always': the join searches indexes built over only them, one over all row groups and one per 2 row groups.
+# ============================================
+
+statement ok
+CREATE OR REPLACE TABLE single_result (qid INTEGER, id INTEGER);
+
+loop i 0 10
+
+statement ok
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+
+statement ok
+INSERT INTO single_result SELECT ${i}, id FROM t WHERE id % 2 = 0 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+
+endloop
+
+statement ok
+SET pdxearch_on_the_fly_index = 'always';
+
+foreach max_row_groups 0 2
+
+statement ok
+SET pdxearch_max_row_groups_per_on_the_fly_index = ${max_row_groups};
+
+statement ok
+CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 2 = 0 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
+
+query I
+SELECT count(*) FROM join_result;
+----
+100
+
+query I
+SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL (FROM join_result EXCEPT ALL FROM single_result));
+----
+0
+
+endloop
+
+# 'auto' builds them when the queries are estimated to be enough per passing row (10 against 16,384 x 0.0001 here).
+statement ok
+SET pdxearch_on_the_fly_index = 'auto';
+
+statement ok
+SET pdxearch_min_queries_per_passing_row_for_on_the_fly_index = 0.0001;
+
+statement ok
+CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 2 = 0 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
+
+query I
+SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL (FROM join_result EXCEPT ALL FROM single_result));
+----
+0
+
+statement ok
+RESET pdxearch_on_the_fly_index;
+
+statement ok
+RESET pdxearch_min_queries_per_passing_row_for_on_the_fly_index;
+
+statement ok
+RESET pdxearch_max_row_groups_per_on_the_fly_index;

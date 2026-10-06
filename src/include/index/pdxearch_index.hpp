@@ -280,6 +280,10 @@ public:
 	float *GetRotationMatrix() const {
 		return pdxearch_wrapper->GetRotationMatrix();
 	}
+
+	uint64_t GetInMemorySizeInBytesWithoutLocking() const {
+		return pdxearch_wrapper->GetInMemorySizeInBytes();
+	}
 };
 
 // The table columns a search fetches by rowid, for EXPLAIN: one name per line, like a SEQ_SCAN's projections.
