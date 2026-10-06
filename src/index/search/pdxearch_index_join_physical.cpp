@@ -37,7 +37,7 @@ PhysicalPDXearchIndexJoin::PhysicalPDXearchIndexJoin(PhysicalPlan &physical_plan
 	}
 }
 
-// pdxearch_on_the_fly_index: whether a filtered join builds indexes over the passing rows.
+// pdxearch_on_the_fly_indexing: whether a filtered join builds indexes over the passing rows.
 enum class OnTheFlyIndexMode : uint8_t { NEVER, ALWAYS, AUTO };
 
 // The part of the search that is the same for every query, set up once per operator.
@@ -58,20 +58,19 @@ public:
 			rank_clusters_across_row_groups = rank_clusters_across_row_groups_setting.GetValue<bool>();
 		}
 		Value max_passing_rows_per_cluster_for_flat_search_setting;
-		if (context.TryGetCurrentSetting("pdxearch_max_passing_rows_per_cluster_for_flat_search",
+		if (context.TryGetCurrentSetting("pdxearch_bruteforce_rows_per_cluster",
 		                                 max_passing_rows_per_cluster_for_flat_search_setting) &&
 		    !max_passing_rows_per_cluster_for_flat_search_setting.IsNull()) {
 			max_passing_rows_per_cluster_for_flat_search =
 			    max_passing_rows_per_cluster_for_flat_search_setting.GetValue<double>();
 		}
 		Value max_passing_rows_for_flat_search_setting;
-		if (context.TryGetCurrentSetting("pdxearch_max_passing_rows_for_flat_search",
-		                                 max_passing_rows_for_flat_search_setting) &&
+		if (context.TryGetCurrentSetting("pdxearch_bruteforce_max_rows", max_passing_rows_for_flat_search_setting) &&
 		    !max_passing_rows_for_flat_search_setting.IsNull()) {
 			max_passing_rows_for_flat_search = max_passing_rows_for_flat_search_setting.GetValue<uint64_t>();
 		}
 		Value on_the_fly_index_setting;
-		if (context.TryGetCurrentSetting("pdxearch_on_the_fly_index", on_the_fly_index_setting) &&
+		if (context.TryGetCurrentSetting("pdxearch_on_the_fly_indexing", on_the_fly_index_setting) &&
 		    !on_the_fly_index_setting.IsNull()) {
 			const auto mode = on_the_fly_index_setting.ToString();
 			on_the_fly_index = mode == "always" ? OnTheFlyIndexMode::ALWAYS
@@ -79,14 +78,14 @@ public:
 			                                    : OnTheFlyIndexMode::NEVER;
 		}
 		Value min_queries_per_passing_row_for_on_the_fly_index_setting;
-		if (context.TryGetCurrentSetting("pdxearch_min_queries_per_passing_row_for_on_the_fly_index",
+		if (context.TryGetCurrentSetting("pdxearch_on_the_fly_indexing_threshold",
 		                                 min_queries_per_passing_row_for_on_the_fly_index_setting) &&
 		    !min_queries_per_passing_row_for_on_the_fly_index_setting.IsNull()) {
 			min_queries_per_passing_row_for_on_the_fly_index =
 			    min_queries_per_passing_row_for_on_the_fly_index_setting.GetValue<double>();
 		}
 		Value max_row_groups_per_on_the_fly_index_setting;
-		if (context.TryGetCurrentSetting("pdxearch_max_row_groups_per_on_the_fly_index",
+		if (context.TryGetCurrentSetting("pdxearch_on_the_fly_indexing_max_row_groups",
 		                                 max_row_groups_per_on_the_fly_index_setting) &&
 		    !max_row_groups_per_on_the_fly_index_setting.IsNull()) {
 			max_row_groups_per_on_the_fly_index = max_row_groups_per_on_the_fly_index_setting.GetValue<uint64_t>();
@@ -321,7 +320,7 @@ static void GatherPassingRowsIntoOtfIndexes(PDXearchIndexJoinSearch &search, con
 	}
 }
 
-// The most consecutive row groups per on-the-fly index (at most pdxearch_max_row_groups_per_on_the_fly_index) whose
+// The most consecutive row groups per on-the-fly index (at most pdxearch_on_the_fly_indexing_max_row_groups) whose
 // build fits in the memory DuckDB has left: the indexes of all windows stay, and the window being built also holds its
 // gathered embeddings and the k-means scratch. 0 when not even one row group per index fits.
 static idx_t ChooseRowGroupsPerOtfIndexWithinMemoryBudget(ClientContext &context, const PDXearchIndexJoinSearch &search,
