@@ -242,8 +242,8 @@ static idx_t CountMaxRowsPerOnTheFlyIndex(const vector<std::vector<size_t>> &pas
 // row groups' indexes into one index (Flat when build_flat or when too few to cluster; else an IVF with PDX's default
 // number of clusters). One window after another, so that only one window's gathered embeddings are held at a time.
 // The rows are numbered by position in on_the_fly_indexes_row_ids.
-static void GatherRowsIntoOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const idx_t row_groups_per_window,
-                                          const bool build_flat, const idx_t n_threads) {
+static void BuildOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const idx_t row_groups_per_window,
+                                 const bool build_flat, const idx_t n_threads) {
 	const idx_t num_dimensions = search.index.GetNumDimensions();
 	auto &passing_row_ids_per_row_group = search.passing_row_ids_per_row_group;
 	// Rows without an embedding are not in the index.
@@ -267,17 +267,10 @@ static void GatherRowsIntoOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const
 	    CountMaxRowsPerOnTheFlyIndex(passing_row_ids_per_row_group, row_groups_per_window);
 	auto embeddings = make_uniq_array_uninitialized<float>(max_rows_per_window * num_dimensions);
 	std::vector<size_t> positions(max_rows_per_window);
-	PDX::PDXIndexConfig config;
-	config.num_dimensions = static_cast<uint32_t>(num_dimensions);
-	config.distance_metric = PDX::DistanceMetric::L2SQ;
-	config.is_data_transformed = true;
-	// As the row groups' indexes.
-	config.kmeans_iters = 8;
-	config.hierarchical_indexing = true;
-	// The indexes set PDX's process-wide thread count from their config.
-	config.n_threads = static_cast<uint32_t>(n_threads);
+
 	search.on_the_fly_indexes_pruner =
 	    std::make_unique<PDX::ADSamplingPruner>(num_dimensions, search.index.GetRotationMatrix());
+
 	// A window of C clusters probes n_probe x sqrt(C / (clusters of a full row group)) of them, which keeps the recall
 	// of n_probe in the row groups; n_probe 0 (or all of a row group's clusters) probes all of them.
 	const idx_t num_clusters_for_full_row_group = PDXearchIndex::GetNumClustersForFullRowGroup();
@@ -286,6 +279,8 @@ static void GatherRowsIntoOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const
 	                                                  std::sqrt(static_cast<double>(num_clusters_for_full_row_group));
 	auto &on_the_fly_indexes_row_ids = search.on_the_fly_indexes_row_ids;
 	on_the_fly_indexes_row_ids.reserve(num_rows);
+
+	// Create an on-the-fly index per window
 	for (idx_t first = 0; first < row_groups_with_passing_rows.size(); first += row_groups_per_window) {
 		const idx_t end = MinValue<idx_t>(first + row_groups_per_window, row_groups_with_passing_rows.size());
 		const idx_t window_offset = on_the_fly_indexes_row_ids.size();
@@ -298,7 +293,8 @@ static void GatherRowsIntoOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const
 		}
 		const idx_t window_rows = on_the_fly_indexes_row_ids.size() - window_offset;
 		std::iota(positions.begin(), positions.begin() + static_cast<std::ptrdiff_t>(window_rows), window_offset);
-		config.base_row_id = window_offset;
+		// PDX's default number of clusters. The indexes set PDX's process-wide thread count from their config.
+		const auto config = search.index.MakePDXIndexConfig(/*num_clusters=*/0, n_threads, window_offset);
 		std::unique_ptr<PDX::IPDXIndex> on_the_fly_index;
 		if (build_flat || window_rows < PDXearchWrapperF32::MIN_EMBEDDINGS_FOR_CLUSTERING) {
 			auto flat_index = std::make_unique<PDX::FlatIndex>(config, *search.on_the_fly_indexes_pruner);
@@ -323,9 +319,8 @@ static void GatherRowsIntoOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const
 // The most consecutive row groups per on-the-fly index (at most pdxearch_on_the_fly_indexing_max_row_groups) whose
 // build fits in the memory DuckDB has left: the indexes of all windows stay, and the window being built also holds its
 // gathered embeddings and the k-means scratch. 0 when not even one row group per index fits.
-static idx_t ChooseRowGroupsPerOnTheFlyIndexWithinMemoryBudget(ClientContext &context,
-                                                               const PDXearchIndexJoinSearch &search,
-                                                               const idx_t num_passing_rows) {
+static idx_t GetOnTheFlyIndexWindowSizeWithinMemoryBudget(ClientContext &context, const PDXearchIndexJoinSearch &search,
+                                                          const idx_t num_passing_rows) {
 	auto &buffer_manager = BufferManager::GetBufferManager(context);
 	// DuckDB does not count the row groups' indexes as used memory.
 	const idx_t used_memory = buffer_manager.GetUsedMemory() + search.index.GetInMemorySizeInBytesWithoutLocking();
@@ -380,15 +375,16 @@ SinkFinalizeType PhysicalPDXearchIndexJoin::Finalize(Pipeline &pipeline, Event &
 			    search.index.GetRowGroupIndex(row_group_idx).GetNumClusters();
 		}
 	}
+	// When there are too little passing rows, we build a Flat index to bruteforce search them.
 	if (num_passing_rows <= search.max_passing_rows_for_flat_search &&
 	    static_cast<double>(num_passing_rows) <=
 	        search.max_passing_rows_per_cluster_for_flat_search *
 	            static_cast<double>(num_clusters_of_row_groups_with_passing_rows)) {
-		GatherRowsIntoOnTheFlyIndexes(search, passing_row_ids_per_row_group.size(), /*build_flat=*/true,
-		                              /*n_threads=*/1);
+		BuildOnTheFlyIndexes(search, passing_row_ids_per_row_group.size(), /*build_flat=*/true,
+		                     /*n_threads=*/1);
 		return search.on_the_fly_indexes.empty() ? SinkFinalizeType::NO_OUTPUT_POSSIBLE : SinkFinalizeType::READY;
 	}
-	// Many passing rows: indexes over only them, searched instead of the row groups, when their build fits in memory.
+	// On-the-fly indexes when their build fits in memory.
 	// 'auto' builds them only for enough queries (as estimated) to pay for the build: at most the threshold's passing
 	// rows per query.
 	const bool build_on_the_fly_indexes =
@@ -398,13 +394,14 @@ SinkFinalizeType PhysicalPDXearchIndexJoin::Finalize(Pipeline &pipeline, Event &
 	                                                  static_cast<double>(children[0].get().estimated_cardinality));
 	if (build_on_the_fly_indexes) {
 		const idx_t row_groups_per_on_the_fly_index =
-		    ChooseRowGroupsPerOnTheFlyIndexWithinMemoryBudget(context, search, num_passing_rows);
+		    GetOnTheFlyIndexWindowSizeWithinMemoryBudget(context, search, num_passing_rows);
 		if (row_groups_per_on_the_fly_index > 0) {
-			GatherRowsIntoOnTheFlyIndexes(search, row_groups_per_on_the_fly_index, /*build_flat=*/false,
-			                              static_cast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads()));
+			BuildOnTheFlyIndexes(search, row_groups_per_on_the_fly_index, /*build_flat=*/false,
+			                     static_cast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads()));
 			return search.on_the_fly_indexes.empty() ? SinkFinalizeType::NO_OUTPUT_POSSIBLE : SinkFinalizeType::READY;
 		}
 	}
+	// If we do not build on-the-fly indexes, we search row group by row group normally
 	// Each row group's filter is the same for every query: built once here.
 	for (idx_t row_group_idx = 0; row_group_idx < passing_row_ids_per_row_group.size(); row_group_idx++) {
 		if (!passing_row_ids_per_row_group[row_group_idx].empty()) {
@@ -437,7 +434,7 @@ public:
 	const unique_ptr<float[]> query;
 	PDX::TopKHeap heap;
 	std::vector<unique_ptr<PDX::IIterativeSearch>> search_cursors;
-	// Scratch of ProbeNearestClustersAcrossRowGroups, reused by every query.
+
 	std::vector<float> centroid_distances;
 	std::vector<uint32_t> clusters_access_order;
 	std::vector<std::pair<float, idx_t>> clusters_ranked_across_row_groups;

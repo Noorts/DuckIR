@@ -281,6 +281,11 @@ public:
 		return pdxearch_wrapper->GetRotationMatrix();
 	}
 
+	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, const idx_t n_threads,
+	                                       const idx_t base_row_id) const {
+		return pdxearch_wrapper->MakePDXIndexConfig(num_clusters, n_threads, base_row_id);
+	}
+
 	uint64_t GetInMemorySizeInBytesWithoutLocking() const {
 		return pdxearch_wrapper->GetInMemorySizeInBytes();
 	}

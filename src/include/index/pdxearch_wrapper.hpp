@@ -87,6 +87,23 @@ public:
 		return rotation_matrix.get();
 	}
 
+	// The config of every PDX index over this index's rows (the row groups' and the join's on-the-fly ones), which all
+	// take transformed embeddings. num_clusters 0 is PDX's default for the number of rows.
+	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, const idx_t n_threads,
+	                                       const idx_t base_row_id) const {
+		PDX::PDXIndexConfig config;
+		config.num_dimensions = num_dimensions;
+		config.distance_metric = distance_metric;
+		config.seed = static_cast<uint32_t>(seed);
+		config.num_clusters = static_cast<uint32_t>(num_clusters);
+		config.kmeans_iters = 8;
+		config.hierarchical_indexing = true;
+		config.n_threads = static_cast<uint32_t>(n_threads);
+		config.is_data_transformed = true;
+		config.base_row_id = static_cast<size_t>(base_row_id);
+		return config;
+	}
+
 	// An approximate lower bound of the index's size in memory.
 	virtual uint64_t GetInMemorySizeInBytes() const = 0;
 };
@@ -439,23 +456,14 @@ public:
 	}
 
 private:
-	PDX::PDXIndexConfig MakeIndexConfig(const row_t row_start, const idx_t num_embeddings) const {
-		PDX::PDXIndexConfig config;
-		config.num_dimensions = GetNumDimensions();
-		config.distance_metric = GetDistanceMetric();
-		config.seed = static_cast<uint32_t>(GetSeed());
-		config.num_clusters = static_cast<uint32_t>(ComputeNumClustersForRowGroup(num_embeddings));
-		config.kmeans_iters = 8;
-		config.hierarchical_indexing = true;
-		config.n_threads = 1;
-		config.is_data_transformed = true;
-		config.base_row_id = static_cast<size_t>(row_start);
-		return config;
+	PDX::PDXIndexConfig MakeRowGroupIndexConfig(const row_t row_start, const idx_t num_embeddings) const {
+		return MakePDXIndexConfig(ComputeNumClustersForRowGroup(num_embeddings), /*n_threads=*/1,
+		                          static_cast<idx_t>(row_start));
 	}
 
 	unique_ptr<PDX::IPDXIndex> BuildRowGroupIndex(const PDXRowGroup &row_group, const row_t *const row_ids,
 	                                              const float *const embeddings, const idx_t num_embeddings) const {
-		const auto config = MakeIndexConfig(row_group.row_start, num_embeddings);
+		const auto config = MakeRowGroupIndexConfig(row_group.row_start, num_embeddings);
 		std::vector<size_t> ids(num_embeddings);
 		for (idx_t i = 0; i < num_embeddings; i++) {
 			ids[i] = static_cast<size_t>(row_ids[i]);
@@ -474,8 +482,8 @@ private:
 	void PromoteToIVF(PDXRowGroup &row_group, const PDX::FlatIndex &flat_index) {
 		const auto row_ids = flat_index.GetRowIds();
 		const auto embeddings = flat_index.GetEmbeddings();
-		auto ivf_index =
-		    make_uniq<PDX::PDXIndex<Q>>(MakeIndexConfig(row_group.row_start, row_ids.size()), *row_group.pruner);
+		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(MakeRowGroupIndexConfig(row_group.row_start, row_ids.size()),
+		                                             *row_group.pruner);
 		ivf_index->BuildIndex(row_ids.data(), embeddings.get(), row_ids.size());
 		row_group.index = std::move(ivf_index);
 	}
