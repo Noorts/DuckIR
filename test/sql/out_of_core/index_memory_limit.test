@@ -69,6 +69,12 @@ SELECT memory_usage_bytes > (SELECT approx_lower_bound_memory_usage_bytes FROM p
 ----
 true
 
+# The paging counters stay off by default.
+query I
+SELECT cluster_acquires FROM pdxearch_index_info() WHERE index_name = 't_idx';
+----
+0
+
 statement ok
 DROP INDEX m.t_idx;
 

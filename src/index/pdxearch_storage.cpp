@@ -149,6 +149,10 @@ void PDXearchClusterCache::Bind(const PDX::IPDXIndex &index_p, const PDXearchBlo
 
 // Only the cluster's own lock is held while it is read, so searches of other clusters go on.
 const char *PDXearchClusterCache::Acquire(const uint32_t cluster_id) {
+	const bool record_counters = reader.counters.enabled.load(std::memory_order_relaxed);
+	if (record_counters) {
+		reader.counters.cluster_acquires++;
+	}
 	auto &cluster = clusters[cluster_id];
 	lock_guard<mutex> guard(cluster.lock);
 	if (cluster.pin_count == 0) {
@@ -158,6 +162,10 @@ const char *PDXearchClusterCache::Acquire(const uint32_t cluster_id) {
 		// Never read, or destroyed when DuckDB evicted it.
 		if (!cluster.pinned_block.IsValid()) {
 			const auto range = index->GetClusterDataRange(cluster_id);
+			if (record_counters) {
+				reader.counters.cluster_cache_misses++;
+				reader.counters.cluster_bytes_fetched += range.second;
+			}
 			auto new_block = buffer_manager.Allocate(MemoryTag::EXTENSION, range.second, /*can_destroy=*/true);
 			reader.ReadRange(*chain, cluster_data_start + range.first, range.second, char_ptr_cast(new_block.Ptr()));
 			cluster.block = new_block.GetBlockHandle();
@@ -190,6 +198,10 @@ data_ptr_t PDXearchBlockChainReader::PinSegment(const IndexPointer segment, Buff
 	}
 	const auto &block_pointer = entry->second;
 	auto block_handle = block_manager.RegisterBlock(block_pointer.block_id);
+	if (counters.enabled.load(std::memory_order_relaxed) &&
+	    block_handle->GetMemory().GetState() == BlockState::BLOCK_UNLOADED) {
+		counters.blocks_read++;
+	}
 	handle = block_manager.buffer_manager.Pin(block_handle);
 	return handle.Ptr() + block_pointer.offset + ALLOCATOR_BITMASK_SIZE + segment.GetOffset() * segment_size;
 }

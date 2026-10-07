@@ -28,6 +28,10 @@ struct PDXearchIndexStats {
 	int64_t seed;
 	bool is_normalized;
 	int64_t approximate_lower_bound_memory_usage_bytes;
+	int64_t cluster_acquires;
+	int64_t cluster_cache_misses;
+	int64_t cluster_bytes_fetched;
+	int64_t blocks_read;
 };
 
 class PDXearchIndex : public BoundIndex {
@@ -41,8 +45,9 @@ private:
 	// Null unless the index was loaded from storage. The row groups' cluster caches read through it, so it is declared
 	// before the wrapper to outlive them.
 	unique_ptr<PDXearchBlockChainReader> storage_reader;
-	// pdxearch_cluster_paging when the index was created or loaded.
+	// pdxearch_cluster_paging and pdxearch_paging_counters when the index was created or loaded.
 	bool cluster_paging = true;
+	bool record_paging_counters = false;
 	unique_ptr<PDXearchWrapper> pdxearch_wrapper;
 	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 

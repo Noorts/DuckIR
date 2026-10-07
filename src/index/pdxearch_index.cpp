@@ -98,7 +98,11 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	Value cluster_paging_setting;
 	db.GetDatabase().TryGetCurrentSetting("pdxearch_cluster_paging", cluster_paging_setting);
 	cluster_paging = cluster_paging_setting.IsNull() || cluster_paging_setting.GetValue<bool>();
+	Value paging_counters_setting;
+	db.GetDatabase().TryGetCurrentSetting("pdxearch_paging_counters", paging_counters_setting);
+	record_paging_counters = !paging_counters_setting.IsNull() && paging_counters_setting.GetValue<bool>();
 	if (storage_reader) {
+		storage_reader->counters.enabled = record_paging_counters;
 		// The destructor does not run when the constructor throws (e.g., out of memory while loading).
 		try {
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
@@ -598,6 +602,13 @@ unique_ptr<PDXearchIndexStats> PDXearchIndex::GetStats(const ClientContext &cont
 	result->is_normalized = IsNormalized();
 	result->approximate_lower_bound_memory_usage_bytes =
 	    static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes());
+	if (storage_reader) {
+		const auto &counters = storage_reader->counters;
+		result->cluster_acquires = static_cast<int64_t>(counters.cluster_acquires.load());
+		result->cluster_cache_misses = static_cast<int64_t>(counters.cluster_cache_misses.load());
+		result->cluster_bytes_fetched = static_cast<int64_t>(counters.cluster_bytes_fetched.load());
+		result->blocks_read = static_cast<int64_t>(counters.blocks_read.load());
+	}
 
 	return result;
 }
@@ -669,6 +680,7 @@ void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_par
 	if (cluster_paging && !storage_reader) {
 		storage_reader =
 		    make_uniq<PDXearchBlockChainReader>(table_io_manager.GetIndexBlockManager(), allocator->GetInfo());
+		storage_reader->counters.enabled = record_paging_counters;
 	}
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
@@ -974,6 +986,10 @@ void PDXearchModule::RegisterIndex(DatabaseInstance &db) {
 	                             "them, so they can be larger than memory_limit; false loads them fully when they "
 	                             "load (default: true)",
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
+	db.config.AddExtensionOption("pdxearch_paging_counters",
+	                             "indexes loaded with it on count their cluster cache's acquires, misses and bytes "
+	                             "read, and the blocks read, in pdxearch_index_info (default: false)",
+	                             LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::GLOBAL);
 
 	// Register the index type
 	db.config.GetIndexTypes().RegisterIndexType(index_type);

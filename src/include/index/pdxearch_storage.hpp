@@ -52,6 +52,15 @@ private:
 	unique_ptr<SegmentHandle> current_segment;
 };
 
+// What an index's paging did since it loaded, counted if pdxearch_paging_counters was on when it loaded.
+struct PDXearchPagingCounters {
+	atomic<bool> enabled {false};
+	atomic<idx_t> cluster_acquires {0};
+	atomic<idx_t> cluster_cache_misses {0};
+	atomic<idx_t> cluster_bytes_fetched {0};
+	atomic<idx_t> blocks_read {0};
+};
+
 // Streams chains from the blocks the allocator was persisted to, one pinned block at a time.
 class PDXearchBlockChainReader : public std::streambuf {
 public:
@@ -68,6 +77,8 @@ public:
 	void ReadRange(const PDXearchBlockChain &chain, idx_t offset, idx_t size, char *dst) const;
 	// A checkpoint can move the allocator's buffers to other blocks.
 	void UpdateBlockPointers(const FixedSizeAllocatorInfo &allocator_info);
+
+	mutable PDXearchPagingCounters counters;
 
 protected:
 	int_type underflow() override;
