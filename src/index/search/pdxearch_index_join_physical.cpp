@@ -322,8 +322,7 @@ static void BuildOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const idx_t ro
 static idx_t GetOnTheFlyIndexWindowSizeWithinMemoryBudget(ClientContext &context, const PDXearchIndexJoinSearch &search,
                                                           const idx_t num_passing_rows) {
 	auto &buffer_manager = BufferManager::GetBufferManager(context);
-	// DuckDB does not count the row groups' indexes as used memory.
-	const idx_t used_memory = buffer_manager.GetUsedMemory() + search.index.GetInMemorySizeInBytesWithoutLocking();
+	const idx_t used_memory = buffer_manager.GetUsedMemory();
 	const idx_t max_memory = buffer_manager.GetMaxMemory();
 	if (used_memory >= max_memory) {
 		return 0;

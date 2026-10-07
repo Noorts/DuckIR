@@ -4,6 +4,7 @@
 #include "duckdb/execution/index/index_pointer.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_lock.hpp"
 #include <atomic>
@@ -45,6 +46,13 @@ private:
 	std::atomic<bool> has_unindexed_rows {false};
 	// Set when the index is loaded from storage: its first sync reconciles it with the table (ReconcileWithTable).
 	bool needs_reconciliation = false;
+
+	// The PDX indexes live on the heap. Their size is charged to DuckDB's memory_limit as reserved memory (the
+	// EXTENSION tag of duckdb_memory()), so DuckDB evicts other data to make room for them.
+	BufferManager &buffer_manager;
+	std::atomic<idx_t> reserved_memory_bytes {0};
+	// Reserves delta more bytes, or frees -delta. Throws DuckDB's out-of-memory error when nothing more can be evicted.
+	void UpdateReservedMemory(int64_t delta);
 
 	void AppendRow(idx_t row_group_idx, row_t row_id, const float *transformed_embedding);
 	void DeleteRow(row_t row_id);
@@ -121,6 +129,7 @@ public:
 	              TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
 	              AttachedDatabase &db, const case_insensitive_map_t<Value> &options,
 	              const IndexStorageInfo &info = IndexStorageInfo());
+	~PDXearchIndex() override;
 
 	static PhysicalOperator &CreatePlan(PlanIndexInput &input);
 
@@ -284,10 +293,6 @@ public:
 	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, const idx_t n_threads,
 	                                       const idx_t base_row_id) const {
 		return pdxearch_wrapper->MakePDXIndexConfig(num_clusters, n_threads, base_row_id);
-	}
-
-	uint64_t GetInMemorySizeInBytesWithoutLocking() const {
-		return pdxearch_wrapper->GetInMemorySizeInBytes();
 	}
 };
 

@@ -21,7 +21,8 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
                              const vector<unique_ptr<Expression>> &unbound_expressions, AttachedDatabase &db,
                              const case_insensitive_map_t<Value> &index_creation_options,
                              const IndexStorageInfo &persistence_info)
-    : BoundIndex(name, TYPE_NAME, index_constraint_type, column_ids, table_io_manager, unbound_expressions, db) {
+    : BoundIndex(name, TYPE_NAME, index_constraint_type, column_ids, table_io_manager, unbound_expressions, db),
+      buffer_manager(BufferManager::GetBufferManager(db)) {
 	if (index_constraint_type != IndexConstraintType::NONE) {
 		throw NotImplementedException("PDXearch indexes do not support unique or primary key constraints");
 	}
@@ -93,13 +94,36 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
+	// The rotation matrix and the pruner, before any row group.
+	UpdateReservedMemory(static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes()));
 	if (storage_reader) {
-		LoadRowGroups(*storage_reader, directory);
+		// The destructor does not run when the constructor throws (e.g., out of memory while loading).
+		try {
+			LoadRowGroups(*storage_reader, directory);
+		} catch (...) {
+			UpdateReservedMemory(-static_cast<int64_t>(reserved_memory_bytes.load()));
+			throw;
+		}
 		needs_reconciliation = true;
 	}
 
 	function_matcher = MakeFunctionMatcher(*pdxearch_wrapper.get());
 	embedding_preprocessor = make_uniq<EmbeddingPreprocessor>(num_dimensions, pdxearch_wrapper->GetRotationMatrix());
+}
+
+// Indexes are destroyed before DuckDB's buffer manager (DatabaseInstance::~DatabaseInstance).
+PDXearchIndex::~PDXearchIndex() {
+	UpdateReservedMemory(-static_cast<int64_t>(reserved_memory_bytes.load()));
+}
+
+void PDXearchIndex::UpdateReservedMemory(const int64_t delta) {
+	if (delta > 0) {
+		buffer_manager.ReserveMemory(static_cast<idx_t>(delta));
+		reserved_memory_bytes += static_cast<idx_t>(delta);
+	} else if (delta < 0) {
+		buffer_manager.FreeReservedMemory(static_cast<idx_t>(-delta));
+		reserved_memory_bytes -= static_cast<idx_t>(-delta);
+	}
 }
 
 /******************************************************************
@@ -372,17 +396,25 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 	}
 	unindexed_row_ranges = std::move(still_unindexed);
 	has_unindexed_rows = !unindexed_row_ranges.empty();
+
+	// The sync's appends, deletes and removed row groups changed the size without reserving it. Reserving the
+	// difference between the size now and what is reserved makes the two equal (it frees when the index shrank).
+	const auto in_memory_size = static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes());
+	UpdateReservedMemory(in_memory_size - static_cast<int64_t>(reserved_memory_bytes.load()));
 }
 
+// Called by CREATE INDEX's threads in parallel: each reserves the memory its row group grew by.
 void PDXearchIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors,
                                           const idx_t num_vectors, const row_t row_start, const idx_t count) {
+	int64_t memory_growth_bytes;
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		    ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count);
+		memory_growth_bytes = static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
+		                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count);
 	} else {
-		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		    ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count);
+		memory_growth_bytes = static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
+		                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count);
 	}
+	UpdateReservedMemory(memory_growth_bytes);
 }
 
 unique_ptr<PDX::IIterativeSearch> PDXearchIndex::BeginSearchForRowGroup(
@@ -614,11 +646,16 @@ unique_ptr<PDXearchBlockChainReader> PDXearchIndex::OpenStorage(const IndexStora
 	return reader;
 }
 
+// Reserves each row group's memory once it is loaded, so DuckDB evicts other data while the index grows.
 void PDXearchIndex::LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory) {
-	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->LoadRowGroups(reader, directory.row_groups);
-	} else {
-		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->LoadRowGroups(reader, directory.row_groups);
+	for (const auto &entry : directory.row_groups) {
+		uint64_t in_memory_size;
+		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+			in_memory_size = static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->LoadRowGroup(reader, entry);
+		} else {
+			in_memory_size = static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->LoadRowGroup(reader, entry);
+		}
+		UpdateReservedMemory(static_cast<int64_t>(in_memory_size));
 	}
 }
 

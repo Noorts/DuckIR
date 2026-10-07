@@ -54,6 +54,7 @@ private:
 
 protected:
 	const unique_ptr<float[]> rotation_matrix;
+	const unique_ptr<PDX::ADSamplingPruner> pruner;
 
 public:
 	PDXearchWrapper(PDX::Quantization quantization, PDX::DistanceMetric distance_metric, uint32_t num_dimensions,
@@ -61,7 +62,8 @@ public:
 	    : num_dimensions(num_dimensions), is_normalized(PDX::DistanceMetricRequiresNormalization(distance_metric)),
 	      distance_metric(distance_metric), quantization(quantization), n_probe(n_probe), seed(seed),
 	      rotation_matrix(rotation_matrix_p ? std::move(rotation_matrix_p)
-	                                        : GenerateRandomRotationMatrix(num_dimensions, seed)) {
+	                                        : GenerateRandomRotationMatrix(num_dimensions, seed)),
+	      pruner(make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get())) {
 	}
 	virtual ~PDXearchWrapper() = default;
 
@@ -116,7 +118,6 @@ struct PDXearchRowGroupBounds {
 struct PDXRowGroup {
 	row_t row_start;
 	row_t row_end;
-	std::unique_ptr<PDX::ADSamplingPruner> pruner;
 	std::unique_ptr<PDX::IPDXIndex> index;
 	// Held while the index is built, so that rows of this row group arriving in a later batch wait for it.
 	std::mutex mutex;
@@ -175,9 +176,10 @@ public:
 	}
 
 	// Builds the index of the row group [row_start, row_start + count) from its (non-NULL) rows. Rows of this row
-	// group that arrive in a later batch are appended to the index that was already built.
-	void SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
-	                           const row_t row_start, const idx_t count) {
+	// group that arrive in a later batch are appended to the index that was already built. Returns how many bytes the
+	// row group's in-memory size grew by.
+	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
+	                              const row_t row_start, const idx_t count) {
 		D_ASSERT(num_embeddings > 0 && num_embeddings <= count);
 		PDXRowGroup *row_group = nullptr;
 		std::unique_lock<std::mutex> build_lock;
@@ -196,7 +198,6 @@ public:
 				auto new_row_group = make_uniq<PDXRowGroup>();
 				new_row_group->row_start = row_start;
 				new_row_group->row_end = row_start + static_cast<row_t>(count);
-				new_row_group->pruner = make_uniq<PDX::ADSamplingPruner>(GetNumDimensions(), rotation_matrix.get());
 				row_group = new_row_group.get();
 				build_lock = std::unique_lock<std::mutex>(row_group->mutex);
 				row_groups.insert(it, std::move(new_row_group));
@@ -205,16 +206,18 @@ public:
 
 		if (build_lock.owns_lock()) {
 			row_group->index = BuildRowGroupIndex(*row_group, row_ids, embeddings, num_embeddings);
-			return;
+			return static_cast<int64_t>(row_group->GetInMemorySizeInBytes());
 		}
 		// Rare path
 		// Only reached when DuckDB splits a row group over several scan tasks (e.g. PRAGMA verify_parallelism hands
 		// out one vector per task): the first batch built the index above, the later ones are appended to it.
 		const std::lock_guard<std::mutex> lock(row_group->mutex);
+		const auto size_before = static_cast<int64_t>(row_group->GetInMemorySizeInBytes());
 		for (idx_t i = 0; i < num_embeddings; i++) {
 			row_group->index->Append(static_cast<size_t>(row_ids[i]), embeddings + i * GetNumDimensions());
 		}
 		row_group->is_dirty = true;
+		return static_cast<int64_t>(row_group->GetInMemorySizeInBytes()) - size_before;
 	}
 
 	unique_ptr<PDX::IIterativeSearch>
@@ -417,20 +420,20 @@ public:
 		}
 	}
 
-	// Loads the persisted row groups, in the directory's (row_start) order.
-	void LoadRowGroups(PDXearchBlockChainReader &reader, const vector<PDXearchDirectory::RowGroupEntry> &entries) {
-		for (const auto &entry : entries) {
-			auto row_group = make_uniq<PDXRowGroup>();
-			row_group->row_start = entry.row_start;
-			row_group->row_end = entry.row_end;
-			row_group->pruner = make_uniq<PDX::ADSamplingPruner>(GetNumDimensions(), rotation_matrix.get());
-			reader.Open(entry.chain);
-			std::istream in(&reader);
-			row_group->index = PDX::LoadPDXIndexFromStream(in, *row_group->pruner);
-			row_group->persisted_chain = reader.Finish();
-			row_group->is_dirty = false;
-			row_groups.push_back(std::move(row_group));
-		}
+	// Loads a persisted row group after the ones already loaded: entries come in the directory's (row_start) order.
+	// Returns its in-memory size.
+	uint64_t LoadRowGroup(PDXearchBlockChainReader &reader, const PDXearchDirectory::RowGroupEntry &entry) {
+		auto row_group = make_uniq<PDXRowGroup>();
+		row_group->row_start = entry.row_start;
+		row_group->row_end = entry.row_end;
+		reader.Open(entry.chain);
+		std::istream in(&reader);
+		row_group->index = PDX::LoadPDXIndexFromStream(in, *pruner);
+		row_group->persisted_chain = reader.Finish();
+		row_group->is_dirty = false;
+		const auto in_memory_size = row_group->GetInMemorySizeInBytes();
+		row_groups.push_back(std::move(row_group));
+		return in_memory_size;
 	}
 
 	idx_t GetTotalNumClusters() const {
@@ -448,7 +451,9 @@ public:
 	}
 
 	uint64_t GetInMemorySizeInBytes() const override {
-		uint64_t in_memory_size_in_bytes = sizeof(*this);
+		// The rotation matrix and the pruner's copy of it.
+		uint64_t in_memory_size_in_bytes =
+		    sizeof(*this) + 2 * static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float);
 		for (const auto &row_group : row_groups) {
 			in_memory_size_in_bytes += row_group->GetInMemorySizeInBytes();
 		}
@@ -470,11 +475,11 @@ private:
 		}
 
 		if (num_embeddings < MIN_EMBEDDINGS_FOR_CLUSTERING) {
-			auto flat_index = make_uniq<PDX::FlatIndex>(config, *row_group.pruner);
+			auto flat_index = make_uniq<PDX::FlatIndex>(config, *pruner);
 			flat_index->BuildIndex(ids.data(), embeddings, num_embeddings);
 			return std::move(flat_index);
 		}
-		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(config, *row_group.pruner);
+		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(config, *pruner);
 		ivf_index->BuildIndex(ids.data(), embeddings, num_embeddings);
 		return std::move(ivf_index);
 	}
@@ -482,8 +487,8 @@ private:
 	void PromoteToIVF(PDXRowGroup &row_group, const PDX::FlatIndex &flat_index) {
 		const auto row_ids = flat_index.GetRowIds();
 		const auto embeddings = flat_index.GetEmbeddings();
-		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(MakeRowGroupIndexConfig(row_group.row_start, row_ids.size()),
-		                                             *row_group.pruner);
+		auto ivf_index =
+		    make_uniq<PDX::PDXIndex<Q>>(MakeRowGroupIndexConfig(row_group.row_start, row_ids.size()), *pruner);
 		ivf_index->BuildIndex(row_ids.data(), embeddings.get(), row_ids.size());
 		row_group.index = std::move(ivf_index);
 	}
