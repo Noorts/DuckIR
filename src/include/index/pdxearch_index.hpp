@@ -38,6 +38,11 @@ public:
 	static const case_insensitive_map_t<PDX::Quantization> QUANTIZATION_MAP;
 
 private:
+	// Null unless the index was loaded from storage. The row groups' cluster caches read through it, so it is declared
+	// before the wrapper to outlive them.
+	unique_ptr<PDXearchBlockChainReader> storage_reader;
+	// pdxearch_cluster_paging when the index was created or loaded.
+	bool cluster_paging = true;
 	unique_ptr<PDXearchWrapper> pdxearch_wrapper;
 	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 
@@ -109,7 +114,7 @@ private:
 	unique_ptr<PDXearchBlockChainReader> OpenStorage(const IndexStorageInfo &info, uint32_t num_dimensions,
 	                                                 PDXearchDirectory &directory,
 	                                                 unique_ptr<float[]> &rotation_matrix);
-	void LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory);
+	void LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory, bool page_clusters);
 
 	unique_ptr<ExpressionMatcher> function_matcher;
 

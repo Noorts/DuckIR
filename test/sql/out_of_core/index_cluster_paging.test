@@ -1,0 +1,129 @@
+# name: test/sql/out_of_core/index_cluster_paging.test
+# description: A reloaded index reads its clusters from the database file as searches need them, also after deletes, inserts and checkpoints.
+# group: [out_of_core]
+
+require parquet
+
+require pdxearch
+
+load __TEST_DIR__/index_cluster_paging_main.db
+
+statement ok
+ATTACH '__TEST_DIR__/index_cluster_paging.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Variables
+test-env DIMS 128
+
+# Two full row groups and a partial one (IVF, 5,616 rows).
+statement ok
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 22000;
+
+statement ok
+CREATE TABLE p.t_bf AS FROM p.t;
+
+statement ok
+CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
+
+# f32 with n_probe 0 is exact: the results equal the unindexed copy's.
+statement ok
+CREATE INDEX t_idx ON p.t USING PDXEARCH (emb) WITH (quantization = 'f32', n_probe = 0);
+
+statement ok
+CHECKPOINT p;
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_cluster_paging.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# A reloaded index searches its clusters from the file.
+query II nosort reloaded
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+query II nosort reloaded
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t_bf ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+# It holds only its resident data: loaded fully, it takes about 47 MB.
+query I
+SELECT approx_lower_bound_memory_usage_bytes < 5000000 FROM pdxearch_index_info() WHERE index_name = 't_idx';
+----
+true
+
+statement ok
+DELETE FROM p.t WHERE id % 7 = 0;
+
+statement ok
+DELETE FROM p.t_bf WHERE id % 7 = 0;
+
+# Deletes in the paged index are tombstones.
+query II nosort deleted
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+query II nosort deleted
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t_bf ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+statement ok
+CHECKPOINT p;
+
+# The checkpoint rewrote the row groups with the deletes, and paged them again.
+query II nosort deleted
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+statement ok
+INSERT INTO p.t SELECT id, emb::FLOAT[${DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 22000 AND id < 23500;
+
+statement ok
+INSERT INTO p.t_bf SELECT id, emb::FLOAT[${DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 22000 AND id < 23500;
+
+# Inserts land in the paged partial row group, which is loaded fully first.
+query II nosort inserted
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+query II nosort inserted
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t_bf ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+SET threads = 2;
+
+statement ok
+SET memory_limit = '32MB';
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_cluster_paging.db' AS p (ROW_GROUP_SIZE 8192);
+
+# Paged, the index searches under a memory_limit below its full size.
+query II nosort inserted
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+statement ok
+SET pdxearch_cluster_paging = false;
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_cluster_paging.db' AS p (ROW_GROUP_SIZE 8192);
+
+# Loaded fully, it does not fit.
+statement error
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+Out of Memory Error

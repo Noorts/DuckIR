@@ -63,9 +63,9 @@ SET checkpoint_threshold = '10GB';
 statement ok
 SELECT id FROM m.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 
-# A loaded index reserves its size.
+# A loaded index reserves its resident data; the clusters its search read are cached on top.
 query I
-SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
+SELECT memory_usage_bytes > (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
 ----
 true
 

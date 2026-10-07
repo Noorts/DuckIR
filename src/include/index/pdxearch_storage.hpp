@@ -1,5 +1,6 @@
 #pragma once
 
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector.hpp"
@@ -7,10 +8,13 @@
 #include "duckdb/execution/index/index_pointer.hpp"
 #include "duckdb/storage/block_manager.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/index_storage_info.hpp"
 #include <istream>
 #include <ostream>
 #include <streambuf>
+
+#include "pdx/indexes/ivf_vanilla.hpp"
 
 namespace duckdb {
 
@@ -56,11 +60,22 @@ public:
 	void Open(const PDXearchBlockChain &chain);
 	// Returns the chain with its segments. All of its bytes must have been read.
 	PDXearchBlockChain Finish();
+	// How many bytes of the open chain were read so far.
+	idx_t GetBytesRead() const;
+	// Stops reading the open chain before its end.
+	void Close();
+	// Copies size bytes at offset of a chain whose segments are known into dst. Concurrent searches may call it.
+	void ReadRange(const PDXearchBlockChain &chain, idx_t offset, idx_t size, char *dst) const;
+	// A checkpoint can move the allocator's buffers to other blocks.
+	void UpdateBlockPointers(const FixedSizeAllocatorInfo &allocator_info);
 
 protected:
 	int_type underflow() override;
 
 private:
+	// Pins the block that holds the segment into handle, and returns where the segment starts.
+	data_ptr_t PinSegment(IndexPointer segment, BufferHandle &handle) const;
+
 	BlockManager &block_manager;
 	const idx_t segment_size;
 	unordered_map<idx_t, BlockPointer> block_pointers_by_buffer_id;
@@ -70,7 +85,38 @@ private:
 	BufferHandle pinned_block;
 };
 
-static constexpr uint32_t PDXEARCH_STORAGE_VERSION = 2;
+// The clusters of a row group loaded without them (pdxearch_cluster_paging), one DuckDB buffer each. DuckDB may evict
+// an unpinned buffer: the next Acquire then reads the cluster from the row group's chain again.
+class PDXearchClusterCache : public PDX::IClusterSource {
+public:
+	PDXearchClusterCache(const PDXearchBlockChainReader &reader, BufferManager &buffer_manager);
+
+	// Once the row group's resident data is loaded: its index, its chain, and where the cluster data starts in it.
+	void Bind(const PDX::IPDXIndex &index, const PDXearchBlockChain &chain, idx_t cluster_data_start);
+
+	const char *Acquire(uint32_t cluster_id) override;
+	void Release(uint32_t cluster_id) override;
+
+	uint64_t GetInMemorySizeInBytes() const;
+
+private:
+	struct CachedCluster {
+		mutex lock;
+		shared_ptr<BlockHandle> block;
+		BufferHandle pinned_block;
+		idx_t pin_count = 0;
+	};
+
+	const PDXearchBlockChainReader &reader;
+	BufferManager &buffer_manager;
+	optional_ptr<const PDX::IPDXIndex> index;
+	optional_ptr<const PDXearchBlockChain> chain;
+	idx_t cluster_data_start = 0;
+	idx_t num_clusters = 0;
+	unique_array<CachedCluster> clusters;
+};
+
+static constexpr uint32_t PDXEARCH_STORAGE_VERSION = 3;
 
 // The root chain: where the rotation and the row groups are.
 struct PDXearchDirectory {

@@ -74,7 +74,6 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	auto &block_manager = table_io_manager.GetIndexBlockManager();
 	allocator = make_uniq<FixedSizeAllocator>(PDXearchBlockChain::GetSegmentSize(block_manager), block_manager);
 	// A persisted index keeps its rotation. Its row groups are loaded once the wrapper exists.
-	unique_ptr<PDXearchBlockChainReader> storage_reader;
 	PDXearchDirectory directory;
 	unique_ptr<float[]> rotation_matrix;
 	if (persistence_info.IsValid()) {
@@ -96,10 +95,13 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	}
 	// The rotation matrix and the pruner, before any row group.
 	UpdateReservedMemory(static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes()));
+	Value cluster_paging_setting;
+	db.GetDatabase().TryGetCurrentSetting("pdxearch_cluster_paging", cluster_paging_setting);
+	cluster_paging = cluster_paging_setting.IsNull() || cluster_paging_setting.GetValue<bool>();
 	if (storage_reader) {
 		// The destructor does not run when the constructor throws (e.g., out of memory while loading).
 		try {
-			LoadRowGroups(*storage_reader, directory);
+			LoadRowGroups(*storage_reader, directory, cluster_paging);
 		} catch (...) {
 			UpdateReservedMemory(-static_cast<int64_t>(reserved_memory_bytes.load()));
 			throw;
@@ -191,10 +193,10 @@ PDXearchRowRange PDXearchIndex::GetRowGroupRange(const idx_t row_group_idx) cons
 void PDXearchIndex::AppendRow(const idx_t row_group_idx, const row_t row_id, const float *const transformed_embedding) {
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		    ->AppendRow(row_group_idx, row_id, transformed_embedding);
+		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get());
 	} else {
 		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		    ->AppendRow(row_group_idx, row_id, transformed_embedding);
+		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get());
 	}
 }
 
@@ -647,25 +649,35 @@ unique_ptr<PDXearchBlockChainReader> PDXearchIndex::OpenStorage(const IndexStora
 }
 
 // Reserves each row group's memory once it is loaded, so DuckDB evicts other data while the index grows.
-void PDXearchIndex::LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory) {
+void PDXearchIndex::LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory,
+                                  const bool page_clusters) {
 	for (const auto &entry : directory.row_groups) {
 		uint64_t in_memory_size;
 		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-			in_memory_size = static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->LoadRowGroup(reader, entry);
+			in_memory_size = static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
+			                     ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
 		} else {
-			in_memory_size = static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->LoadRowGroup(reader, entry);
+			in_memory_size = static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
+			                     ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
 		}
 		UpdateReservedMemory(static_cast<int64_t>(in_memory_size));
 	}
 }
 
 void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
+	// An index created in this session pages its row groups once they are written.
+	if (cluster_paging && !storage_reader) {
+		storage_reader =
+		    make_uniq<PDXearchBlockChainReader>(table_io_manager.GetIndexBlockManager(), allocator->GetInfo());
+	}
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks);
+		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
+		                            cluster_paging);
 	} else {
 		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks);
+		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
+		                            cluster_paging);
 	}
 }
 
@@ -738,6 +750,17 @@ IndexStorageInfo PDXearchIndex::SerializeToDisk(QueryContext context,
 	AddRowGroupEntries(directory);
 	WriteDirectory(directory);
 	WritePartialBlocks(context);
+	// The checkpoint can have moved live segments to other blocks.
+	if (storage_reader) {
+		storage_reader->UpdateBlockPointers(allocator->GetInfo());
+	}
+	// The rewritten row groups were paged again: free what they no longer use. Reserving more could throw, which a
+	// checkpoint must not: the next sync reserves any growth.
+	const auto in_memory_size = static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes());
+	const auto reserved = static_cast<int64_t>(reserved_memory_bytes.load());
+	if (in_memory_size < reserved) {
+		UpdateReservedMemory(in_memory_size - reserved);
+	}
 	return MakeStorageInfo();
 }
 
@@ -946,6 +969,11 @@ void PDXearchModule::RegisterIndex(DatabaseInstance &db) {
 	                             "the most consecutive row groups whose passing rows go into one index built on the "
 	                             "fly (default: 0, no limit: the memory left decides)",
 	                             LogicalType::UBIGINT, Value::UBIGINT(0));
+	db.config.AddExtensionOption("pdxearch_cluster_paging",
+	                             "indexes loaded from a database file read their clusters from it as searches need "
+	                             "them, so they can be larger than memory_limit; false loads them fully when they "
+	                             "load (default: true)",
+	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
 
 	// Register the index type
 	db.config.GetIndexTypes().RegisterIndexType(index_type);
