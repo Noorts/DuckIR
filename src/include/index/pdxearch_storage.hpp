@@ -79,6 +79,7 @@ public:
 	void UpdateBlockPointers(const FixedSizeAllocatorInfo &allocator_info);
 
 	mutable PDXearchPagingCounters counters;
+	bool cache_tiers = false;
 
 protected:
 	int_type underflow() override;
@@ -111,12 +112,21 @@ public:
 	uint64_t GetInMemorySizeInBytes() const;
 
 private:
+	// pdxearch_cache_tiers: the access counts halve every ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS acquires per cluster, and
+	// a cluster acquired at least HOT_ACCESS_FACTOR times the average when it is fetched is evicted last.
+	static constexpr idx_t ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS = 10;
+	static constexpr idx_t HOT_ACCESS_FACTOR = 2;
+
 	struct CachedCluster {
 		mutex lock;
 		shared_ptr<BlockHandle> block;
 		BufferHandle pinned_block;
 		idx_t pin_count = 0;
+		atomic<idx_t> access_count {0};
 	};
+
+	void RecordAccess(CachedCluster &cluster);
+	void SetEvictionQueue(const CachedCluster &cluster, BufferHandle &new_block) const;
 
 	const PDXearchBlockChainReader &reader;
 	BufferManager &buffer_manager;
@@ -125,6 +135,8 @@ private:
 	idx_t cluster_data_start = 0;
 	idx_t num_clusters = 0;
 	unique_array<CachedCluster> clusters;
+	atomic<idx_t> total_access_count {0};
+	atomic<idx_t> acquires_since_decay {0};
 };
 
 static constexpr uint32_t PDXEARCH_STORAGE_VERSION = 3;

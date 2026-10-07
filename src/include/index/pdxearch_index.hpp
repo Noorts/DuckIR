@@ -45,9 +45,10 @@ private:
 	// Null unless the index was loaded from storage. The row groups' cluster caches read through it, so it is declared
 	// before the wrapper to outlive them.
 	unique_ptr<PDXearchBlockChainReader> storage_reader;
-	// pdxearch_cluster_paging and pdxearch_paging_counters when the index was created or loaded.
+	// pdxearch_cluster_paging, pdxearch_paging_counters and pdxearch_cache_tiers when the index was created or loaded.
 	bool cluster_paging = true;
 	bool record_paging_counters = false;
+	bool cache_tiers = false;
 	unique_ptr<PDXearchWrapper> pdxearch_wrapper;
 	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 

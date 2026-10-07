@@ -80,6 +80,9 @@ SET memory_limit = '32MB';
 statement ok
 SET pdxearch_paging_counters = true;
 
+statement ok
+SET pdxearch_cache_tiers = true;
+
 restart
 
 statement ok

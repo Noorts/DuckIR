@@ -101,8 +101,12 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	Value paging_counters_setting;
 	db.GetDatabase().TryGetCurrentSetting("pdxearch_paging_counters", paging_counters_setting);
 	record_paging_counters = !paging_counters_setting.IsNull() && paging_counters_setting.GetValue<bool>();
+	Value cache_tiers_setting;
+	db.GetDatabase().TryGetCurrentSetting("pdxearch_cache_tiers", cache_tiers_setting);
+	cache_tiers = !cache_tiers_setting.IsNull() && cache_tiers_setting.GetValue<bool>();
 	if (storage_reader) {
 		storage_reader->counters.enabled = record_paging_counters;
+		storage_reader->cache_tiers = cache_tiers;
 		// The destructor does not run when the constructor throws (e.g., out of memory while loading).
 		try {
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
@@ -681,6 +685,7 @@ void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_par
 		storage_reader =
 		    make_uniq<PDXearchBlockChainReader>(table_io_manager.GetIndexBlockManager(), allocator->GetInfo());
 		storage_reader->counters.enabled = record_paging_counters;
+		storage_reader->cache_tiers = cache_tiers;
 	}
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
@@ -989,6 +994,10 @@ void PDXearchModule::RegisterIndex(DatabaseInstance &db) {
 	db.config.AddExtensionOption("pdxearch_paging_counters",
 	                             "indexes loaded with it on count their cluster cache's acquires, misses and bytes "
 	                             "read, and the blocks read, in pdxearch_index_info (default: false)",
+	                             LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::GLOBAL);
+	db.config.AddExtensionOption("pdxearch_cache_tiers",
+	                             "in indexes loaded with it on, the clusters searches read most often are the last "
+	                             "DuckDB evicts from memory (default: false)",
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::GLOBAL);
 
 	// Register the index type

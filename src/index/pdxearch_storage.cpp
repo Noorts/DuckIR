@@ -147,6 +147,31 @@ void PDXearchClusterCache::Bind(const PDX::IPDXIndex &index_p, const PDXearchBlo
 	clusters = make_uniq_array<CachedCluster>(num_clusters);
 }
 
+// The thread that completes a period halves the counts: an access k periods old weighs 2^-k.
+void PDXearchClusterCache::RecordAccess(CachedCluster &cluster) {
+	if (!reader.cache_tiers) {
+		return;
+	}
+	cluster.access_count++;
+	total_access_count++;
+	if (++acquires_since_decay == num_clusters * ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS) {
+		acquires_since_decay = 0;
+		for (idx_t i = 0; i < num_clusters; i++) {
+			clusters[i].access_count = clusters[i].access_count / 2;
+		}
+		total_access_count = total_access_count / 2;
+	}
+}
+
+// A hot cluster goes to the managed queue DuckDB evicts last. DuckDB sets a buffer's queue once, so only a new one.
+void PDXearchClusterCache::SetEvictionQueue(const CachedCluster &cluster, BufferHandle &new_block) const {
+	const idx_t average_access_count = total_access_count / num_clusters;
+	if (reader.cache_tiers && average_access_count > 0 &&
+	    cluster.access_count >= HOT_ACCESS_FACTOR * average_access_count) {
+		new_block.GetBlockHandle()->GetMemory().SetEvictionQueueIndex(0);
+	}
+}
+
 // Only the cluster's own lock is held while it is read, so searches of other clusters go on.
 const char *PDXearchClusterCache::Acquire(const uint32_t cluster_id) {
 	const bool record_counters = reader.counters.enabled.load(std::memory_order_relaxed);
@@ -154,6 +179,7 @@ const char *PDXearchClusterCache::Acquire(const uint32_t cluster_id) {
 		reader.counters.cluster_acquires++;
 	}
 	auto &cluster = clusters[cluster_id];
+	RecordAccess(cluster);
 	lock_guard<mutex> guard(cluster.lock);
 	if (cluster.pin_count == 0) {
 		if (cluster.block) {
@@ -167,6 +193,7 @@ const char *PDXearchClusterCache::Acquire(const uint32_t cluster_id) {
 				reader.counters.cluster_bytes_fetched += range.second;
 			}
 			auto new_block = buffer_manager.Allocate(MemoryTag::EXTENSION, range.second, /*can_destroy=*/true);
+			SetEvictionQueue(cluster, new_block);
 			reader.ReadRange(*chain, cluster_data_start + range.first, range.second, char_ptr_cast(new_block.Ptr()));
 			cluster.block = new_block.GetBlockHandle();
 			cluster.pinned_block = std::move(new_block);
