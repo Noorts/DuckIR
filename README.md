@@ -167,9 +167,12 @@ again from the table the first time it is used. An index saved in a storage form
   pdxearch_cluster_paging = false` holds indexes in memory in full instead. Use a
   database file for large indexes: in an in-memory database (`:memory:`) nothing
   is ever checkpointed, so an index larger than `memory_limit` writes its parts to
-  the temporary files every time DuckDB evicts them. Building an index still
-  holds one DuckDB row group of embeddings per thread in memory. The first query
-  after the database opens pays for checking the index against the table.
+  the temporary files every time DuckDB evicts them. Building an index needs
+  room for one DuckDB row group at a time: its float embeddings and about 1.5x
+  its index (about 0.5 GB with `u8` and 0.9 GB with `f32` for 122,880 rows of 768
+  dimensions). Row groups are built as concurrently as `memory_limit` allows;
+  below one build, `CREATE INDEX` fails with an out-of-memory error. The first
+  query after the database opens pays for checking the index against the table.
 
 - **Concurrency**: Any number of KNN queries can search an index
   concurrently, but the maintenance operations exclude all searches while they

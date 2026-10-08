@@ -175,7 +175,8 @@ public:
 	PDXearchRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
 	void SetUpIndexForRowGroup(const row_t *row_ids, const float *embeddings, idx_t num_embeddings, row_t row_start,
-	                           idx_t count);
+	                           idx_t count, idx_t n_threads);
+	uint64_t EstimateBuildHeapBytes(idx_t num_embeddings) const;
 
 	// !`passing_row_ids` are size_t because they go straight into PDX's IPDXIndex::BeginIterativeSearch.
 	// `clusters_access_order`: the row group's GetClustersAccessOrderForRowGroup for this query (nullptr: rank).

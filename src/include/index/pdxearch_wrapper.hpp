@@ -172,6 +172,13 @@ public:
 		}
 	}
 
+	static constexpr double BUILD_HEAP_FACTOR = 1.5;
+
+	uint64_t EstimateBuildHeapBytes(const idx_t num_embeddings) const {
+		const idx_t bytes_per_embedding = GetNumDimensions() * sizeof(PDX::pdx_data_t<Q>) + sizeof(uint32_t);
+		return static_cast<uint64_t>(BUILD_HEAP_FACTOR * static_cast<double>(num_embeddings * bytes_per_embedding));
+	}
+
 	PDXearchWrapperParallel(PDX::DistanceMetric distance_metric, uint32_t num_dimensions, uint32_t n_probe,
 	                        int32_t seed, idx_t row_group_size, unique_ptr<float[]> rotation_matrix = nullptr)
 	    : PDXearchWrapper(Q, distance_metric, num_dimensions, n_probe, seed, std::move(rotation_matrix)),
@@ -183,11 +190,11 @@ public:
 	}
 
 	// Builds the index of the row group [row_start, row_start + count) from its (non-NULL) rows. Rows of this row
-	// group that arrive in a later batch are appended to the index that was already built. With a reader
-	// (pdxearch_cluster_paging), the index then moves to a temporary chain. Returns how many bytes the row group's
-	// in-memory size grew by.
+	// group that arrive in a later batch are appended to the index that was already built. The build's k-means runs on
+	// n_threads threads. With a reader (pdxearch_cluster_paging), the index then moves to a temporary chain. Returns how
+	// many bytes the row group's in-memory size grew by.
 	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
-	                              const row_t row_start, const idx_t count,
+	                              const row_t row_start, const idx_t count, const idx_t n_threads,
 	                              optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager) {
 		D_ASSERT(num_embeddings > 0 && num_embeddings <= count);
 		PDXRowGroup *row_group = nullptr;
@@ -214,7 +221,7 @@ public:
 		}
 
 		if (build_lock.owns_lock()) {
-			row_group->index = BuildRowGroupIndex(*row_group, row_ids, embeddings, num_embeddings);
+			row_group->index = BuildRowGroupIndex(*row_group, row_ids, embeddings, num_embeddings, n_threads);
 			if (reader) {
 				WriteTemporaryChain(*row_group, *reader, buffer_manager);
 			}
@@ -517,14 +524,16 @@ public:
 	}
 
 private:
-	PDX::PDXIndexConfig MakeRowGroupIndexConfig(const row_t row_start, const idx_t num_embeddings) const {
-		return MakePDXIndexConfig(ComputeNumClustersForRowGroup(num_embeddings), /*n_threads=*/1,
+	PDX::PDXIndexConfig MakeRowGroupIndexConfig(const row_t row_start, const idx_t num_embeddings,
+	                                            const idx_t n_threads) const {
+		return MakePDXIndexConfig(ComputeNumClustersForRowGroup(num_embeddings), n_threads,
 		                          static_cast<idx_t>(row_start));
 	}
 
 	unique_ptr<PDX::IPDXIndex> BuildRowGroupIndex(const PDXRowGroup &row_group, const row_t *const row_ids,
-	                                              const float *const embeddings, const idx_t num_embeddings) const {
-		const auto config = MakeRowGroupIndexConfig(row_group.row_start, num_embeddings);
+	                                              const float *const embeddings, const idx_t num_embeddings,
+	                                              const idx_t n_threads) const {
+		const auto config = MakeRowGroupIndexConfig(row_group.row_start, num_embeddings, n_threads);
 		std::vector<size_t> ids(num_embeddings);
 		for (idx_t i = 0; i < num_embeddings; i++) {
 			ids[i] = static_cast<size_t>(row_ids[i]);
@@ -543,8 +552,8 @@ private:
 	void PromoteToIVF(PDXRowGroup &row_group, const PDX::FlatIndex &flat_index) {
 		const auto row_ids = flat_index.GetRowIds();
 		const auto embeddings = flat_index.GetEmbeddings();
-		auto ivf_index =
-		    make_uniq<PDX::PDXIndex<Q>>(MakeRowGroupIndexConfig(row_group.row_start, row_ids.size()), *pruner);
+		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(
+		    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), /*n_threads=*/1), *pruner);
 		ivf_index->BuildIndex(row_ids.data(), embeddings.get(), row_ids.size());
 		row_group.index = std::move(ivf_index);
 	}

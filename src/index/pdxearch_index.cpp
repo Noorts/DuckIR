@@ -344,9 +344,13 @@ void PDXearchIndex::ReconcileRowGroup(const row_t start, const row_t end, const 
 void PDXearchIndex::SyncWithTable(DataTable &table) {
 	auto _lock = rwlock.GetExclusiveLock();
 
-	// One DuckDB row group of transformed embeddings at a time, like the create sink.
+	// One DuckDB row group of transformed embeddings at a time, like the create sink, in a DuckDB buffer of the rows
+	// fetched.
 	const auto num_dimensions = GetNumDimensions();
-	auto embeddings = make_uniq_array<float>(GetRowGroupSize() * num_dimensions);
+	const auto allocate_embeddings = [&](const idx_t num_rows) {
+		return buffer_manager.Allocate(MemoryTag::EXTENSION, num_rows * num_dimensions * sizeof(float),
+		                               /*can_destroy=*/false);
+	};
 	auto row_ids = make_uniq_array<row_t>(GetRowGroupSize());
 
 	// Row groups a checkpoint merged or dropped: their mirrors go, and the ones still in the table are rebuilt.
@@ -357,10 +361,12 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 		if (!TryGetPhysicalRowGroup(table, stale.row_start, bounds)) {
 			continue;
 		}
+		auto embeddings_buffer = allocate_embeddings(bounds.count);
+		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.Ptr());
 		const idx_t count = FetchRows(table, bounds.row_start, bounds.row_start + static_cast<row_t>(bounds.count),
-		                              row_ids.get(), embeddings.get(), rows_returned);
+		                              row_ids.get(), embeddings, rows_returned);
 		if (count > 0) {
-			SetUpIndexForRowGroup(row_ids.get(), embeddings.get(), count, bounds.row_start, bounds.count);
+			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, /*n_threads=*/1);
 		}
 	}
 
@@ -382,12 +388,19 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 			continue;
 		}
 		const row_t bounds_end = bounds.row_start + static_cast<row_t>(bounds.count);
+		idx_t num_unindexed_rows = 0;
+		for (idx_t i = range_idx; i < unindexed_row_ranges.size() && unindexed_row_ranges[i].start < bounds_end; i++) {
+			const auto &range = unindexed_row_ranges[i];
+			num_unindexed_rows += static_cast<idx_t>(MinValue<row_t>(range.end, bounds_end) - range.start);
+		}
+		auto embeddings_buffer = allocate_embeddings(num_unindexed_rows);
+		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.Ptr());
 		idx_t count = 0;
 		while (range_idx < unindexed_row_ranges.size() && unindexed_row_ranges[range_idx].start < bounds_end) {
 			auto &range = unindexed_row_ranges[range_idx];
 			const row_t sub_end = MinValue<row_t>(range.end, bounds_end);
 			const idx_t range_count = FetchRows(table, range.start, sub_end, row_ids.get() + count,
-			                                    embeddings.get() + count * num_dimensions, rows_returned);
+			                                    embeddings + count * num_dimensions, rows_returned);
 			if (rows_returned == 0) {
 				// Not committed yet: a later sync indexes them.
 				still_unindexed.push_back({range.start, sub_end});
@@ -404,11 +417,17 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 		}
 		const auto row_group_idx = LookupRowGroup(bounds.row_start);
 		if (row_group_idx.IsValid()) {
+			// The appends load a paged row group fully: the end of the sync frees what it does not keep.
+			if (cluster_paging) {
+				const auto range = GetRowGroupRange(row_group_idx.GetIndex());
+				UpdateReservedMemory(
+				    static_cast<int64_t>(EstimateBuildHeapBytes(static_cast<idx_t>(range.end - range.start))));
+			}
 			for (idx_t i = 0; i < count; i++) {
-				AppendRow(row_group_idx.GetIndex(), row_ids[i], embeddings.get() + i * num_dimensions);
+				AppendRow(row_group_idx.GetIndex(), row_ids[i], embeddings + i * num_dimensions);
 			}
 		} else {
-			SetUpIndexForRowGroup(row_ids.get(), embeddings.get(), count, bounds.row_start, bounds.count);
+			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, /*n_threads=*/1);
 		}
 	}
 	unindexed_row_ranges = std::move(still_unindexed);
@@ -425,22 +444,38 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 	UpdateReservedMemory(in_memory_size - static_cast<int64_t>(reserved_memory_bytes.load()));
 }
 
-// Called by CREATE INDEX's threads in parallel: each reserves the memory its row group grew by.
+// Called by CREATE INDEX's threads in parallel: each reserves its build's memory while it runs, then the memory its row
+// group grew by.
 void PDXearchIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors,
-                                          const idx_t num_vectors, const row_t row_start, const idx_t count) {
+                                          const idx_t num_vectors, const row_t row_start, const idx_t count,
+                                          const idx_t n_threads) {
 	// Without paging, the row groups stay on the heap.
 	const auto reader = cluster_paging ? storage_reader.get() : nullptr;
+	const auto build_heap_bytes = static_cast<int64_t>(EstimateBuildHeapBytes(count));
+	UpdateReservedMemory(build_heap_bytes);
 	int64_t memory_growth_bytes;
-	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-		memory_growth_bytes =
-		    static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, reader, buffer_manager);
-	} else {
-		memory_growth_bytes =
-		    static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, reader, buffer_manager);
+	try {
+		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+			memory_growth_bytes = static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
+			                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count,
+			                                                  n_threads, reader, buffer_manager);
+		} else {
+			memory_growth_bytes = static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
+			                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count,
+			                                                  n_threads, reader, buffer_manager);
+		}
+	} catch (...) {
+		UpdateReservedMemory(-build_heap_bytes);
+		throw;
 	}
-	UpdateReservedMemory(memory_growth_bytes);
+	UpdateReservedMemory(memory_growth_bytes - build_heap_bytes);
+}
+
+uint64_t PDXearchIndex::EstimateBuildHeapBytes(const idx_t num_embeddings) const {
+	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+		return static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->EstimateBuildHeapBytes(num_embeddings);
+	}
+	return static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->EstimateBuildHeapBytes(num_embeddings);
 }
 
 unique_ptr<PDX::IIterativeSearch> PDXearchIndex::BeginSearchForRowGroup(
@@ -679,10 +714,17 @@ unique_ptr<PDXearchBlockChainReader> PDXearchIndex::OpenStorage(const IndexStora
 	return reader;
 }
 
-// Reserves each row group's memory once it is loaded, so DuckDB evicts other data while the index grows.
+// Reserves each row group's memory as it loads, so DuckDB evicts other data while the index grows. A row group loaded
+// fully is reserved before it is read.
 void PDXearchIndex::LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory,
                                   const bool page_clusters) {
 	for (const auto &entry : directory.row_groups) {
+		int64_t load_bytes = 0;
+		if (!page_clusters) {
+			load_bytes =
+			    static_cast<int64_t>(EstimateBuildHeapBytes(static_cast<idx_t>(entry.row_end - entry.row_start)));
+			UpdateReservedMemory(load_bytes);
+		}
 		uint64_t in_memory_size;
 		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 			in_memory_size = static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
@@ -691,20 +733,34 @@ void PDXearchIndex::LoadRowGroups(PDXearchBlockChainReader &reader, const PDXear
 			in_memory_size = static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
 			                     ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
 		}
-		UpdateReservedMemory(static_cast<int64_t>(in_memory_size));
+		UpdateReservedMemory(static_cast<int64_t>(in_memory_size) - load_bytes);
 	}
 }
 
+// A rewritten row group can be loaded fully, one at a time. A checkpoint must not fail: without the memory, it goes on
+// unreserved.
 void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
-	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
-		                            cluster_paging);
-	} else {
-		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
-		                            cluster_paging);
+	auto materialize_bytes = static_cast<int64_t>(EstimateBuildHeapBytes(GetRowGroupSize()));
+	try {
+		UpdateReservedMemory(materialize_bytes);
+	} catch (OutOfMemoryException &) {
+		materialize_bytes = 0;
 	}
+	try {
+		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+			static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
+			    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
+			                            cluster_paging);
+		} else {
+			static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
+			    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
+			                            cluster_paging);
+		}
+	} catch (...) {
+		UpdateReservedMemory(-materialize_bytes);
+		throw;
+	}
+	UpdateReservedMemory(-materialize_bytes);
 }
 
 void PDXearchIndex::WriteTemporaryChains() {
