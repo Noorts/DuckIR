@@ -103,10 +103,17 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	record_paging_counters = !paging_counters_setting.IsNull() && paging_counters_setting.GetValue<bool>();
 	Value cache_tiers_setting;
 	db.GetDatabase().TryGetCurrentSetting("pdxearch_cache_tiers", cache_tiers_setting);
-	cache_tiers = !cache_tiers_setting.IsNull() && cache_tiers_setting.GetValue<bool>();
+	cache_tiers = cache_tiers_setting.IsNull() || cache_tiers_setting.GetValue<bool>();
+	// An index created in this session pages its row groups from their temporary chains.
+	if (cluster_paging && !storage_reader) {
+		storage_reader =
+		    make_uniq<PDXearchBlockChainReader>(table_io_manager.GetIndexBlockManager(), allocator->GetInfo());
+	}
 	if (storage_reader) {
 		storage_reader->counters.enabled = record_paging_counters;
 		storage_reader->cache_tiers = cache_tiers;
+	}
+	if (persistence_info.IsValid()) {
 		// The destructor does not run when the constructor throws (e.g., out of memory while loading).
 		try {
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
@@ -201,10 +208,10 @@ PDXearchRowRange PDXearchIndex::GetRowGroupRange(const idx_t row_group_idx) cons
 void PDXearchIndex::AppendRow(const idx_t row_group_idx, const row_t row_id, const float *const transformed_embedding) {
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get());
+		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get(), buffer_manager);
 	} else {
 		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get());
+		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get(), buffer_manager);
 	}
 }
 
@@ -407,6 +414,11 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 	unindexed_row_ranges = std::move(still_unindexed);
 	has_unindexed_rows = !unindexed_row_ranges.empty();
 
+	// The appends loaded their row groups fully: they go back to temporary chains.
+	if (cluster_paging) {
+		WriteTemporaryChains();
+	}
+
 	// The sync's appends, deletes and removed row groups changed the size without reserving it. Reserving the
 	// difference between the size now and what is reserved makes the two equal (it frees when the index shrank).
 	const auto in_memory_size = static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes());
@@ -416,13 +428,17 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 // Called by CREATE INDEX's threads in parallel: each reserves the memory its row group grew by.
 void PDXearchIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors,
                                           const idx_t num_vectors, const row_t row_start, const idx_t count) {
+	// Without paging, the row groups stay on the heap.
+	const auto reader = cluster_paging ? storage_reader.get() : nullptr;
 	int64_t memory_growth_bytes;
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-		memory_growth_bytes = static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count);
+		memory_growth_bytes =
+		    static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
+		        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, reader, buffer_manager);
 	} else {
-		memory_growth_bytes = static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count);
+		memory_growth_bytes =
+		    static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
+		        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, reader, buffer_manager);
 	}
 	UpdateReservedMemory(memory_growth_bytes);
 }
@@ -680,13 +696,6 @@ void PDXearchIndex::LoadRowGroups(PDXearchBlockChainReader &reader, const PDXear
 }
 
 void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
-	// An index created in this session pages its row groups once they are written.
-	if (cluster_paging && !storage_reader) {
-		storage_reader =
-		    make_uniq<PDXearchBlockChainReader>(table_io_manager.GetIndexBlockManager(), allocator->GetInfo());
-		storage_reader->counters.enabled = record_paging_counters;
-		storage_reader->cache_tiers = cache_tiers;
-	}
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
 		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
@@ -695,6 +704,14 @@ void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_par
 		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
 		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
 		                            cluster_paging);
+	}
+}
+
+void PDXearchIndex::WriteTemporaryChains() {
+	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->WriteTemporaryChains(*storage_reader, buffer_manager);
+	} else {
+		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->WriteTemporaryChains(*storage_reader, buffer_manager);
 	}
 }
 
@@ -997,8 +1014,8 @@ void PDXearchModule::RegisterIndex(DatabaseInstance &db) {
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::GLOBAL);
 	db.config.AddExtensionOption("pdxearch_cache_tiers",
 	                             "in indexes loaded with it on, the clusters searches read most often are the last "
-	                             "DuckDB evicts from memory (default: false)",
-	                             LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::GLOBAL);
+	                             "DuckDB evicts from memory (default: true)",
+	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
 
 	// Register the index type
 	db.config.GetIndexTypes().RegisterIndexType(index_type);

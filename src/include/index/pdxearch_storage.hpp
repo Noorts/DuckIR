@@ -97,14 +97,67 @@ private:
 	BufferHandle pinned_block;
 };
 
+// A row group's serialized index until a checkpoint persists it, in DuckDB buffers of one block each: DuckDB writes them
+// to its temporary files when it evicts them, and reads them back when they are pinned. Destroying the chain frees them.
+struct PDXearchTemporaryChain {
+	vector<shared_ptr<BlockHandle>> blocks;
+	idx_t num_bytes = 0;
+
+	// Copies size bytes at offset into dst. Concurrent searches may call it.
+	void ReadRange(BufferManager &buffer_manager, idx_t offset, idx_t size, char *dst) const;
+	// Writes all of its bytes to out, one pinned block at a time.
+	void CopyTo(BufferManager &buffer_manager, std::ostream &out) const;
+};
+
+// Streams bytes into a new temporary chain. Each block is unpinned once full, so DuckDB can evict it.
+class PDXearchTemporaryChainWriter : public std::streambuf {
+public:
+	explicit PDXearchTemporaryChainWriter(BufferManager &buffer_manager);
+
+	// Returns the chain and unpins its last block.
+	PDXearchTemporaryChain Finish();
+
+protected:
+	int_type overflow(int_type ch) override;
+
+private:
+	void StartBlock();
+
+	BufferManager &buffer_manager;
+	const idx_t block_size;
+	PDXearchTemporaryChain chain;
+	BufferHandle current_block;
+};
+
+// Streams a temporary chain, one pinned block at a time.
+class PDXearchTemporaryChainReader : public std::streambuf {
+public:
+	PDXearchTemporaryChainReader(BufferManager &buffer_manager, const PDXearchTemporaryChain &chain);
+
+	// How many bytes of the chain were read so far.
+	idx_t GetBytesRead() const;
+
+protected:
+	int_type underflow() override;
+
+private:
+	BufferManager &buffer_manager;
+	const idx_t block_size;
+	const PDXearchTemporaryChain &chain;
+	idx_t next_block = 0;
+	BufferHandle pinned_block;
+};
+
 // The clusters of a row group loaded without them (pdxearch_cluster_paging), one DuckDB buffer each. DuckDB may evict
 // an unpinned buffer: the next Acquire then reads the cluster from the row group's chain again.
 class PDXearchClusterCache : public PDX::IClusterSource {
 public:
 	PDXearchClusterCache(const PDXearchBlockChainReader &reader, BufferManager &buffer_manager);
 
-	// Once the row group's resident data is loaded: its index, its chain, and where the cluster data starts in it.
+	// Once the row group's resident data is loaded: its index, the chain it was loaded from, and where the cluster data
+	// starts in it.
 	void Bind(const PDX::IPDXIndex &index, const PDXearchBlockChain &chain, idx_t cluster_data_start);
+	void Bind(const PDX::IPDXIndex &index, const PDXearchTemporaryChain &chain, idx_t cluster_data_start);
 
 	const char *Acquire(uint32_t cluster_id) override;
 	void Release(uint32_t cluster_id) override;
@@ -113,9 +166,11 @@ public:
 
 private:
 	// pdxearch_cache_tiers: the access counts halve every ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS acquires per cluster, and
-	// a cluster acquired at least HOT_ACCESS_FACTOR times the average when it is fetched is evicted last.
+	// a cluster acquired at least HOT_ACCESS_FACTOR times the average when it is fetched goes to the eviction queue
+	// HOT_CLUSTER_EVICTION_QUEUE: evicted after the other clusters, before the temporary chains.
 	static constexpr idx_t ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS = 10;
 	static constexpr idx_t HOT_ACCESS_FACTOR = 2;
+	static constexpr idx_t HOT_CLUSTER_EVICTION_QUEUE = 1;
 
 	struct CachedCluster {
 		mutex lock;
@@ -127,11 +182,14 @@ private:
 
 	void RecordAccess(CachedCluster &cluster);
 	void SetEvictionQueue(const CachedCluster &cluster, BufferHandle &new_block) const;
+	void BindIndex(const PDX::IPDXIndex &index, idx_t cluster_data_start);
 
 	const PDXearchBlockChainReader &reader;
 	BufferManager &buffer_manager;
 	optional_ptr<const PDX::IPDXIndex> index;
+	// The chain the row group was loaded from: a persisted one, or a temporary one until a checkpoint persists it.
 	optional_ptr<const PDXearchBlockChain> chain;
+	optional_ptr<const PDXearchTemporaryChain> temporary_chain;
 	idx_t cluster_data_start = 0;
 	idx_t num_clusters = 0;
 	unique_array<CachedCluster> clusters;

@@ -125,6 +125,10 @@ struct PDXRowGroup {
 	std::mutex mutex;
 	// Where the index was last persisted. A checkpoint rewrites only the row groups that changed since.
 	PDXearchBlockChain persisted_chain;
+	// Where a paged index changed since the checkpoint lives until the next one. When not empty, it is the current home.
+	PDXearchTemporaryChain temporary_chain;
+	// Deletes a paged index took as tombstones only: the bytes of its home still hold the rows.
+	bool has_unwritten_deletes = false;
 	bool is_dirty = true;
 
 	uint64_t GetInMemorySizeInBytes() const {
@@ -179,10 +183,12 @@ public:
 	}
 
 	// Builds the index of the row group [row_start, row_start + count) from its (non-NULL) rows. Rows of this row
-	// group that arrive in a later batch are appended to the index that was already built. Returns how many bytes the
-	// row group's in-memory size grew by.
+	// group that arrive in a later batch are appended to the index that was already built. With a reader
+	// (pdxearch_cluster_paging), the index then moves to a temporary chain. Returns how many bytes the row group's
+	// in-memory size grew by.
 	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
-	                              const row_t row_start, const idx_t count) {
+	                              const row_t row_start, const idx_t count,
+	                              optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager) {
 		D_ASSERT(num_embeddings > 0 && num_embeddings <= count);
 		PDXRowGroup *row_group = nullptr;
 		std::unique_lock<std::mutex> build_lock;
@@ -209,6 +215,9 @@ public:
 
 		if (build_lock.owns_lock()) {
 			row_group->index = BuildRowGroupIndex(*row_group, row_ids, embeddings, num_embeddings);
+			if (reader) {
+				WriteTemporaryChain(*row_group, *reader, buffer_manager);
+			}
 			return static_cast<int64_t>(row_group->GetInMemorySizeInBytes());
 		}
 		// Rare path
@@ -216,10 +225,16 @@ public:
 		// out one vector per task): the first batch built the index above, the later ones are appended to it.
 		const std::lock_guard<std::mutex> lock(row_group->mutex);
 		const auto size_before = static_cast<int64_t>(row_group->GetInMemorySizeInBytes());
+		if (row_group->cluster_cache) {
+			MaterializeRowGroup(*row_group, *reader, buffer_manager);
+		}
 		for (idx_t i = 0; i < num_embeddings; i++) {
 			row_group->index->Append(static_cast<size_t>(row_ids[i]), embeddings + i * GetNumDimensions());
 		}
 		row_group->is_dirty = true;
+		if (reader) {
+			WriteTemporaryChain(*row_group, *reader, buffer_manager);
+		}
 		return static_cast<int64_t>(row_group->GetInMemorySizeInBytes()) - size_before;
 	}
 
@@ -249,7 +264,7 @@ public:
 	// `row_groups[row_group_idx]` mirrors; the row group's end grows with it.
 	// If the rowgroup is a Flat index and it has enough embeddings, it is promoted to an IVF index.
 	void AppendRow(const idx_t row_group_idx, const row_t row_id, const float *const transformed_embedding,
-	               optional_ptr<PDXearchBlockChainReader> reader) {
+	               optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager) {
 		auto &row_group = *row_groups[row_group_idx];
 		D_ASSERT(row_id >= row_group.row_start);
 		// Rare: a rebuild of this row group (e.g., a checkpoint merge) ran earlier in the same
@@ -259,7 +274,7 @@ public:
 			return;
 		}
 		if (row_group.cluster_cache) {
-			MaterializeRowGroup(row_group, *reader);
+			MaterializeRowGroup(row_group, *reader, buffer_manager);
 		}
 		row_group.index->Append(static_cast<size_t>(row_id), transformed_embedding);
 		row_group.row_end = MaxValue<row_t>(row_group.row_end, row_id + 1);
@@ -279,6 +294,9 @@ public:
 		// Rows the index does not hold (NULL embeddings, deletes replayed from the WAL) leave the row group clean.
 		if (row_group.index->Delete(static_cast<size_t>(row_id))) {
 			row_group.is_dirty = true;
+			if (row_group.cluster_cache) {
+				row_group.has_unwritten_deletes = true;
+			}
 		}
 	}
 
@@ -353,8 +371,9 @@ public:
 	}
 
 	// Frees the orphaned chains, then rewrites each dirty row group into a new chain. `write_partial_blocks` runs after
-	// each row group, so the allocator never holds more than one rewritten row group in memory. A paged row group is
-	// loaded fully first; with page_clusters, each rewritten row group is paged again from its new chain.
+	// each row group, so the allocator never holds more than one rewritten row group in memory. A temporary chain
+	// without unwritten deletes is copied as it is; another paged row group is loaded fully first. With page_clusters,
+	// each rewritten row group is paged again from its new chain.
 	void PersistDirtyRowGroups(FixedSizeAllocator &allocator, const std::function<void()> &write_partial_blocks,
 	                           optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager,
 	                           const bool page_clusters) {
@@ -366,21 +385,37 @@ public:
 			if (!row_group->is_dirty) {
 				continue;
 			}
+			const bool copy_temporary_chain =
+			    !row_group->temporary_chain.blocks.empty() && !row_group->has_unwritten_deletes;
 			// Before its chain is freed: the full index is read from it.
-			if (row_group->cluster_cache) {
-				MaterializeRowGroup(*row_group, *reader);
+			if (row_group->cluster_cache && !copy_temporary_chain) {
+				MaterializeRowGroup(*row_group, *reader, buffer_manager);
 			}
 			row_group->persisted_chain.Free(allocator);
 			PDXearchBlockChainWriter writer(allocator);
 			std::ostream out(&writer);
-			row_group->index->SaveToStream(out);
+			if (copy_temporary_chain) {
+				row_group->temporary_chain.CopyTo(buffer_manager, out);
+			} else {
+				row_group->index->SaveToStream(out);
+			}
 			row_group->persisted_chain = writer.Finish();
+			row_group->temporary_chain = PDXearchTemporaryChain();
 			row_group->is_dirty = false;
 			write_partial_blocks();
 			if (page_clusters) {
 				// The new chain has its blocks now, and writing them can have moved other chains' segments.
 				reader->UpdateBlockPointers(allocator.GetInfo());
 				PageRowGroup(*row_group, *reader, buffer_manager);
+			}
+		}
+	}
+
+	// Gives every index whose clusters are on the heap (built or changed by a sync) a temporary chain as its home.
+	void WriteTemporaryChains(PDXearchBlockChainReader &reader, BufferManager &buffer_manager) {
+		for (auto &row_group : row_groups) {
+			if (!row_group->cluster_cache) {
+				WriteTemporaryChain(*row_group, reader, buffer_manager);
 			}
 		}
 	}
@@ -449,7 +484,7 @@ public:
 		if (page_clusters) {
 			PageRowGroup(*row_group, reader, buffer_manager);
 		} else {
-			MaterializeRowGroup(*row_group, reader);
+			MaterializeRowGroup(*row_group, reader, buffer_manager);
 		}
 		row_group->is_dirty = false;
 		const auto in_memory_size = row_group->GetInMemorySizeInBytes();
@@ -514,35 +549,69 @@ private:
 		row_group.index = std::move(ivf_index);
 	}
 
-	// Loads the row group's index from its chain with only its resident data: searches read its clusters from the
-	// chain through a new cluster cache. A Flat index is read fully.
+	// Moves an IVF index on the heap into a new temporary chain, and pages it from there. A Flat index stays on the heap:
+	// paging would load it fully again.
+	void WriteTemporaryChain(PDXRowGroup &row_group, PDXearchBlockChainReader &reader, BufferManager &buffer_manager) {
+		if (dynamic_cast<PDX::FlatIndex *>(row_group.index.get())) {
+			return;
+		}
+		PDXearchTemporaryChainWriter writer(buffer_manager);
+		std::ostream out(&writer);
+		row_group.index->SaveToStream(out);
+		row_group.temporary_chain = writer.Finish();
+		row_group.has_unwritten_deletes = false;
+		PageRowGroup(row_group, reader, buffer_manager);
+	}
+
+	// Loads the row group's index from its home with only its resident data: searches read its clusters from the home
+	// through a new cluster cache. A Flat index is read fully.
 	void PageRowGroup(PDXRowGroup &row_group, PDXearchBlockChainReader &reader, BufferManager &buffer_manager) {
 		auto cluster_cache = make_uniq<PDXearchClusterCache>(reader, buffer_manager);
-		reader.Open(row_group.persisted_chain);
-		std::istream in(&reader);
-		auto index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get());
-		if (reader.GetBytesRead() < row_group.persisted_chain.num_bytes) {
-			cluster_cache->Bind(*index, row_group.persisted_chain, reader.GetBytesRead());
-			reader.Close();
+		std::unique_ptr<PDX::IPDXIndex> index;
+		if (!row_group.temporary_chain.blocks.empty()) {
+			PDXearchTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
+			std::istream in(&temporary_reader);
+			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get());
+			if (temporary_reader.GetBytesRead() < row_group.temporary_chain.num_bytes) {
+				cluster_cache->Bind(*index, row_group.temporary_chain, temporary_reader.GetBytesRead());
+			} else {
+				cluster_cache.reset();
+			}
 		} else {
-			cluster_cache.reset();
-			reader.Finish();
+			reader.Open(row_group.persisted_chain);
+			std::istream in(&reader);
+			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get());
+			if (reader.GetBytesRead() < row_group.persisted_chain.num_bytes) {
+				cluster_cache->Bind(*index, row_group.persisted_chain, reader.GetBytesRead());
+				reader.Close();
+			} else {
+				cluster_cache.reset();
+				reader.Finish();
+			}
 		}
 		// The old index points to the old cache: it goes first.
 		row_group.index = std::move(index);
 		row_group.cluster_cache = std::move(cluster_cache);
 	}
 
-	// Loads all of the row group's index from its chain, so that it can be changed. A row group loaded with only its
-	// resident data took deletes as tombstones since: they are replayed on the full index.
-	void MaterializeRowGroup(PDXRowGroup &row_group, PDXearchBlockChainReader &reader) {
+	// Loads all of the row group's index from its home, so that it can be changed: the index is its home then. A row
+	// group loaded with only its resident data took deletes as tombstones since: they are replayed on the full index.
+	void MaterializeRowGroup(PDXRowGroup &row_group, PDXearchBlockChainReader &reader, BufferManager &buffer_manager) {
 		// The resident index points to its cache, so it is destroyed first.
 		auto resident_cache = std::move(row_group.cluster_cache);
 		auto resident_index = std::move(row_group.index);
-		reader.Open(row_group.persisted_chain);
-		std::istream in(&reader);
-		row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner);
-		reader.Finish();
+		if (!row_group.temporary_chain.blocks.empty()) {
+			PDXearchTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
+			std::istream in(&temporary_reader);
+			row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner);
+		} else {
+			reader.Open(row_group.persisted_chain);
+			std::istream in(&reader);
+			row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner);
+			reader.Finish();
+		}
+		row_group.temporary_chain = PDXearchTemporaryChain();
+		row_group.has_unwritten_deletes = false;
 		if (!resident_index) {
 			return;
 		}

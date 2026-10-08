@@ -14,6 +14,10 @@ ATTACH '__TEST_DIR__/index_memory_limit.db' AS m (ROW_GROUP_SIZE 8192);
 statement ok
 SET checkpoint_threshold = '10GB';
 
+# The index on the heap is what is reserved: with paging, its clusters are DuckDB buffers instead.
+statement ok
+SET pdxearch_cluster_paging = false;
+
 # Variables
 test-env DIMS 128
 
@@ -63,17 +67,11 @@ SET checkpoint_threshold = '10GB';
 statement ok
 SELECT id FROM m.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 
-# A loaded index reserves its resident data; the clusters its search read are cached on top.
+# A loaded index reserves its size.
 query I
-SELECT memory_usage_bytes > (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
+SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
 ----
 true
-
-# The paging counters stay off by default.
-query I
-SELECT cluster_acquires FROM pdxearch_index_info() WHERE index_name = 't_idx';
-----
-0
 
 statement ok
 DROP INDEX m.t_idx;

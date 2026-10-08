@@ -58,6 +58,12 @@ query II nosort loaded
 SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
 ----
 
+# The paging counters stay off by default.
+query I
+SELECT cluster_acquires FROM pdxearch_index_info() WHERE index_name = 't_idx';
+----
+0
+
 # Writes to the paged index: deletes, and inserts into its partial row group.
 statement ok
 DELETE FROM p.t WHERE id % 7 = 0;

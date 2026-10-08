@@ -113,6 +113,7 @@ private:
 	void WriteDirectory(const PDXearchDirectory &directory);
 	IndexStorageInfo MakeStorageInfo() const;
 	void PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks);
+	void WriteTemporaryChains();
 	void AddRowGroupEntries(PDXearchDirectory &directory) const;
 	void ResetPersistedChains();
 	// Reads the directory and the rotation of a persisted index. The returned reader
