@@ -3,6 +3,7 @@
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/execution/index/index_pointer.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
@@ -57,6 +58,10 @@ private:
 	std::atomic<bool> has_unindexed_rows {false};
 	// Set when the index is loaded from storage: its first sync reconciles it with the table (ReconcileWithTable).
 	bool needs_reconciliation = false;
+	// Why a persisted index failed to load when DuckDB bound it, raised on first use instead: DuckDB's
+	// TableIndexList::Bind is not exception-safe, and a bind that throws leaves the next one spinning forever.
+	ErrorData bind_error;
+	IndexStorageInfo persisted_storage_info;
 
 	// The PDX indexes live on the heap. Their size is charged to DuckDB's memory_limit as reserved memory (the
 	// EXTENSION tag of duckdb_memory()), so DuckDB evicts other data to make room for them.
@@ -122,6 +127,7 @@ private:
 	                                                 PDXearchDirectory &directory,
 	                                                 unique_ptr<float[]> &rotation_matrix);
 	void LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory, bool page_clusters);
+	static IndexStorageInfo CopyStorageInfo(const IndexStorageInfo &info);
 
 	unique_ptr<ExpressionMatcher> function_matcher;
 

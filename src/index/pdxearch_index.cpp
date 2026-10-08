@@ -73,12 +73,19 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 
 	auto &block_manager = table_io_manager.GetIndexBlockManager();
 	allocator = make_uniq<FixedSizeAllocator>(PDXearchBlockChain::GetSegmentSize(block_manager), block_manager);
-	// A persisted index keeps its rotation. Its row groups are loaded once the wrapper exists.
+	// A persisted index keeps its rotation. Its row groups are loaded once the wrapper exists. If its storage cannot be
+	// opened (bind_error), the wrapper gets the seed's rotation, only for planning until the error is raised.
 	PDXearchDirectory directory;
 	unique_ptr<float[]> rotation_matrix;
 	if (persistence_info.IsValid()) {
-		storage_reader =
-		    OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory, rotation_matrix);
+		persisted_storage_info = CopyStorageInfo(persistence_info);
+		try {
+			storage_reader =
+			    OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory, rotation_matrix);
+		} catch (std::exception &ex) {
+			bind_error = ErrorData(ex);
+			rotation_matrix.reset();
+		}
 	}
 
 	const idx_t row_group_size = table_io_manager.GetRowGroupSize();
@@ -93,8 +100,10 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
-	// The rotation matrix and the pruner, before any row group.
-	UpdateReservedMemory(static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes()));
+	// The rotation matrix and the pruner, before any row group. A persisted index reserves them as it loads, below.
+	if (!persistence_info.IsValid()) {
+		UpdateReservedMemory(static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes()));
+	}
 	Value cluster_paging_setting;
 	db.GetDatabase().TryGetCurrentSetting("pdxearch_cluster_paging", cluster_paging_setting);
 	cluster_paging = cluster_paging_setting.IsNull() || cluster_paging_setting.GetValue<bool>();
@@ -113,15 +122,14 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 		storage_reader->counters.enabled = record_paging_counters;
 		storage_reader->cache_tiers = cache_tiers;
 	}
-	if (persistence_info.IsValid()) {
-		// The destructor does not run when the constructor throws (e.g., out of memory while loading).
+	if (persistence_info.IsValid() && !bind_error.HasError()) {
 		try {
+			UpdateReservedMemory(static_cast<int64_t>(pdxearch_wrapper->GetInMemorySizeInBytes()));
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
-		} catch (...) {
-			UpdateReservedMemory(-static_cast<int64_t>(reserved_memory_bytes.load()));
-			throw;
+			needs_reconciliation = true;
+		} catch (std::exception &ex) {
+			bind_error = ErrorData(ex);
 		}
-		needs_reconciliation = true;
 	}
 
 	function_matcher = MakeFunctionMatcher(*pdxearch_wrapper.get());
@@ -148,7 +156,7 @@ void PDXearchIndex::UpdateReservedMemory(const int64_t delta) {
  ******************************************************************/
 
 bool PDXearchIndex::IsInSyncWithTable(DataTable &table) const {
-	return !needs_reconciliation && !has_unindexed_rows && FindStaleRowGroups(table).empty();
+	return !bind_error.HasError() && !needs_reconciliation && !has_unindexed_rows && FindStaleRowGroups(table).empty();
 }
 
 unique_ptr<StorageLockKey> PDXearchIndex::SyncAndLockForSearch(DataTable &table) {
@@ -343,6 +351,11 @@ void PDXearchIndex::ReconcileRowGroup(const row_t start, const row_t end, const 
 
 void PDXearchIndex::SyncWithTable(DataTable &table) {
 	auto _lock = rwlock.GetExclusiveLock();
+
+	// The index failed to load when DuckDB bound it: the queries that use it raise the error.
+	if (bind_error.HasError()) {
+		bind_error.Throw();
+	}
 
 	// One DuckDB row group of transformed embeddings at a time, like the create sink, in a DuckDB buffer of the rows
 	// fetched.
@@ -737,6 +750,16 @@ void PDXearchIndex::LoadRowGroups(PDXearchBlockChainReader &reader, const PDXear
 	}
 }
 
+// IndexStorageInfo cannot be copied. A checkpointed index's info has no WAL buffers.
+IndexStorageInfo PDXearchIndex::CopyStorageInfo(const IndexStorageInfo &info) {
+	IndexStorageInfo copy(info.name);
+	copy.root = info.root;
+	copy.options = info.options;
+	copy.allocator_infos = info.allocator_infos;
+	copy.root_block_ptr = info.root_block_ptr;
+	return copy;
+}
+
 // A rewritten row group can be loaded fully, one at a time. A checkpoint must not fail: without the memory, it goes on
 // unreserved.
 void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
@@ -824,6 +847,10 @@ IndexStorageInfo PDXearchIndex::SerializeToDisk(QueryContext context,
                                                 const case_insensitive_map_t<Value> &serialization_options) {
 	auto _lock = rwlock.GetExclusiveLock();
 
+	// Not loaded: the index stays as persisted.
+	if (bind_error.HasError()) {
+		return CopyStorageInfo(persisted_storage_info);
+	}
 	PersistDirtyRowGroups([&]() { WritePartialBlocks(context); });
 	// Written once: the rotation never changes.
 	if (rotation_chain.segments.empty()) {

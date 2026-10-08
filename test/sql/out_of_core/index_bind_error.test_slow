@@ -1,0 +1,62 @@
+# name: test/sql/out_of_core/index_bind_error.test_slow
+# description: An index that fails to load when DuckDB binds it raises the error in the queries that use it, and the next statements on its table do not wait for it.
+# group: [out_of_core]
+
+require pdxearch
+
+load __TEST_DIR__/index_bind_error_main.db
+
+statement ok
+ATTACH '__TEST_DIR__/index_bind_error.db' AS b;
+
+# Its rotation and pruner (2 x 4096 x 4096 floats, 128 MB) do not fit in the limit below.
+statement ok
+CREATE TABLE b.t AS SELECT range AS id, list_transform(range(4096), x -> random())::FLOAT[4096] AS emb FROM range(1000);
+
+statement ok
+CREATE INDEX t_idx ON b.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+
+statement ok
+CHECKPOINT b;
+
+restart
+
+statement ok
+SET memory_limit = '128MB';
+
+statement ok
+ATTACH '__TEST_DIR__/index_bind_error.db' AS b;
+
+statement ok
+SET VARIABLE query_emb = (SELECT emb FROM b.t WHERE id = 0);
+
+statement error
+SELECT id FROM b.t ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 1;
+----
+Out of Memory Error: failed to reserve memory
+
+# The table stays usable: binding its indexes again does not wait for the failed bind.
+statement ok
+DELETE FROM b.t WHERE id = 1;
+
+statement error
+SELECT id FROM b.t ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 1;
+----
+Out of Memory Error: failed to reserve memory
+
+statement ok
+SET memory_limit = '1GB';
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_bind_error.db' AS b;
+
+statement ok
+SET VARIABLE query_emb = (SELECT emb FROM b.t WHERE id = 0);
+
+# With the memory, the index loads.
+query I
+SELECT id FROM b.t ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 1;
+----
+0
