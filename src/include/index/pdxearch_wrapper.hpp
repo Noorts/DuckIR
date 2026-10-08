@@ -128,8 +128,8 @@ struct PDXRowGroup {
 	// Where a paged index changed since the checkpoint lives until the next one. When not empty, it is the current
 	// home.
 	PDXearchTemporaryChain temporary_chain;
-	// Deletes a paged index took as tombstones only: the bytes of its home still hold the rows.
-	bool has_unwritten_deletes = false;
+	// Deletes since the row group's chain was written: its bytes still hold these rows.
+	idx_t num_unwritten_deletes = 0;
 	bool is_dirty = true;
 
 	uint64_t GetInMemorySizeInBytes() const {
@@ -174,6 +174,7 @@ public:
 	}
 
 	static constexpr double BUILD_HEAP_FACTOR = 1.5;
+	static constexpr double MAX_UNWRITTEN_DELETES_RATIO = 0.1;
 
 	uint64_t EstimateBuildHeapBytes(const idx_t num_embeddings) const {
 		const idx_t bytes_per_embedding = GetNumDimensions() * sizeof(PDX::pdx_data_t<Q>) + sizeof(uint32_t);
@@ -299,11 +300,13 @@ public:
 			return;
 		}
 		auto &row_group = *row_groups[row_group_idx.GetIndex()];
-		// Rows the index does not hold (NULL embeddings, deletes replayed from the WAL) leave the row group clean.
+		// Rows the index does not hold (NULL embeddings, deletes replayed from the WAL) leave the row group clean. The
+		// others are persisted only once enough pile up: every load reconciles the index with the table.
 		if (row_group.index->Delete(static_cast<size_t>(row_id))) {
-			row_group.is_dirty = true;
-			if (row_group.cluster_cache) {
-				row_group.has_unwritten_deletes = true;
+			row_group.num_unwritten_deletes++;
+			if (static_cast<double>(row_group.num_unwritten_deletes) >
+			    MAX_UNWRITTEN_DELETES_RATIO * static_cast<double>(row_group.row_end - row_group.row_start)) {
+				row_group.is_dirty = true;
 			}
 		}
 	}
@@ -394,7 +397,7 @@ public:
 				continue;
 			}
 			const bool copy_temporary_chain =
-			    !row_group->temporary_chain.blocks.empty() && !row_group->has_unwritten_deletes;
+			    !row_group->temporary_chain.blocks.empty() && row_group->num_unwritten_deletes == 0;
 			// Before its chain is freed: the full index is read from it.
 			if (row_group->cluster_cache && !copy_temporary_chain) {
 				MaterializeRowGroup(*row_group, *reader, buffer_manager);
@@ -409,6 +412,7 @@ public:
 			}
 			row_group->persisted_chain = writer.Finish();
 			row_group->temporary_chain = PDXearchTemporaryChain();
+			row_group->num_unwritten_deletes = 0;
 			row_group->is_dirty = false;
 			write_partial_blocks();
 			if (page_clusters) {
@@ -569,7 +573,7 @@ private:
 		std::ostream out(&writer);
 		row_group.index->SaveToStream(out);
 		row_group.temporary_chain = writer.Finish();
-		row_group.has_unwritten_deletes = false;
+		row_group.num_unwritten_deletes = 0;
 		PageRowGroup(row_group, reader, buffer_manager);
 	}
 
@@ -621,7 +625,6 @@ private:
 			reader.Finish();
 		}
 		row_group.temporary_chain = PDXearchTemporaryChain();
-		row_group.has_unwritten_deletes = false;
 		if (!resident_index) {
 			return;
 		}
