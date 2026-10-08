@@ -126,7 +126,7 @@ public:
 	vector<std::unique_ptr<PDX::IPDXIndex>> on_the_fly_indexes;
 	vector<row_t> on_the_fly_indexes_row_ids;
 	idx_t on_the_fly_indexes_clusters_to_probe {0};
-	// The join's own reservation (the index's is reconciled by its syncs): what its on-the-fly indexes hold.
+	// The join's own reservation for on-the-fly indexes construction.
 	BufferManager &buffer_manager;
 	idx_t reserved_memory_bytes {0};
 };
@@ -245,12 +245,11 @@ static idx_t CountMaxRowsPerOnTheFlyIndex(const vector<std::vector<size_t>> &pas
 	return MaxValue<idx_t>(max_rows, window_rows);
 }
 
-// The indexes of all windows stay, and the window being built also holds its gathered embeddings and the k-means
-// scratch.
-static double EstimateOnTheFlyBuildPeakBytes(const idx_t num_rows, const idx_t max_rows_per_window,
+// The indexes of ALL windows must stay, and the window being built also holds its gathered embeddings for k-means.
+static double EstimateOnTheFlyBuildPeakBytes(const idx_t num_passing_rows, const idx_t max_rows_per_window,
                                              const idx_t num_dimensions) {
-	return (static_cast<double>(num_rows) + PDXearchIndexJoinSearch::ON_THE_FLY_INDEX_BUILD_PEAK_MEMORY_FACTOR *
-	                                            static_cast<double>(max_rows_per_window)) *
+	return (static_cast<double>(num_passing_rows) + PDXearchIndexJoinSearch::ON_THE_FLY_INDEX_BUILD_PEAK_MEMORY_FACTOR *
+	                                                    static_cast<double>(max_rows_per_window)) *
 	       static_cast<double>(num_dimensions * sizeof(float));
 }
 
@@ -258,8 +257,8 @@ static double EstimateOnTheFlyBuildPeakBytes(const idx_t num_rows, const idx_t m
 // into windows of row_groups_per_window consecutive ones, and the passing rows of each window are gathered from their
 // row groups' indexes into one index (Flat when build_flat or when too few to cluster; else an IVF with PDX's default
 // number of clusters). One window after another, so that only one window's gathered embeddings are held at a time.
-// The rows are numbered by position in on_the_fly_indexes_row_ids. Returns false, building nothing, when DuckDB cannot
-// reserve the build's peak memory.
+// The rows are numbered by position in on_the_fly_indexes_row_ids. Returns false only when DuckDB cannot reserve the
+// build's memory (the join then searches the row groups); true otherwise, even when there was nothing to build.
 static bool BuildOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const idx_t row_groups_per_window,
                                  const bool build_flat, const idx_t n_threads) {
 	const idx_t num_dimensions = search.index.GetNumDimensions();
@@ -340,7 +339,7 @@ static bool BuildOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const idx_t ro
 		                                                       std::sqrt(static_cast<double>(num_clusters)))));
 		search.on_the_fly_indexes.push_back(std::move(on_the_fly_index));
 	}
-	// The indexes stay until the join ends: the reservation becomes their size.
+	// The indexes stay until the join ends: the reservation now is properly adjusted to reflect their true size.
 	idx_t indexes_bytes = 0;
 	for (const auto &on_the_fly_index : search.on_the_fly_indexes) {
 		indexes_bytes += on_the_fly_index->GetInMemorySizeInBytes();

@@ -760,8 +760,9 @@ IndexStorageInfo PDXearchIndex::CopyStorageInfo(const IndexStorageInfo &info) {
 	return copy;
 }
 
-// A rewritten row group can be loaded fully, one at a time. A checkpoint must not fail: without the memory, it goes on
-// unreserved.
+// A checkpoint may load a dirty row group fully to rewrite it, one row group at a time, so one full row group is
+// reserved for its duration. If DuckDB cannot provide that memory, the checkpoint goes on without the reservation:
+// failing a checkpoint is worse than briefly exceeding memory_limit by one row group.
 void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
 	auto materialize_bytes = static_cast<int64_t>(EstimateBuildHeapBytes(GetRowGroupSize()));
 	try {

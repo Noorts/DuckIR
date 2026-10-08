@@ -52,7 +52,7 @@ private:
 	unique_ptr<SegmentHandle> current_segment;
 };
 
-// What an index's paging did since it loaded, counted if pdxearch_paging_counters was on when it loaded.
+// What an index's paging did since it loaded (if pdxearch_paging_counters was on when it loaded).
 struct PDXearchPagingCounters {
 	atomic<bool> enabled {false};
 	atomic<idx_t> cluster_acquires {0};
@@ -69,11 +69,9 @@ public:
 	void Open(const PDXearchBlockChain &chain);
 	// Returns the chain with its segments. All of its bytes must have been read.
 	PDXearchBlockChain Finish();
-	// How many bytes of the open chain were read so far.
 	idx_t GetBytesRead() const;
-	// Stops reading the open chain before its end.
 	void Close();
-	// Copies size bytes at offset of a chain whose segments are known into dst. Concurrent searches may call it.
+	// Copies `size` bytes at offset of a chain whose segments are known into `dst`. Concurrent searches can call it.
 	void ReadRange(const PDXearchBlockChain &chain, idx_t offset, idx_t size, char *dst) const;
 	// A checkpoint can move the allocator's buffers to other blocks.
 	void UpdateBlockPointers(const FixedSizeAllocatorInfo &allocator_info);
@@ -104,9 +102,7 @@ struct PDXearchTemporaryChain {
 	vector<shared_ptr<BlockHandle>> blocks;
 	idx_t num_bytes = 0;
 
-	// Copies size bytes at offset into dst. Concurrent searches may call it.
 	void ReadRange(BufferManager &buffer_manager, idx_t offset, idx_t size, char *dst) const;
-	// Writes all of its bytes to out, one pinned block at a time.
 	void CopyTo(BufferManager &buffer_manager, std::ostream &out) const;
 };
 
@@ -135,7 +131,6 @@ class PDXearchTemporaryChainReader : public std::streambuf {
 public:
 	PDXearchTemporaryChainReader(BufferManager &buffer_manager, const PDXearchTemporaryChain &chain);
 
-	// How many bytes of the chain were read so far.
 	idx_t GetBytesRead() const;
 
 protected:
@@ -149,14 +144,14 @@ private:
 	BufferHandle pinned_block;
 };
 
-// The clusters of a row group loaded without them (pdxearch_cluster_paging), one DuckDB buffer each. DuckDB may evict
-// an unpinned buffer: the next Acquire then reads the cluster from the row group's chain again.
+// The clusters of a row group that was loaded with paging (pdxearch_cluster_paging).
+// Each cluster a search probes gets its own DuckDB buffer, allocated on miss and sized to its bytes. DuckDB may evict
+// an unpinned buffer. The next Acquire then reads the cluster from the row group's chain again.
 class PDXearchClusterCache : public PDX::IClusterSource {
 public:
 	PDXearchClusterCache(const PDXearchBlockChainReader &reader, BufferManager &buffer_manager);
 
-	// Once the row group's resident data is loaded: its index, the chain it was loaded from, and where the cluster data
-	// starts in it.
+	// Called right after the row group's resident data is loaded (PageRowGroup).
 	void Bind(const PDX::IPDXIndex &index, const PDXearchBlockChain &chain, idx_t cluster_data_start);
 	void Bind(const PDX::IPDXIndex &index, const PDXearchTemporaryChain &chain, idx_t cluster_data_start);
 

@@ -26,7 +26,8 @@ PhysicalCreatePDXearchIndex::PhysicalCreatePDXearchIndex(PhysicalPlan &physical_
 }
 
 // Row groups are built as concurrently as DuckDB's memory manager grants memory for, and at least one at a time. A
-// thread that starts a row group takes one of max_concurrent_builds slots, or blocks until a build gives its slot back.
+// thread that starts a row group takes one of `max_concurrent_builds` slots, or waits until another thread finishes
+// building and gives its slot back.
 class CreatePDXearchIndexGlobalSinkState : public GlobalSinkState {
 public:
 	CreatePDXearchIndexGlobalSinkState(const PhysicalCreatePDXearchIndex &op, ClientContext &context)
@@ -42,6 +43,7 @@ public:
 		const idx_t build_bytes =
 		    row_group_size * num_dimensions * sizeof(float) + index.EstimateBuildHeapBytes(row_group_size);
 		const auto num_threads = NumericCast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads());
+		// Note that for a plain table scan, op.estimated_cardinality is exact.
 		const idx_t num_row_groups =
 		    MaxValue<idx_t>(1, (op.estimated_cardinality + row_group_size - 1) / row_group_size);
 		memory_state = TemporaryMemoryManager::Get(context).Register(context);
@@ -75,7 +77,7 @@ public:
 		row_group_row_ids.resize(row_group_size);
 	}
 
-	// The DuckDB row group whose rows are currently buffered. While it has one, the thread holds a build slot.
+	// The DuckDB row group whose rows are currently buffered.
 	PDXearchRowGroupBounds row_group {0, 0};
 	bool has_row_group {false};
 	// Number of embeddings currently buffered in the row group.

@@ -118,7 +118,8 @@ struct PDXearchRowGroupBounds {
 struct PDXRowGroup {
 	row_t row_start;
 	row_t row_end;
-	// Null when the index holds its clusters. Declared before the index, which points to it, to outlive it.
+	// Null when the index holds its clusters: paging is off, the index is Flat, or the row group is being built or
+	// changed. Declared before the index, which points to it, to outlive it.
 	unique_ptr<PDXearchClusterCache> cluster_cache;
 	std::unique_ptr<PDX::IPDXIndex> index;
 	// Held while the index is built, so that rows of this row group arriving in a later batch wait for it.
@@ -126,9 +127,9 @@ struct PDXRowGroup {
 	// Where the index was last persisted. A checkpoint rewrites only the row groups that changed since.
 	PDXearchBlockChain persisted_chain;
 	// Where a paged index changed since the checkpoint lives until the next one. When not empty, it is the current
-	// home.
+	// home, and stays it in an in-memory database, where no checkpoint runs.
 	PDXearchTemporaryChain temporary_chain;
-	// Deletes since the row group's chain was written: its bytes still hold these rows.
+	// Deletes since the row group's chain was written. The index bytes still hold these rows.
 	idx_t num_unwritten_deletes = 0;
 	bool is_dirty = true;
 
@@ -174,6 +175,7 @@ public:
 	}
 
 	static constexpr double BUILD_HEAP_FACTOR = 1.5;
+	// Up to 10% of a row group's rows can be deleted since its chain was written without triggering a rewrite.
 	static constexpr double MAX_UNWRITTEN_DELETES_RATIO = 0.1;
 
 	uint64_t EstimateBuildHeapBytes(const idx_t num_embeddings) const {
@@ -383,8 +385,9 @@ public:
 
 	// Frees the orphaned chains, then rewrites each dirty row group into a new chain. `write_partial_blocks` runs after
 	// each row group, so the allocator never holds more than one rewritten row group in memory. A temporary chain
-	// without unwritten deletes is copied as it is; another paged row group is loaded fully first. With page_clusters,
+	// without unwritten deletes is copied as it is. A paged row group is loaded fully first. With page_clusters,
 	// each rewritten row group is paged again from its new chain.
+	// This method is called from SerializeToDisk, at CHECKPOINT. So this never runs for an :memory: database.
 	void PersistDirtyRowGroups(FixedSizeAllocator &allocator, const std::function<void()> &write_partial_blocks,
 	                           optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager,
 	                           const bool page_clusters) {
@@ -586,9 +589,10 @@ private:
 			PDXearchTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
 			std::istream in(&temporary_reader);
 			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get());
+			// IVF index? The reader stopped where the non-resident data starts.
 			if (temporary_reader.GetBytesRead() < row_group.temporary_chain.num_bytes) {
 				cluster_cache->Bind(*index, row_group.temporary_chain, temporary_reader.GetBytesRead());
-			} else {
+			} else { // Flat index? The reader stopped at the end of the chain.
 				cluster_cache.reset();
 			}
 		} else {
@@ -608,8 +612,7 @@ private:
 		row_group.cluster_cache = std::move(cluster_cache);
 	}
 
-	// Loads all of the row group's index from its home, so that it can be changed: the index is its home then. A row
-	// group loaded with only its resident data took deletes as tombstones since: they are replayed on the full index.
+	// Loads all of the row group's index from its home, so that it can be changed. The index in memory is its home now.
 	void MaterializeRowGroup(PDXRowGroup &row_group, PDXearchBlockChainReader &reader, BufferManager &buffer_manager) {
 		// The resident index points to its cache, so it is destroyed first.
 		auto resident_cache = std::move(row_group.cluster_cache);
@@ -628,6 +631,8 @@ private:
 		if (!resident_index) {
 			return;
 		}
+		// A row group loaded with only its resident data took deletes as tombstones since its home was written.
+		// These were never reflected on the index home. Therefore, we must replay them.
 		for (row_t row_id = row_group.row_start; row_id < row_group.row_end; row_id++) {
 			const auto id = static_cast<size_t>(row_id);
 			if (row_group.index->Contains(id) && !resident_index->Contains(id)) {

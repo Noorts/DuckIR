@@ -43,10 +43,8 @@ public:
 	static const case_insensitive_map_t<PDX::Quantization> QUANTIZATION_MAP;
 
 private:
-	// Null unless the index was loaded from storage. The row groups' cluster caches read through it, so it is declared
-	// before the wrapper to outlive them.
+	// Null only when the index was not loaded from storage and paging is off.
 	unique_ptr<PDXearchBlockChainReader> storage_reader;
-	// pdxearch_cluster_paging, pdxearch_paging_counters and pdxearch_cache_tiers when the index was created or loaded.
 	bool cluster_paging = true;
 	bool record_paging_counters = false;
 	bool cache_tiers = false;
@@ -63,11 +61,10 @@ private:
 	ErrorData bind_error;
 	IndexStorageInfo persisted_storage_info;
 
-	// The PDX indexes live on the heap. Their size is charged to DuckDB's memory_limit as reserved memory (the
-	// EXTENSION tag of duckdb_memory()), so DuckDB evicts other data to make room for them.
 	BufferManager &buffer_manager;
 	std::atomic<idx_t> reserved_memory_bytes {0};
-	// Reserves delta more bytes, or frees -delta. Throws DuckDB's out-of-memory error when nothing more can be evicted.
+	// Reserves `delta` more bytes, or frees `-delta`. Throws DuckDB's out-of-memory error when nothing more can be
+	// evicted.
 	void UpdateReservedMemory(int64_t delta);
 
 	void AppendRow(idx_t row_group_idx, row_t row_id, const float *transformed_embedding);

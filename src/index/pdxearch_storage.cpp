@@ -102,7 +102,6 @@ PDXearchBlockChain PDXearchBlockChainReader::Finish() {
 	return result;
 }
 
-// What the chain holds, minus what is still unread in it and in the get area.
 idx_t PDXearchBlockChainReader::GetBytesRead() const {
 	return chain.num_bytes - unread_bytes - static_cast<idx_t>(egptr() - gptr());
 }
@@ -115,8 +114,9 @@ void PDXearchBlockChainReader::Close() {
 	unread_bytes = 0;
 }
 
-// Every segment but the last is full, so the segment that holds a byte follows from its offset. Each block is pinned
-// only while its bytes are copied.
+// Every segment but the last holds exactly payload_size bytes, so byte X of the chain is in segment X / payload_size,
+// at X % payload_size (no need to walk the chain). Each block is pinned only while its bytes are copied into dst.
+// Note that unpinning is implicit through RAII on the BufferHandle.
 void PDXearchBlockChainReader::ReadRange(const PDXearchBlockChain &chain_p, idx_t offset, idx_t size, char *dst) const {
 	if (offset + size > chain_p.num_bytes) {
 		throw InternalException("PDXearch read past the end of a chain of its index storage");
@@ -134,8 +134,7 @@ void PDXearchBlockChainReader::ReadRange(const PDXearchBlockChain &chain_p, idx_
 	}
 }
 
-// Every block but the last is full, so the block that holds a byte follows from its offset. Each block is pinned only
-// while its bytes are copied.
+// Like PDXearchBlockChainReader::ReadRange, with whole blocks of block_size bytes and no segment header.
 void PDXearchTemporaryChain::ReadRange(BufferManager &buffer_manager, idx_t offset, idx_t size, char *dst) const {
 	if (offset + size > num_bytes) {
 		throw InternalException("PDXearch read past the end of a temporary chain of its index");
@@ -167,8 +166,11 @@ PDXearchTemporaryChainWriter::PDXearchTemporaryChainWriter(BufferManager &buffer
     : buffer_manager(buffer_manager), block_size(buffer_manager.GetBlockSize()) {
 }
 
-// DuckDB evicts managed buffers without a queue index first, then by descending index. A temporary chain goes last:
-// evicting it is a write to DuckDB's temporary files.
+// Under memory pressure DuckDB evicts managed buffers without a queue index first, then by descending index. A
+// temporary chain goes last (0): evicting it costs a write to DuckDB's temporary files and a read when it is pinned
+// again, while evicting a cached cluster costs nothing, since the cluster can be copied again from its home. This
+// matters because a temporary chain is the index's only copy of a row group until a checkpoint persists it, and in a
+// :memory: database, which never checkpoints, for as long as the index lives.
 static constexpr idx_t TEMPORARY_CHAIN_EVICTION_QUEUE = 0;
 
 // Allocates the next block and makes it the put area. Replacing the full block unpins it, so DuckDB can evict it.
@@ -270,8 +272,7 @@ void PDXearchClusterCache::RecordAccess(CachedCluster &cluster) {
 	}
 }
 
-// A hot cluster goes to a managed queue DuckDB evicts after the other clusters. DuckDB sets a buffer's queue once, so
-// only a new one.
+// A hot cluster goes to a managed queue DuckDB evicts after the other clusters.
 void PDXearchClusterCache::SetEvictionQueue(const CachedCluster &cluster, BufferHandle &new_block) const {
 	const idx_t average_access_count = total_access_count / num_clusters;
 	if (reader.cache_tiers && average_access_count > 0 &&
@@ -294,6 +295,7 @@ const char *PDXearchClusterCache::Acquire(const uint32_t cluster_id) {
 			cluster.pinned_block = buffer_manager.Pin(cluster.block);
 		}
 		// Never read, or destroyed when DuckDB evicted it.
+		// This is effectively a cache miss.
 		if (!cluster.pinned_block.IsValid()) {
 			const auto range = index->GetClusterDataRange(cluster_id);
 			if (record_counters) {
@@ -376,7 +378,7 @@ void PDXearchBlockChain::Free(FixedSizeAllocator &allocator) {
 	*this = PDXearchBlockChain();
 }
 
-// Where the chain starts, how long it is, and its segments, so that any range of it can be read alone (ReadRange).
+// Where the chain starts, how long it is, and its segments. Thus, any range of it can be read alone (ReadRange).
 static void WriteChain(std::ostream &out, const PDXearchBlockChain &chain) {
 	PDX::WriteValue(out, chain.head.Get());
 	PDX::WriteValue(out, chain.num_bytes);
