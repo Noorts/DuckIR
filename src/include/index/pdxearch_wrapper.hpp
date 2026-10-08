@@ -125,7 +125,8 @@ struct PDXRowGroup {
 	std::mutex mutex;
 	// Where the index was last persisted. A checkpoint rewrites only the row groups that changed since.
 	PDXearchBlockChain persisted_chain;
-	// Where a paged index changed since the checkpoint lives until the next one. When not empty, it is the current home.
+	// Where a paged index changed since the checkpoint lives until the next one. When not empty, it is the current
+	// home.
 	PDXearchTemporaryChain temporary_chain;
 	// Deletes a paged index took as tombstones only: the bytes of its home still hold the rows.
 	bool has_unwritten_deletes = false;
@@ -191,8 +192,8 @@ public:
 
 	// Builds the index of the row group [row_start, row_start + count) from its (non-NULL) rows. Rows of this row
 	// group that arrive in a later batch are appended to the index that was already built. The build's k-means runs on
-	// n_threads threads. With a reader (pdxearch_cluster_paging), the index then moves to a temporary chain. Returns how
-	// many bytes the row group's in-memory size grew by.
+	// n_threads threads. With a reader (pdxearch_cluster_paging), the index then moves to a temporary chain. Returns
+	// how many bytes the row group's in-memory size grew by.
 	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
 	                              const row_t row_start, const idx_t count, const idx_t n_threads,
 	                              optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager) {
@@ -558,8 +559,8 @@ private:
 		row_group.index = std::move(ivf_index);
 	}
 
-	// Moves an IVF index on the heap into a new temporary chain, and pages it from there. A Flat index stays on the heap:
-	// paging would load it fully again.
+	// Moves an IVF index on the heap into a new temporary chain, and pages it from there. A Flat index stays on the
+	// heap: paging would load it fully again.
 	void WriteTemporaryChain(PDXRowGroup &row_group, PDXearchBlockChainReader &reader, BufferManager &buffer_manager) {
 		if (dynamic_cast<PDX::FlatIndex *>(row_group.index.get())) {
 			return;

@@ -767,7 +767,8 @@ void PDXearchIndex::WriteTemporaryChains() {
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->WriteTemporaryChains(*storage_reader, buffer_manager);
 	} else {
-		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->WriteTemporaryChains(*storage_reader, buffer_manager);
+		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
+		    ->WriteTemporaryChains(*storage_reader, buffer_manager);
 	}
 }
 

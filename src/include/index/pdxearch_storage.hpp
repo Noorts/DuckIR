@@ -97,8 +97,9 @@ private:
 	BufferHandle pinned_block;
 };
 
-// A row group's serialized index until a checkpoint persists it, in DuckDB buffers of one block each: DuckDB writes them
-// to its temporary files when it evicts them, and reads them back when they are pinned. Destroying the chain frees them.
+// A row group's serialized index until a checkpoint persists it, in DuckDB buffers of one block each: DuckDB writes
+// them to its temporary files when it evicts them, and reads them back when they are pinned. Destroying the chain frees
+// them.
 struct PDXearchTemporaryChain {
 	vector<shared_ptr<BlockHandle>> blocks;
 	idx_t num_bytes = 0;

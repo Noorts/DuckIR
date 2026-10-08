@@ -42,10 +42,12 @@ public:
 		const idx_t build_bytes =
 		    row_group_size * num_dimensions * sizeof(float) + index.EstimateBuildHeapBytes(row_group_size);
 		const auto num_threads = NumericCast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads());
-		const idx_t num_row_groups = MaxValue<idx_t>(1, (op.estimated_cardinality + row_group_size - 1) / row_group_size);
+		const idx_t num_row_groups =
+		    MaxValue<idx_t>(1, (op.estimated_cardinality + row_group_size - 1) / row_group_size);
 		memory_state = TemporaryMemoryManager::Get(context).Register(context);
 		memory_state->SetMinimumReservation(build_bytes);
-		memory_state->SetRemainingSizeAndUpdateReservation(context, MinValue(num_threads, num_row_groups) * build_bytes);
+		memory_state->SetRemainingSizeAndUpdateReservation(context,
+		                                                   MinValue(num_threads, num_row_groups) * build_bytes);
 		max_concurrent_builds = MaxValue<idx_t>(1, memory_state->GetReservation() / build_bytes);
 		default_threads_per_build = MaxValue<idx_t>(1, num_threads / max_concurrent_builds);
 	}
@@ -152,10 +154,10 @@ SinkResultType PhysicalCreatePDXearchIndex::Sink(ExecutionContext &context, Data
 			}
 			g_sink.running_builds++;
 		}
-		l_sink.row_group_embeddings = BufferManager::GetBufferManager(context.client)
-		                                  .Allocate(MemoryTag::EXTENSION,
-		                                            row_group.count * g_sink.num_dimensions * sizeof(float),
-		                                            /*can_destroy=*/false);
+		l_sink.row_group_embeddings =
+		    BufferManager::GetBufferManager(context.client)
+		        .Allocate(MemoryTag::EXTENSION, row_group.count * g_sink.num_dimensions * sizeof(float),
+		                  /*can_destroy=*/false);
 		l_sink.row_group = row_group;
 		l_sink.has_row_group = true;
 	}
