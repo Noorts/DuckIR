@@ -379,7 +379,8 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 		const idx_t count = FetchRows(table, bounds.row_start, bounds.row_start + static_cast<row_t>(bounds.count),
 		                              row_ids.get(), embeddings, rows_returned);
 		if (count > 0) {
-			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, /*n_threads=*/1);
+			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
+			                      /*executor=*/nullptr);
 		}
 	}
 
@@ -440,7 +441,8 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 				AppendRow(row_group_idx.GetIndex(), row_ids[i], embeddings + i * num_dimensions);
 			}
 		} else {
-			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, /*n_threads=*/1);
+			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
+			                      /*executor=*/nullptr);
 		}
 	}
 	unindexed_row_ranges = std::move(still_unindexed);
@@ -461,7 +463,7 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 // group grew by.
 void PDXearchIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors,
                                           const idx_t num_vectors, const row_t row_start, const idx_t count,
-                                          const idx_t n_threads) {
+                                          PDX::ParallelExecutor *const executor) {
 	// Without paging, the row groups stay on the heap.
 	const auto reader = cluster_paging ? storage_reader.get() : nullptr;
 	const auto build_heap_bytes = static_cast<int64_t>(EstimateBuildHeapBytes(count));
@@ -470,12 +472,12 @@ void PDXearchIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const floa
 	try {
 		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 			memory_growth_bytes = static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-			                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count,
-			                                                  n_threads, reader, buffer_manager);
+			                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, executor,
+			                                                  reader, buffer_manager);
 		} else {
 			memory_growth_bytes = static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-			                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count,
-			                                                  n_threads, reader, buffer_manager);
+			                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, executor,
+			                                                  reader, buffer_manager);
 		}
 	} catch (...) {
 		UpdateReservedMemory(-build_heap_bytes);

@@ -8,8 +8,6 @@
     - [Install Clang](#install-clang)
     - [Install CMake](#install-cmake)
     - [Install vcpkg](#install-vcpkg)
-    - [Install BLAS](#install-blas)
-    - [Install OpenMP](#install-openmp)
   - [Build](#build)
     - [Building the Extension](#building-the-extension)
     - [Clangd Language Server Support](#clangd-language-server-support)
@@ -21,10 +19,8 @@
 ## Prerequisites
 
 - Clang (LLVM Clang 18)
-- CMake (>= 3.12)
+- CMake (>= 3.26)
 - vcpkg
-- A BLAS implementation
-- OpenMP
 
 Once you have these you can [build the extension](#build).
 
@@ -41,7 +37,7 @@ brew install llvm@18
 
 ### Install CMake
 
-Versions >= 3.12 are supported.
+Versions >= 3.26 are supported.
 
 ```sh
 brew install cmake
@@ -81,22 +77,6 @@ git checkout 4334d8b4c8
 
 ```sh
 export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
-
-### Install BLAS
-
-On Apple Silicon (M1-M5) we rely on the Apple Accelerate framework. This means there is nothing to install.
-
-### Install OpenMP
-
-```sh
-brew install libomp
-```
-
-Note: You might have to set `OpenMP_ROOT` in your `.zshrc` file.
-
-```sh
-export OpenMP_ROOT=$(brew --prefix)/opt/libomp
 ```
 
 ## Build

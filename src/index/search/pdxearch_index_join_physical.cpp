@@ -11,6 +11,7 @@
 
 #include "index/pdxearch_blob_codec.hpp"
 #include "index/pdxearch_index.hpp"
+#include "index/pdxearch_parallel_executor.hpp"
 
 #include "pdx/ivf_searcher.hpp"
 
@@ -260,7 +261,7 @@ static double EstimateOnTheFlyBuildPeakBytes(const idx_t num_passing_rows, const
 // The rows are numbered by position in on_the_fly_indexes_row_ids. Returns false only when DuckDB cannot reserve the
 // build's memory (the join then searches the row groups); true otherwise, even when there was nothing to build.
 static bool BuildOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const idx_t row_groups_per_window,
-                                 const bool build_flat, const idx_t n_threads) {
+                                 const bool build_flat, PDX::ParallelExecutor *const executor) {
 	const idx_t num_dimensions = search.index.GetNumDimensions();
 	auto &passing_row_ids_per_row_group = search.passing_row_ids_per_row_group;
 	// Rows without an embedding are not in the index.
@@ -318,8 +319,8 @@ static bool BuildOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const idx_t ro
 		}
 		const idx_t window_rows = on_the_fly_indexes_row_ids.size() - window_offset;
 		std::iota(positions.begin(), positions.begin() + static_cast<std::ptrdiff_t>(window_rows), window_offset);
-		// PDX's default number of clusters. The indexes set PDX's process-wide thread count from their config.
-		const auto config = search.index.MakePDXIndexConfig(/*num_clusters=*/0, n_threads, window_offset);
+		// PDX's default number of clusters.
+		const auto config = search.index.MakePDXIndexConfig(/*num_clusters=*/0, executor, window_offset);
 		std::unique_ptr<PDX::IPDXIndex> on_the_fly_index;
 		if (build_flat || window_rows < PDXearchWrapperF32::MIN_EMBEDDINGS_FOR_CLUSTERING) {
 			auto flat_index = std::make_unique<PDX::FlatIndex>(config, *search.on_the_fly_indexes_pruner);
@@ -330,6 +331,8 @@ static bool BuildOnTheFlyIndexes(PDXearchIndexJoinSearch &search, const idx_t ro
 			ivf_index->BuildIndex(positions.data(), embeddings.get(), window_rows);
 			on_the_fly_index = std::move(ivf_index);
 		}
+		// The executor ends with Finalize, the index with the join.
+		on_the_fly_index->SetExecutor(nullptr);
 		const idx_t num_clusters = on_the_fly_index->GetNumClusters();
 		search.on_the_fly_indexes_clusters_to_probe +=
 		    probe_all_clusters
@@ -424,7 +427,7 @@ SinkFinalizeType PhysicalPDXearchIndexJoin::Finalize(Pipeline &pipeline, Event &
 	        search.max_passing_rows_per_cluster_for_flat_search *
 	            static_cast<double>(num_clusters_of_row_groups_with_passing_rows)) {
 		if (BuildOnTheFlyIndexes(search, passing_row_ids_per_row_group.size(), /*build_flat=*/true,
-		                         /*n_threads=*/1)) {
+		                         /*executor=*/nullptr)) {
 			return search.on_the_fly_indexes.empty() ? SinkFinalizeType::NO_OUTPUT_POSSIBLE : SinkFinalizeType::READY;
 		}
 	}
@@ -439,9 +442,10 @@ SinkFinalizeType PhysicalPDXearchIndexJoin::Finalize(Pipeline &pipeline, Event &
 	if (build_on_the_fly_indexes) {
 		const idx_t row_groups_per_on_the_fly_index =
 		    GetOnTheFlyIndexWindowSizeWithinMemoryBudget(context, search, num_passing_rows);
+		DuckDBParallelExecutor executor(context,
+		                                static_cast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads()));
 		if (row_groups_per_on_the_fly_index > 0 &&
-		    BuildOnTheFlyIndexes(search, row_groups_per_on_the_fly_index, /*build_flat=*/false,
-		                         static_cast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads()))) {
+		    BuildOnTheFlyIndexes(search, row_groups_per_on_the_fly_index, /*build_flat=*/false, &executor)) {
 			return search.on_the_fly_indexes.empty() ? SinkFinalizeType::NO_OUTPUT_POSSIBLE : SinkFinalizeType::READY;
 		}
 	}

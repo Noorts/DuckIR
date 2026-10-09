@@ -178,7 +178,7 @@ public:
 	PDXearchRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
 	void SetUpIndexForRowGroup(const row_t *row_ids, const float *embeddings, idx_t num_embeddings, row_t row_start,
-	                           idx_t count, idx_t n_threads);
+	                           idx_t count, PDX::ParallelExecutor *executor);
 	uint64_t EstimateBuildHeapBytes(idx_t num_embeddings) const;
 
 	// !`passing_row_ids` are size_t because they go straight into PDX's IPDXIndex::BeginIterativeSearch.
@@ -306,9 +306,9 @@ public:
 		return pdxearch_wrapper->GetRotationMatrix();
 	}
 
-	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, const idx_t n_threads,
+	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, PDX::ParallelExecutor *const executor,
 	                                       const idx_t base_row_id) const {
-		return pdxearch_wrapper->MakePDXIndexConfig(num_clusters, n_threads, base_row_id);
+		return pdxearch_wrapper->MakePDXIndexConfig(num_clusters, executor, base_row_id);
 	}
 };
 

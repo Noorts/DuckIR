@@ -90,8 +90,8 @@ public:
 	}
 
 	// The config of every PDX index over this index's rows (the row groups' and the join's on-the-fly ones), which all
-	// take transformed embeddings. num_clusters 0 is PDX's default for the number of rows.
-	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, const idx_t n_threads,
+	// take transformed embeddings. num_clusters 0 is PDX's default for the number of rows. A null executor is serial.
+	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, PDX::ParallelExecutor *const executor,
 	                                       const idx_t base_row_id) const {
 		PDX::PDXIndexConfig config;
 		config.num_dimensions = num_dimensions;
@@ -100,7 +100,7 @@ public:
 		config.num_clusters = static_cast<uint32_t>(num_clusters);
 		config.kmeans_iters = 8;
 		config.hierarchical_indexing = true;
-		config.n_threads = static_cast<uint32_t>(n_threads);
+		config.executor = executor;
 		config.is_data_transformed = true;
 		config.base_row_id = static_cast<size_t>(base_row_id);
 		return config;
@@ -194,11 +194,11 @@ public:
 	}
 
 	// Builds the index of the row group [row_start, row_start + count) from its (non-NULL) rows. Rows of this row
-	// group that arrive in a later batch are appended to the index that was already built. The build's k-means runs on
-	// n_threads threads. With a reader (pdxearch_cluster_paging), the index then moves to a temporary chain. Returns
-	// how many bytes the row group's in-memory size grew by.
+	// group that arrive in a later batch are appended to the index that was already built. The build runs on executor
+	// (null: serial). With a reader (pdxearch_cluster_paging), the index then moves to a temporary chain. Returns how
+	// many bytes the row group's in-memory size grew by.
 	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
-	                              const row_t row_start, const idx_t count, const idx_t n_threads,
+	                              const row_t row_start, const idx_t count, PDX::ParallelExecutor *const executor,
 	                              optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager) {
 		D_ASSERT(num_embeddings > 0 && num_embeddings <= count);
 		PDXRowGroup *row_group = nullptr;
@@ -225,7 +225,9 @@ public:
 		}
 
 		if (build_lock.owns_lock()) {
-			row_group->index = BuildRowGroupIndex(*row_group, row_ids, embeddings, num_embeddings, n_threads);
+			row_group->index = BuildRowGroupIndex(*row_group, row_ids, embeddings, num_embeddings, executor);
+			// The executor ends with the build: later appends and deletes run serially.
+			row_group->index->SetExecutor(nullptr);
 			if (reader) {
 				WriteTemporaryChain(*row_group, *reader, buffer_manager);
 			}
@@ -533,15 +535,15 @@ public:
 
 private:
 	PDX::PDXIndexConfig MakeRowGroupIndexConfig(const row_t row_start, const idx_t num_embeddings,
-	                                            const idx_t n_threads) const {
-		return MakePDXIndexConfig(ComputeNumClustersForRowGroup(num_embeddings), n_threads,
+	                                            PDX::ParallelExecutor *const executor) const {
+		return MakePDXIndexConfig(ComputeNumClustersForRowGroup(num_embeddings), executor,
 		                          static_cast<idx_t>(row_start));
 	}
 
 	unique_ptr<PDX::IPDXIndex> BuildRowGroupIndex(const PDXRowGroup &row_group, const row_t *const row_ids,
 	                                              const float *const embeddings, const idx_t num_embeddings,
-	                                              const idx_t n_threads) const {
-		const auto config = MakeRowGroupIndexConfig(row_group.row_start, num_embeddings, n_threads);
+	                                              PDX::ParallelExecutor *const executor) const {
+		const auto config = MakeRowGroupIndexConfig(row_group.row_start, num_embeddings, executor);
 		std::vector<size_t> ids(num_embeddings);
 		for (idx_t i = 0; i < num_embeddings; i++) {
 			ids[i] = static_cast<size_t>(row_ids[i]);
@@ -561,7 +563,7 @@ private:
 		const auto row_ids = flat_index.GetRowIds();
 		const auto embeddings = flat_index.GetEmbeddings();
 		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(
-		    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), /*n_threads=*/1), *pruner);
+		    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), /*executor=*/nullptr), *pruner);
 		ivf_index->BuildIndex(row_ids.data(), embeddings.get(), row_ids.size());
 		row_group.index = std::move(ivf_index);
 	}
