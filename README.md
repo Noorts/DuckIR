@@ -1,9 +1,9 @@
 <h1 align="center">
   DuckIR
 </h1>
-<h2 align="center">
+<h4 align="center">
   Information Retrieval suite for DuckDB
-</h2>
+</h4>
 <p align="center">
   Vector Search ✅ | Full Text Search ⏱️ | Hybrid Search ⏱️ 
 </p>
@@ -22,11 +22,7 @@
 
 ## Usage
 
-See our full example [From Hugging Face to DuckIR](#from-hugging-face-to-duckir)
-
-### Getting Started
-
-0. Build the extension locally by following [DEVELOPMENT.md](./DEVELOPMENT.md). This is until we are available as a Community extension.  
+### From Hugging Face to DuckIR
 
 1. Start a DuckDB instance and allow loading unsigned extensions.
 
@@ -40,51 +36,7 @@ duckdb -unsigned
 LOAD '<Fill in>/PDXearch/build/release/extension/pdxearch/pdxearch.duckdb_extension';
 ```
 
-3. **Create a DuckDB Table**: Ensure you have a table with a fixed-size `FLOAT[num-dims]` column for your embeddings (below called `embedding`). 
-
-```sql
-CREATE TABLE t1 (
-  id INTEGER, 
-  embedding FLOAT[512]
-);
-
-INSERT INTO t1
-  SELECT i, list_transform(range(512), lambda x: random())::FLOAT[512]
-  FROM range(100000) t(i);
-```
-
-4. **Create a Vector Index**: Optionally, configure the index (see the [configuration](#vector-index-creation) section).
-
-```sql
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (embedding) WITH (metric = 'l2sq');
-```
-
-5. Run (filtered) vector search queries. The filters are evaluated first, pushing down the predicates whenever possible:
-
-```sql
-SELECT * 
-FROM t1 
-WHERE id < 500
-ORDER BY array_distance(
-  embedding, 
-  repeat([1000.51], 512)::FLOAT[512]
-) 
-LIMIT 100;
-```
-
-### From Hugging Face to DuckIR
-
-0. Build the extension locally by following [DEVELOPMENT.md](./DEVELOPMENT.md). This is until we are available as a Community extension.  
-1. Load our extension:
-```bash
-duckdb -unsigned
-```
-
-```sql
-LOAD '<Fill in>/PDXearch/build/release/extension/pdxearch/pdxearch.duckdb_extension';
-```
-
-2. Create a DuckDB table with an empty vector index
+3. Create a DuckDB table with an empty vector index
 ```sql
   CREATE TABLE movies (
     title VARCHAR, 
@@ -98,14 +50,14 @@ LOAD '<Fill in>/PDXearch/build/release/extension/pdxearch/pdxearch.duckdb_extens
     WITH (metric = 'cosine');
 ```
 
-3. Insert the data directly from Hugging Face:
+4. Insert the data directly from Hugging Face:
 ```sql
   INSERT INTO movies              
       SELECT title, genres, imdb.rating, plot_embedding::FLOAT[1536]
       FROM 'hf://datasets/MongoDB/embedded_movies@~parquet/default/train/0000.parquet';
 ```
 
-4. Query your vectors:
+5. Run (filtered) vector search queries. The filters are evaluated first, pushing down the predicates whenever possible:
 
 ```sql
   SET VARIABLE q = (
@@ -124,7 +76,7 @@ LOAD '<Fill in>/PDXearch/build/release/extension/pdxearch/pdxearch.duckdb_extens
   LIMIT 5;
 ```
 
-5. Results:
+6. Results:
 
 ```
 The Gods Must Be Crazy         [Action, Comedy]            7.3
@@ -133,6 +85,8 @@ Tai-Chi Master                 [Action, Comedy, Drama]     7.3
 The Blind Swordsman: Zatoichi  [Action, Comedy, Crime]     7.6
 The Legend of Drunken Master   [Action, Comedy]            7.6
 ```
+
+7. You can also build an index on a table that already has embeddings in it.
 
 ### Vector Index Creation
 
@@ -264,7 +218,7 @@ ORDER BY array_distance(
 
 - **What needs to fit in memory**: We are working on making DuckIR fully out-of-core. Right now, for vector indexes, the centroids and a rowid mapping must stay resident (about 20 bytes per row at 768 dimensions).
 
-##### Query shapes that run without an index
+**Query shapes that run without an index:**
 
 - `NULL` first orders (`NULLS FIRST`, or `SET default_null_order = 'nulls_first'`), descending orders
 - Additional `ORDER BY` keys

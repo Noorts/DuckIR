@@ -58,7 +58,7 @@ Binder Error: PDXearch index 'quantization' must be a string
 statement error
 CREATE INDEX idx ON t1 USING PDXEARCH (emb) WITH (quantization = 'test');
 ----
-Binder Error: PDXearch index 'quantization' must be one of: 'u8', 'f32'
+Binder Error: PDXearch index 'quantization' must be one of: 'f32', 'u8'
 
 foreach quantization f32 u8
 
