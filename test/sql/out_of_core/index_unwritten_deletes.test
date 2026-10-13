@@ -1,0 +1,51 @@
+# name: test/sql/out_of_core/index_unwritten_deletes.test
+# description: A checkpoint keeps the chains of row groups with few deletes: after a restart, reconciliation deletes the rows again and the index gives the same results.
+# group: [out_of_core]
+
+require parquet
+
+require pdxearch
+
+load __TEST_DIR__/index_unwritten_deletes_main.db
+
+statement ok
+ATTACH '__TEST_DIR__/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Variables
+test-env DIMS 128
+
+statement ok
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 22000;
+
+statement ok
+CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
+
+statement ok
+CREATE INDEX t_idx ON p.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+
+statement ok
+CHECKPOINT p;
+
+# 2% of each row group, below MAX_UNWRITTEN_DELETES_RATIO.
+statement ok
+DELETE FROM p.t WHERE id % 50 = 0;
+
+query II nosort deleted
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
+statement ok
+CHECKPOINT p;
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
+
+# The chains still hold the deleted rows: the first search reconciles them away.
+query II nosort deleted
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----

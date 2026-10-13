@@ -3,7 +3,9 @@
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/execution/index/index_pointer.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_lock.hpp"
 #include <atomic>
@@ -27,6 +29,10 @@ struct PDXearchIndexStats {
 	int64_t seed;
 	bool is_normalized;
 	int64_t approximate_lower_bound_memory_usage_bytes;
+	int64_t cluster_acquires;
+	int64_t cluster_cache_misses;
+	int64_t cluster_bytes_fetched;
+	int64_t blocks_read;
 };
 
 class PDXearchIndex : public BoundIndex {
@@ -37,6 +43,11 @@ public:
 	static const case_insensitive_map_t<PDX::Quantization> QUANTIZATION_MAP;
 
 private:
+	// Null only when the index was not loaded from storage and paging is off.
+	unique_ptr<PDXearchBlockChainReader> storage_reader;
+	bool cluster_paging = true;
+	bool record_paging_counters = false;
+	bool cache_tiers = false;
 	unique_ptr<PDXearchWrapper> pdxearch_wrapper;
 	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 
@@ -45,6 +56,16 @@ private:
 	std::atomic<bool> has_unindexed_rows {false};
 	// Set when the index is loaded from storage: its first sync reconciles it with the table (ReconcileWithTable).
 	bool needs_reconciliation = false;
+	// Why a persisted index failed to load when DuckDB bound it, raised on first use instead: DuckDB's
+	// TableIndexList::Bind is not exception-safe, and a bind that throws leaves the next one spinning forever.
+	ErrorData bind_error;
+	IndexStorageInfo persisted_storage_info;
+
+	BufferManager &buffer_manager;
+	std::atomic<idx_t> reserved_memory_bytes {0};
+	// Reserves `delta` more bytes, or frees `-delta`. Throws DuckDB's out-of-memory error when nothing more can be
+	// evicted.
+	void UpdateReservedMemory(int64_t delta);
 
 	void AppendRow(idx_t row_group_idx, row_t row_id, const float *transformed_embedding);
 	void DeleteRow(row_t row_id);
@@ -94,6 +115,7 @@ private:
 	void WriteDirectory(const PDXearchDirectory &directory);
 	IndexStorageInfo MakeStorageInfo() const;
 	void PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks);
+	void WriteTemporaryChains();
 	void AddRowGroupEntries(PDXearchDirectory &directory) const;
 	void ResetPersistedChains();
 	// Reads the directory and the rotation of a persisted index. The returned reader
@@ -101,7 +123,8 @@ private:
 	unique_ptr<PDXearchBlockChainReader> OpenStorage(const IndexStorageInfo &info, uint32_t num_dimensions,
 	                                                 PDXearchDirectory &directory,
 	                                                 unique_ptr<float[]> &rotation_matrix);
-	void LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory);
+	void LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory, bool page_clusters);
+	static IndexStorageInfo CopyStorageInfo(const IndexStorageInfo &info);
 
 	unique_ptr<ExpressionMatcher> function_matcher;
 
@@ -121,6 +144,7 @@ public:
 	              TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
 	              AttachedDatabase &db, const case_insensitive_map_t<Value> &options,
 	              const IndexStorageInfo &info = IndexStorageInfo());
+	~PDXearchIndex() override;
 
 	static PhysicalOperator &CreatePlan(PlanIndexInput &input);
 
@@ -154,7 +178,8 @@ public:
 	PDXearchRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
 	void SetUpIndexForRowGroup(const row_t *row_ids, const float *embeddings, idx_t num_embeddings, row_t row_start,
-	                           idx_t count);
+	                           idx_t count, idx_t n_threads);
+	uint64_t EstimateBuildHeapBytes(idx_t num_embeddings) const;
 
 	// !`passing_row_ids` are size_t because they go straight into PDX's IPDXIndex::BeginIterativeSearch.
 	// `clusters_access_order`: the row group's GetClustersAccessOrderForRowGroup for this query (nullptr: rank).
@@ -284,10 +309,6 @@ public:
 	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, const idx_t n_threads,
 	                                       const idx_t base_row_id) const {
 		return pdxearch_wrapper->MakePDXIndexConfig(num_clusters, n_threads, base_row_id);
-	}
-
-	uint64_t GetInMemorySizeInBytesWithoutLocking() const {
-		return pdxearch_wrapper->GetInMemorySizeInBytes();
 	}
 };
 

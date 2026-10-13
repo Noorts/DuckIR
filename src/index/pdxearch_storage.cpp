@@ -67,10 +67,15 @@ PDXearchBlockChain PDXearchBlockChainWriter::Finish() {
 	return result;
 }
 
-// Indexes the persisted buffers by id once, for every chain this reader opens.
 PDXearchBlockChainReader::PDXearchBlockChainReader(BlockManager &block_manager,
                                                    const FixedSizeAllocatorInfo &allocator_info)
     : block_manager(block_manager), segment_size(allocator_info.segment_size) {
+	UpdateBlockPointers(allocator_info);
+}
+
+// Indexes the persisted buffers by id, for every chain this reader opens.
+void PDXearchBlockChainReader::UpdateBlockPointers(const FixedSizeAllocatorInfo &allocator_info) {
+	block_pointers_by_buffer_id.clear();
 	for (idx_t i = 0; i < allocator_info.buffer_ids.size(); i++) {
 		block_pointers_by_buffer_id.emplace(allocator_info.buffer_ids[i], allocator_info.block_pointers[i]);
 	}
@@ -97,6 +102,252 @@ PDXearchBlockChain PDXearchBlockChainReader::Finish() {
 	return result;
 }
 
+idx_t PDXearchBlockChainReader::GetBytesRead() const {
+	return chain.num_bytes - unread_bytes - static_cast<idx_t>(egptr() - gptr());
+}
+
+// Unlike Finish, collects no segments: the directory has them.
+void PDXearchBlockChainReader::Close() {
+	setg(nullptr, nullptr, nullptr);
+	pinned_block.Destroy();
+	chain = PDXearchBlockChain();
+	unread_bytes = 0;
+}
+
+// Every segment but the last holds exactly payload_size bytes, so byte X of the chain is in segment X / payload_size,
+// at X % payload_size (no need to walk the chain). Each block is pinned only while its bytes are copied into dst.
+// Note that unpinning is implicit through RAII on the BufferHandle.
+void PDXearchBlockChainReader::ReadRange(const PDXearchBlockChain &chain_p, idx_t offset, idx_t size, char *dst) const {
+	if (offset + size > chain_p.num_bytes) {
+		throw InternalException("PDXearch read past the end of a chain of its index storage");
+	}
+	const idx_t payload_size = segment_size - SEGMENT_HEADER_SIZE;
+	while (size > 0) {
+		const idx_t offset_in_payload = offset % payload_size;
+		const idx_t num_bytes = MinValue<idx_t>(size, payload_size - offset_in_payload);
+		BufferHandle handle;
+		const auto segment = PinSegment(chain_p.segments[offset / payload_size], handle);
+		memcpy(dst, segment + SEGMENT_HEADER_SIZE + offset_in_payload, num_bytes);
+		offset += num_bytes;
+		size -= num_bytes;
+		dst += num_bytes;
+	}
+}
+
+// Like PDXearchBlockChainReader::ReadRange, with whole blocks of block_size bytes and no segment header.
+void PDXearchTemporaryChain::ReadRange(BufferManager &buffer_manager, idx_t offset, idx_t size, char *dst) const {
+	if (offset + size > num_bytes) {
+		throw InternalException("PDXearch read past the end of a temporary chain of its index");
+	}
+	const idx_t block_size = buffer_manager.GetBlockSize();
+	while (size > 0) {
+		const idx_t offset_in_block = offset % block_size;
+		const idx_t num_bytes_in_block = MinValue<idx_t>(size, block_size - offset_in_block);
+		auto block = blocks[offset / block_size];
+		const auto handle = buffer_manager.Pin(block);
+		memcpy(dst, handle.Ptr() + offset_in_block, num_bytes_in_block);
+		offset += num_bytes_in_block;
+		size -= num_bytes_in_block;
+		dst += num_bytes_in_block;
+	}
+}
+
+void PDXearchTemporaryChain::CopyTo(BufferManager &buffer_manager, std::ostream &out) const {
+	const idx_t block_size = buffer_manager.GetBlockSize();
+	for (idx_t i = 0; i < blocks.size(); i++) {
+		auto block = blocks[i];
+		const auto handle = buffer_manager.Pin(block);
+		const auto num_bytes_in_block = MinValue<idx_t>(block_size, num_bytes - i * block_size);
+		out.write(char_ptr_cast(handle.Ptr()), static_cast<std::streamsize>(num_bytes_in_block));
+	}
+}
+
+PDXearchTemporaryChainWriter::PDXearchTemporaryChainWriter(BufferManager &buffer_manager)
+    : buffer_manager(buffer_manager), block_size(buffer_manager.GetBlockSize()) {
+}
+
+// Under memory pressure DuckDB evicts managed buffers without a queue index first, then by descending index. A
+// temporary chain goes last (0): evicting it costs a write to DuckDB's temporary files and a read when it is pinned
+// again, while evicting a cached cluster costs nothing, since the cluster can be copied again from its home. This
+// matters because a temporary chain is the index's only copy of a row group until a checkpoint persists it, and in a
+// :memory: database, which never checkpoints, for as long as the index lives.
+static constexpr idx_t TEMPORARY_CHAIN_EVICTION_QUEUE = 0;
+
+// Allocates the next block and makes it the put area. Replacing the full block unpins it, so DuckDB can evict it.
+void PDXearchTemporaryChainWriter::StartBlock() {
+	chain.num_bytes += static_cast<idx_t>(pptr() - pbase());
+	current_block = buffer_manager.Allocate(MemoryTag::EXTENSION, block_size, /*can_destroy=*/false);
+	current_block.GetBlockHandle()->GetMemory().SetEvictionQueueIndex(TEMPORARY_CHAIN_EVICTION_QUEUE);
+	chain.blocks.push_back(current_block.GetBlockHandle());
+	const auto data = char_ptr_cast(current_block.Ptr());
+	setp(data, data + block_size);
+}
+
+// Called by the ostream when the put area is full, with the character that did not fit.
+PDXearchTemporaryChainWriter::int_type PDXearchTemporaryChainWriter::overflow(const int_type ch) {
+	if (traits_type::eq_int_type(ch, traits_type::eof())) {
+		return traits_type::not_eof(ch);
+	}
+	StartBlock();
+	*pptr() = traits_type::to_char_type(ch);
+	pbump(1);
+	return ch;
+}
+
+PDXearchTemporaryChain PDXearchTemporaryChainWriter::Finish() {
+	chain.num_bytes += static_cast<idx_t>(pptr() - pbase());
+	setp(nullptr, nullptr);
+	current_block.Destroy();
+	auto result = std::move(chain);
+	chain = PDXearchTemporaryChain();
+	return result;
+}
+
+PDXearchTemporaryChainReader::PDXearchTemporaryChainReader(BufferManager &buffer_manager,
+                                                           const PDXearchTemporaryChain &chain)
+    : buffer_manager(buffer_manager), block_size(buffer_manager.GetBlockSize()), chain(chain) {
+}
+
+idx_t PDXearchTemporaryChainReader::GetBytesRead() const {
+	if (next_block == 0) {
+		return 0;
+	}
+	return (next_block - 1) * block_size + static_cast<idx_t>(gptr() - eback());
+}
+
+// Called by the istream when the get area is exhausted: pins the next block and makes its bytes the get area. Pinning
+// the next block unpins the previous one.
+PDXearchTemporaryChainReader::int_type PDXearchTemporaryChainReader::underflow() {
+	if (gptr() < egptr()) {
+		return traits_type::to_int_type(*gptr());
+	}
+	if (next_block == chain.blocks.size()) {
+		return traits_type::eof();
+	}
+	auto block = chain.blocks[next_block];
+	pinned_block = buffer_manager.Pin(block);
+	const auto num_bytes = MinValue<idx_t>(block_size, chain.num_bytes - next_block * block_size);
+	next_block++;
+	const auto data = char_ptr_cast(pinned_block.Ptr());
+	setg(data, data, data + num_bytes);
+	return traits_type::to_int_type(*gptr());
+}
+
+PDXearchClusterCache::PDXearchClusterCache(const PDXearchBlockChainReader &reader, BufferManager &buffer_manager)
+    : reader(reader), buffer_manager(buffer_manager) {
+}
+
+void PDXearchClusterCache::Bind(const PDX::IPDXIndex &index_p, const PDXearchBlockChain &chain_p,
+                                const idx_t cluster_data_start_p) {
+	chain = &chain_p;
+	BindIndex(index_p, cluster_data_start_p);
+}
+
+void PDXearchClusterCache::Bind(const PDX::IPDXIndex &index_p, const PDXearchTemporaryChain &chain_p,
+                                const idx_t cluster_data_start_p) {
+	temporary_chain = &chain_p;
+	BindIndex(index_p, cluster_data_start_p);
+}
+
+void PDXearchClusterCache::BindIndex(const PDX::IPDXIndex &index_p, const idx_t cluster_data_start_p) {
+	index = &index_p;
+	cluster_data_start = cluster_data_start_p;
+	num_clusters = index_p.GetNumClusters();
+	clusters = make_uniq_array<CachedCluster>(num_clusters);
+}
+
+// The thread that completes a period halves the counts: an access k periods old weighs 2^-k.
+void PDXearchClusterCache::RecordAccess(CachedCluster &cluster) {
+	if (!reader.cache_tiers) {
+		return;
+	}
+	cluster.access_count++;
+	total_access_count++;
+	if (++acquires_since_decay == num_clusters * ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS) {
+		acquires_since_decay = 0;
+		for (idx_t i = 0; i < num_clusters; i++) {
+			clusters[i].access_count = clusters[i].access_count / 2;
+		}
+		total_access_count = total_access_count / 2;
+	}
+}
+
+// A hot cluster goes to a managed queue DuckDB evicts after the other clusters.
+void PDXearchClusterCache::SetEvictionQueue(const CachedCluster &cluster, BufferHandle &new_block) const {
+	const idx_t average_access_count = total_access_count / num_clusters;
+	if (reader.cache_tiers && average_access_count > 0 &&
+	    cluster.access_count >= HOT_ACCESS_FACTOR * average_access_count) {
+		new_block.GetBlockHandle()->GetMemory().SetEvictionQueueIndex(HOT_CLUSTER_EVICTION_QUEUE);
+	}
+}
+
+// Only the cluster's own lock is held while it is read, so searches of other clusters go on.
+const char *PDXearchClusterCache::Acquire(const uint32_t cluster_id) {
+	const bool record_counters = reader.counters.enabled.load(std::memory_order_relaxed);
+	if (record_counters) {
+		reader.counters.cluster_acquires++;
+	}
+	auto &cluster = clusters[cluster_id];
+	RecordAccess(cluster);
+	lock_guard<mutex> guard(cluster.lock);
+	if (cluster.pin_count == 0) {
+		if (cluster.block) {
+			cluster.pinned_block = buffer_manager.Pin(cluster.block);
+		}
+		// Never read, or destroyed when DuckDB evicted it.
+		// This is effectively a cache miss.
+		if (!cluster.pinned_block.IsValid()) {
+			const auto range = index->GetClusterDataRange(cluster_id);
+			if (record_counters) {
+				reader.counters.cluster_cache_misses++;
+				reader.counters.cluster_bytes_fetched += range.second;
+			}
+			auto new_block = buffer_manager.Allocate(MemoryTag::EXTENSION, range.second, /*can_destroy=*/true);
+			SetEvictionQueue(cluster, new_block);
+			const auto dst = char_ptr_cast(new_block.Ptr());
+			if (temporary_chain) {
+				temporary_chain->ReadRange(buffer_manager, cluster_data_start + range.first, range.second, dst);
+			} else {
+				reader.ReadRange(*chain, cluster_data_start + range.first, range.second, dst);
+			}
+			cluster.block = new_block.GetBlockHandle();
+			cluster.pinned_block = std::move(new_block);
+		}
+	}
+	cluster.pin_count++;
+	return const_char_ptr_cast(cluster.pinned_block.Ptr());
+}
+
+void PDXearchClusterCache::Release(const uint32_t cluster_id) {
+	auto &cluster = clusters[cluster_id];
+	lock_guard<mutex> guard(cluster.lock);
+	cluster.pin_count--;
+	if (cluster.pin_count == 0) {
+		cluster.pinned_block.Destroy();
+	}
+}
+
+// The buffers are DuckDB's: they count toward memory_limit by themselves.
+uint64_t PDXearchClusterCache::GetInMemorySizeInBytes() const {
+	return sizeof(*this) + num_clusters * sizeof(CachedCluster);
+}
+
+// A buffer is persisted at block_pointer.offset of its block, possibly sharing the block with other buffers.
+data_ptr_t PDXearchBlockChainReader::PinSegment(const IndexPointer segment, BufferHandle &handle) const {
+	const auto entry = block_pointers_by_buffer_id.find(segment.GetBufferId());
+	if (entry == block_pointers_by_buffer_id.end()) {
+		throw SerializationException("PDXearch index storage points to a buffer that does not exist");
+	}
+	const auto &block_pointer = entry->second;
+	auto block_handle = block_manager.RegisterBlock(block_pointer.block_id);
+	if (counters.enabled.load(std::memory_order_relaxed) &&
+	    block_handle->GetMemory().GetState() == BlockState::BLOCK_UNLOADED) {
+		counters.blocks_read++;
+	}
+	handle = block_manager.buffer_manager.Pin(block_handle);
+	return handle.Ptr() + block_pointer.offset + ALLOCATOR_BITMASK_SIZE + segment.GetOffset() * segment_size;
+}
+
 // Called by the istream when the get area is exhausted: pins the next segment's block and makes its payload the get
 // area. Pinning the next block unpins the previous one.
 PDXearchBlockChainReader::int_type PDXearchBlockChainReader::underflow() {
@@ -106,18 +357,8 @@ PDXearchBlockChainReader::int_type PDXearchBlockChainReader::underflow() {
 	if (unread_bytes == 0) {
 		return traits_type::eof();
 	}
-	const auto entry = block_pointers_by_buffer_id.find(next_segment.GetBufferId());
-	if (entry == block_pointers_by_buffer_id.end()) {
-		throw SerializationException("PDXearch index storage points to a buffer that does not exist");
-	}
-	const auto &block_pointer = entry->second;
-	auto block_handle = block_manager.RegisterBlock(block_pointer.block_id);
-	pinned_block = block_manager.buffer_manager.Pin(block_handle);
 	chain.segments.push_back(next_segment);
-
-	// A buffer is persisted at block_pointer.offset of its block, possibly sharing the block with other buffers.
-	const auto segment =
-	    pinned_block.Ptr() + block_pointer.offset + ALLOCATOR_BITMASK_SIZE + next_segment.GetOffset() * segment_size;
+	const auto segment = PinSegment(next_segment, pinned_block);
 	next_segment.Set(Load<idx_t>(segment));
 	// Every segment but the last is full.
 	const auto payload_size = MinValue<idx_t>(unread_bytes, segment_size - SEGMENT_HEADER_SIZE);
@@ -137,16 +378,24 @@ void PDXearchBlockChain::Free(FixedSizeAllocator &allocator) {
 	*this = PDXearchBlockChain();
 }
 
-// Only where the chain starts and how long it is: the reader collects its segments.
+// Where the chain starts, how long it is, and its segments. Thus, any range of it can be read alone (ReadRange).
 static void WriteChain(std::ostream &out, const PDXearchBlockChain &chain) {
 	PDX::WriteValue(out, chain.head.Get());
 	PDX::WriteValue(out, chain.num_bytes);
+	PDX::WriteValue(out, static_cast<uint64_t>(chain.segments.size()));
+	for (const auto &segment : chain.segments) {
+		PDX::WriteValue(out, segment.Get());
+	}
 }
 
 static PDXearchBlockChain ReadChain(PDX::StreamReader &reader) {
 	PDXearchBlockChain chain;
 	chain.head.Set(PDX::ReadValue<idx_t>(reader));
 	chain.num_bytes = PDX::ReadValue<idx_t>(reader);
+	chain.segments.resize(PDX::ReadValue<uint64_t>(reader));
+	for (auto &segment : chain.segments) {
+		segment.Set(PDX::ReadValue<idx_t>(reader));
+	}
 	return chain;
 }
 

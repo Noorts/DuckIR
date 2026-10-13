@@ -1,0 +1,100 @@
+# name: test/sql/out_of_core/index_memory_limit.test
+# description: The index's memory is reserved in DuckDB's buffer pool, so it counts toward memory_limit.
+# group: [out_of_core]
+
+require parquet
+
+require pdxearch
+
+load __TEST_DIR__/index_memory_limit_main.db
+
+statement ok
+ATTACH '__TEST_DIR__/index_memory_limit.db' AS m (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# The index on the heap is what is reserved: with paging, its clusters are DuckDB buffers instead.
+statement ok
+SET pdxearch_cluster_paging = false;
+
+# Variables
+test-env DIMS 128
+
+test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20,8,3,5,67,17,19,26,5,0,1,22,60,26,7,1,18,22,84,53,85,119,119,4,24,18,7,7,1,81,106,102,72,30,6,0,9,1,9,119,72,1,4,33,119,29,6,1,0,1,14,52,119,30,3,0,0,55,92,111,2,5,4,9,22,89,96,14,1,0,1,82,59,16,20,5,25,14,11,4,0,0,1,26,47,23,4,0,0,4,38,83,30,14,9,4,9,17,23,41,0,0,2,8,19,25,23,1]
+
+statement ok
+CREATE TABLE m.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 24576;
+
+# Nothing is reserved before the index exists.
+query I
+SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'EXTENSION';
+----
+0
+
+statement ok
+CREATE INDEX t_idx ON m.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+
+# CREATE INDEX reserves the index's size.
+query I
+SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
+----
+true
+
+statement ok
+INSERT INTO m.t SELECT id, emb::FLOAT[${DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 24576 AND id < 26000;
+
+statement ok
+SELECT id FROM m.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+
+# The search's sync reserves what it added.
+query I
+SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
+----
+true
+
+statement ok
+CHECKPOINT m;
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_memory_limit.db' AS m (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+statement ok
+SELECT id FROM m.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+
+# A loaded index reserves its size.
+query I
+SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
+----
+true
+
+statement ok
+DROP INDEX m.t_idx;
+
+# DROP INDEX frees the reservation.
+query I
+SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'EXTENSION';
+----
+0
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET memory_limit = '6MB';
+
+# An index larger than memory_limit fails to build, and frees what it reserved.
+statement error
+CREATE INDEX t_idx ON m.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+----
+Out of Memory Error
+
+query I
+SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'EXTENSION';
+----
+0

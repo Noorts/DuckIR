@@ -3,7 +3,9 @@
 #include "duckdb/catalog/catalog_entry/duck_index_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/storage/temporary_memory_manager.hpp"
 
 #include "index/pdxearch_index.hpp"
 
@@ -23,9 +25,12 @@ PhysicalCreatePDXearchIndex::PhysicalCreatePDXearchIndex(PhysicalPlan &physical_
 	}
 }
 
+// Row groups are built as concurrently as DuckDB's memory manager grants memory for, and at least one at a time. A
+// thread that starts a row group takes one of `max_concurrent_builds` slots, or waits until another thread finishes
+// building and gives its slot back.
 class CreatePDXearchIndexGlobalSinkState : public GlobalSinkState {
 public:
-	explicit CreatePDXearchIndexGlobalSinkState(const PhysicalCreatePDXearchIndex &op)
+	CreatePDXearchIndexGlobalSinkState(const PhysicalCreatePDXearchIndex &op, ClientContext &context)
 	    : global_index(make_uniq<PDXearchIndex>(op.info->index_name, op.info->constraint_type, op.storage_ids,
 	                                            TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
 	                                            op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
@@ -33,16 +38,35 @@ public:
 	      embedding_preprocessor(make_uniq<EmbeddingPreprocessor>(
 	          num_dimensions, global_index->Cast<PDXearchIndex>().GetRotationMatrix())),
 	      is_normalized(global_index->Cast<PDXearchIndex>().IsNormalized()) {
+		const auto &index = global_index->Cast<PDXearchIndex>();
+		const idx_t row_group_size = index.GetRowGroupSize();
+		const idx_t build_bytes =
+		    row_group_size * num_dimensions * sizeof(float) + index.EstimateBuildHeapBytes(row_group_size);
+		const auto num_threads = NumericCast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads());
+		// Note that for a plain table scan, op.estimated_cardinality is exact.
+		const idx_t num_row_groups =
+		    MaxValue<idx_t>(1, (op.estimated_cardinality + row_group_size - 1) / row_group_size);
+		memory_state = TemporaryMemoryManager::Get(context).Register(context);
+		memory_state->SetMinimumReservation(build_bytes);
+		memory_state->SetRemainingSizeAndUpdateReservation(context,
+		                                                   MinValue(num_threads, num_row_groups) * build_bytes);
+		max_concurrent_builds = MaxValue<idx_t>(1, memory_state->GetReservation() / build_bytes);
+		default_threads_per_build = MaxValue<idx_t>(1, num_threads / max_concurrent_builds);
 	}
 
 	unique_ptr<BoundIndex> global_index;
 	const idx_t num_dimensions;
 	const unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 	const bool is_normalized {false};
+	unique_ptr<TemporaryMemoryState> memory_state;
+	idx_t max_concurrent_builds = 1;
+	// Under Lock().
+	idx_t running_builds = 0;
+	idx_t default_threads_per_build = 1;
 };
 
 unique_ptr<GlobalSinkState> PhysicalCreatePDXearchIndex::GetGlobalSinkState(ClientContext &context) const {
-	return make_uniq<CreatePDXearchIndexGlobalSinkState>(*this);
+	return make_uniq<CreatePDXearchIndexGlobalSinkState>(*this, context);
 }
 
 class CreatePDXearchIndexLocalSinkState : public LocalSinkState {
@@ -50,7 +74,6 @@ public:
 	explicit CreatePDXearchIndexLocalSinkState(const PhysicalCreatePDXearchIndex &op, ClientContext &context,
 	                                           CreatePDXearchIndexGlobalSinkState &g_sink) {
 		const auto row_group_size = g_sink.global_index->Cast<PDXearchIndex>().GetRowGroupSize();
-		row_group_embeddings_buffer.resize(row_group_size * g_sink.num_dimensions);
 		row_group_row_ids.resize(row_group_size);
 	}
 
@@ -59,18 +82,28 @@ public:
 	bool has_row_group {false};
 	// Number of embeddings currently buffered in the row group.
 	idx_t row_group_embeddings_count {0};
-	std::vector<float> row_group_embeddings_buffer;
+	BufferHandle row_group_embeddings;
 	// Row IDs of the embeddings currently buffered in the row group.
 	std::vector<row_t> row_group_row_ids;
 };
 
-static void FlushRowGroup(PDXearchIndex &pdxearch_index, CreatePDXearchIndexLocalSinkState &l_sink) {
+// Builds the buffered row group, then frees its buffer and gives its build slot to the threads waiting for one.
+static void FlushRowGroup(CreatePDXearchIndexGlobalSinkState &g_sink, CreatePDXearchIndexLocalSinkState &l_sink) {
+	if (!l_sink.has_row_group) {
+		return;
+	}
 	if (l_sink.row_group_embeddings_count > 0) {
-		pdxearch_index.SetUpIndexForRowGroup(l_sink.row_group_row_ids.data(), l_sink.row_group_embeddings_buffer.data(),
-		                                     l_sink.row_group_embeddings_count, l_sink.row_group.row_start,
-		                                     l_sink.row_group.count);
+		g_sink.global_index->Cast<PDXearchIndex>().SetUpIndexForRowGroup(
+		    l_sink.row_group_row_ids.data(), reinterpret_cast<float *>(l_sink.row_group_embeddings.Ptr()),
+		    l_sink.row_group_embeddings_count, l_sink.row_group.row_start, l_sink.row_group.count,
+		    g_sink.default_threads_per_build);
 		l_sink.row_group_embeddings_count = 0;
 	}
+	l_sink.row_group_embeddings.Destroy();
+	l_sink.has_row_group = false;
+	auto guard = g_sink.Lock();
+	g_sink.running_builds--;
+	g_sink.UnblockTasks(guard);
 }
 
 unique_ptr<LocalSinkState> PhysicalCreatePDXearchIndex::GetLocalSinkState(ExecutionContext &context) const {
@@ -112,17 +145,32 @@ SinkResultType PhysicalCreatePDXearchIndex::Sink(ExecutionContext &context, Data
 
 	// If we detect a new row group, then finalize the previous row group and prepare to process the new one.
 	if (l_sink.has_row_group && row_group.row_start != l_sink.row_group.row_start) {
-		FlushRowGroup(pdxearch_index, l_sink);
+		FlushRowGroup(g_sink, l_sink);
 	}
-	l_sink.row_group = row_group;
-	l_sink.has_row_group = true;
+	if (!l_sink.has_row_group) {
+		// Without a free build slot, DuckDB runs this chunk again once a build gives its slot back.
+		{
+			auto guard = g_sink.Lock();
+			if (g_sink.running_builds == g_sink.max_concurrent_builds) {
+				return g_sink.BlockSink(guard, input.interrupt_state);
+			}
+			g_sink.running_builds++;
+		}
+		l_sink.row_group_embeddings =
+		    BufferManager::GetBufferManager(context.client)
+		        .Allocate(MemoryTag::EXTENSION, row_group.count * g_sink.num_dimensions * sizeof(float),
+		                  /*can_destroy=*/false);
+		l_sink.row_group = row_group;
+		l_sink.has_row_group = true;
+	}
 
-	// Preprocess and accumulate the embeddings into the temporary row group buffer.
+	// Preprocess and accumulate the embeddings into the row group's buffer.
 	D_ASSERT(l_sink.row_group_embeddings_count + num_embeddings <= row_group.count);
 
 	g_sink.embedding_preprocessor->PreprocessEmbeddings(
 	    FlatVector::GetData<float>(ArrayVector::GetEntry(embedding_column)),
-	    l_sink.row_group_embeddings_buffer.data() + (l_sink.row_group_embeddings_count * g_sink.num_dimensions),
+	    reinterpret_cast<float *>(l_sink.row_group_embeddings.Ptr()) +
+	        (l_sink.row_group_embeddings_count * g_sink.num_dimensions),
 	    num_embeddings, g_sink.is_normalized);
 
 	memcpy(l_sink.row_group_row_ids.data() + l_sink.row_group_embeddings_count, row_id_data,
@@ -137,10 +185,9 @@ SinkCombineResultType PhysicalCreatePDXearchIndex::Combine(ExecutionContext &con
                                                            OperatorSinkCombineInput &input) const {
 	auto &l_sink = input.local_state.Cast<CreatePDXearchIndexLocalSinkState>();
 	auto &g_sink = input.global_state.Cast<CreatePDXearchIndexGlobalSinkState>();
-	auto &pdxearch_index = g_sink.global_index->Cast<PDXearchIndex>();
 
 	// Finalize this thread's last row group.
-	FlushRowGroup(pdxearch_index, l_sink);
+	FlushRowGroup(g_sink, l_sink);
 
 	return SinkCombineResultType::FINISHED;
 }

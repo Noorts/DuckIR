@@ -71,6 +71,22 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
      [](const IndexInfoColumnInput &input) {
 	     return Value::BIGINT(input.stats.approximate_lower_bound_memory_usage_bytes);
      }},
+    {"cluster_acquires", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_acquires);
+     }},
+    {"cluster_cache_misses", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_cache_misses);
+     }},
+    {"cluster_bytes_fetched", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_bytes_fetched);
+     }},
+    {"blocks_read", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.blocks_read);
+     }},
 };
 
 static unique_ptr<FunctionData> PDXearchIndexInfoBind(ClientContext &context, TableFunctionBindInput &input,

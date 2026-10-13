@@ -147,7 +147,8 @@ Execute `FROM duckdb_indexes();` for general information about all indexes.
 ### Persistence
 
 In a database file, the index is saved with the database. DuckDB's checkpoints write it, and the first query that uses
-it after the database opens loads it into memory. A checkpoint only rewrites the parts of the index (one per DuckDB row
+it after the database opens loads the small part that must stay in memory (see Memory under Known Limitations). A checkpoint only
+rewrites the parts of the index (one per DuckDB row
 group) that changed since the previous checkpoint. Changes committed after the last checkpoint are replayed from
 DuckDB's WAL as usual.
 
@@ -158,9 +159,19 @@ again from the table the first time it is used. An index saved in a storage form
 
 ## Known Limitations
 
-- **Memory**: A loaded index is held in memory in full; DuckDB cannot evict parts
-  of it to disk. The first query after the database opens pays for loading it and
-  for checking it against the table.
+- **Memory**: The index counts toward DuckDB's `memory_limit`, and DuckDB evicts
+  parts of it like its other data. Only the clusters' centroids and the row-id
+  mapping stay in memory (about 20 bytes per row at 768 dimensions); searches read
+  the clusters they probe from the database file, or from DuckDB's temporary files
+  (`temp_directory`) for the parts not checkpointed yet. `SET
+  pdxearch_cluster_paging = false` holds indexes in memory in full instead. 
+  For large indexes, we recommend a database file. In an in-memory database (`:memory:`) nothing
+  is ever checkpointed, so an index larger than `memory_limit` writes its parts to
+  the temporary files every time DuckDB evicts them. **Minimum Memory**: Building an index needs
+  room for one DuckDB row group at a time: its float embeddings and about 1.5x
+  its index (about 0.5 GB with `u8` and 0.9 GB with `f32` for 122,880 rows of 768
+  dimensions). Row groups are built as concurrently as `memory_limit` allows;
+  below one build, `CREATE INDEX` fails with an out-of-memory error. 
 
 - **Concurrency**: Any number of KNN queries can search an index
   concurrently, but the maintenance operations exclude all searches while they

@@ -1,0 +1,47 @@
+# name: test/sql/out_of_core/index_build_memory.test
+# description: A row group's build counts toward memory_limit, and row groups are built only as concurrently as it allows.
+# group: [out_of_core]
+
+require parquet
+
+require pdxearch
+
+load __TEST_DIR__/index_build_memory_main.db
+
+statement ok
+ATTACH '__TEST_DIR__/index_build_memory.db' AS b;
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Variables
+test-env DIMS 128
+
+# Two row groups of 122,880 rows: a build holds 63 MB of embeddings and about 95 MB of index.
+statement ok
+CREATE TABLE b.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet');
+
+statement ok
+SET threads = 4;
+
+statement ok
+SET memory_limit = '128MB';
+
+# A build does not fit.
+statement error
+CREATE INDEX t_idx ON b.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+----
+Out of Memory Error
+
+statement ok
+SET memory_limit = '256MB';
+
+# One build fits at a time: the second row group waits for the first.
+statement ok
+CREATE INDEX t_idx ON b.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+
+# Both row groups were built: their rows find themselves.
+query I
+SELECT count(*) FROM b.t q, LATERAL (SELECT array_distance(emb, q.emb) AS distance FROM b.t ORDER BY array_distance(emb, q.emb) LIMIT 1) s WHERE q.id IN (0, 122879, 122880, 245759) AND s.distance = 0;
+----
+4
