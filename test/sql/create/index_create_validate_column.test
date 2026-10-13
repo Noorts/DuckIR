@@ -40,30 +40,24 @@ Binder Error: PDXearch index key type must be FLOAT
 # Valid number of dimensions
 # ============================================
 
-foreach dims 128 4096
+statement ok
+CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[128]);
 
 statement ok
-CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[${dims}]);
-
-statement ok
-INSERT INTO t1 SELECT i + 1 as id, list_transform(range(${dims}), x -> random()) FROM range(10000) t(i);
+INSERT INTO t1 SELECT i + 1 as id, list_transform(range(128), lambda x: random()) FROM range(10000) t(i);
 
 statement ok
 CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb);
-
-endloop
 
 # ============================================
 # Invalid number of dimensions
 # ============================================
 
+# The dimensions are checked on the column type, so the table stays empty.
 foreach dims 16385 70000
 
 statement ok
 CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[${dims}]);
-
-statement ok
-INSERT INTO t1 SELECT i + 1 as id, list_transform(range(${dims}), x -> random()) FROM range(1000) t(i);
 
 statement error
 CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb);

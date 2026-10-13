@@ -14,6 +14,8 @@
 #include "pdx/ivf_searcher.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 
 namespace duckdb {
 
@@ -49,6 +51,10 @@ public:
 		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
 
 		search_cursors.reserve(index.GetNumRowGroups());
+		clusters_access_orders.resize(index.GetNumRowGroups());
+		clusters_access_orders_once = make_uniq_array<std::once_flag>(index.GetNumRowGroups());
+		search_started = make_uniq_array<std::atomic<bool>>(index.GetNumRowGroups());
+		late_passing_rowids.resize(index.GetNumRowGroups());
 	}
 
 	// Held for the duration of execution to serialize searches against index
@@ -78,6 +84,15 @@ public:
 	// already probed and reports `Done()` once no cluster with passing tuples is left, so follow-up iterations only
 	// schedule the cursors that still have work. Filled by Combine(), read-only afterwards.
 	std::vector<unique_ptr<PDX::IIterativeSearch>> search_cursors;
+	// Per row group, the clusters nearest to the query first: ranked by the row group's first search and reused by its
+	// other searches (several when a hash join below spills). Written once, under the row group's once_flag.
+	std::vector<std::vector<uint32_t>> clusters_access_orders;
+	unique_ptr<std::once_flag[]> clusters_access_orders_once;
+	// Per row group, whether the first run of it to end was searched. The row ids of its later runs (a hash join below
+	// spilled and replays its rows, or verify_parallelism split the row group) go to late_passing_rowids, appended
+	// under the sink lock, and get one more search of the row group at Finalize.
+	unique_ptr<std::atomic<bool>[]> search_started;
+	std::vector<std::vector<size_t>> late_passing_rowids;
 	void TryFinalizeSinkPhase(Pipeline &pipeline, Event &event);
 
 	// Row ids of the final result of the filtered search. For these rows, during the Source phase, the projected
@@ -114,18 +129,38 @@ unique_ptr<LocalSinkState> PhysicalPDXearchIndexFilteredScan::GetLocalSinkState(
 	return make_uniq<PhysicalFilteredScanLocalSinkState>(bind_data->index.Cast<PDXearchIndex>());
 }
 
-// Starts the filtered search of the row group staged in the local state, with the row ids that passed the SQL
-// predicate, and runs its first iteration: the n_probe nearest clusters that hold passing tuples.
-// TODO: Rank a row group's clusters for the query once and share that access order between all searches of the row
-// group (PDX's InitializeSearchCursor accepts a preset order). Each search ranks them again, which repeats work when a
-// row group gets several searches: under verify_parallelism today, and for rows arriving out of order later.
-static void BeginSearchForStagedRowGroup(PDXearchIndex &index, PhysicalFilteredScanGlobalSinkState &g_sink,
-                                         PhysicalFilteredScanLocalSinkState &l_sink) {
+// Starts the filtered search of a row group with the row ids that passed the SQL predicate, and runs its first
+// iteration: the n_probe nearest clusters that hold passing tuples. The row group's clusters are ranked once for the
+// query and shared by all of its searches.
+static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(PDXearchIndex &index,
+                                                                      PhysicalFilteredScanGlobalSinkState &g_sink,
+                                                                      const idx_t row_group_idx,
+                                                                      const std::vector<size_t> &passing_rowids) {
+	auto &clusters_access_order = g_sink.clusters_access_orders[row_group_idx];
+	std::call_once(g_sink.clusters_access_orders_once[row_group_idx], [&]() {
+		clusters_access_order =
+		    index.GetClustersAccessOrderForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get());
+	});
 	auto search_cursor =
-	    index.BeginSearchForRowGroup(l_sink.current_row_group_id, g_sink.preprocessed_query_embedding.get(),
-	                                 g_sink.limit, g_sink.top_k_heap, &l_sink.current_row_group_passing_rowids);
+	    index.BeginSearchForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit,
+	                                 g_sink.top_k_heap, &passing_rowids, &clusters_access_order);
 	search_cursor->Next(g_sink.partitions_to_probe_per_row_group_on_first_iteration);
-	l_sink.search_cursors.push_back(std::move(search_cursor));
+	return search_cursor;
+}
+
+// Called when a thread's run of a row group ends. The first run of a row group to end is searched now; the row ids of
+// a later run are buffered in late_passing_rowids for the row group's one more search at Finalize.
+static void BeginSearchForRowGroupOrBufferRowIds(PDXearchIndex &index, PhysicalFilteredScanGlobalSinkState &g_sink,
+                                                 PhysicalFilteredScanLocalSinkState &l_sink) {
+	const auto row_group_idx = l_sink.current_row_group_id;
+	const auto &passing_rowids = l_sink.current_row_group_passing_rowids;
+	if (!g_sink.search_started[row_group_idx].exchange(true)) {
+		l_sink.search_cursors.push_back(BeginSearchForStagedRowGroup(index, g_sink, row_group_idx, passing_rowids));
+		return;
+	}
+	const auto guard = g_sink.Lock();
+	auto &late_passing_rowids = g_sink.late_passing_rowids[row_group_idx];
+	late_passing_rowids.insert(late_passing_rowids.end(), passing_rowids.begin(), passing_rowids.end());
 }
 
 SinkResultType PhysicalPDXearchIndexFilteredScan::Sink(ExecutionContext &context, DataChunk &input_chunk,
@@ -146,11 +181,11 @@ SinkResultType PhysicalPDXearchIndexFilteredScan::Sink(ExecutionContext &context
 	const auto input_chunk_row_ids = FlatVector::GetData<row_t>(input_chunk.data[0]);
 	// A table scan morsel is one whole DuckDB row group, and each thread receives its morsels in increasing order, so
 	// a row group reaches this sink as one run of rows on one thread (the debug setting verify_parallelism hands out
-	// single vectors instead, which splits a row group over threads, each searching its own part). Caching operators
-	// between the scan and this sink (e.g. a FILTER) hold back outputs of up to 64 rows and append the thread's next
-	// outputs to them, which can come from its next morsel, so one chunk can hold the end of one run and the start of
-	// the next. The row group is looked up again whenever a row id leaves the current one, and a run's search starts
-	// when the run ends.
+	// single vectors instead, which splits a row group over threads: its later runs are buffered, as below). Caching
+	// operators between the scan and this sink (e.g. a FILTER) hold back outputs of up to 64 rows and append the
+	// thread's next outputs to them, which can come from its next morsel, so one chunk can hold the end of one run and
+	// the start of the next. The row group is looked up again whenever a row id leaves the current one, and a run's
+	// search starts when the run ends.
 	for (idx_t i = 0; i < input_chunk.size(); i++) {
 		const row_t row_id = input_chunk_row_ids[i];
 		if (row_id < l_sink.current_row_group_range.start || row_id >= l_sink.current_row_group_range.end) {
@@ -161,12 +196,10 @@ SinkResultType PhysicalPDXearchIndexFilteredScan::Sink(ExecutionContext &context
 			}
 			// Runs arrive in increasing row group order, except the rows a hash join below this search spills to disk:
 			// the join replays them after the scan, one hash partition at a time, so rows of a row group whose search
-			// already started can arrive again. They get a search of their own; the searches cover disjoint rows and
-			// feed the same heap.
-			// TODO: Gather out-of-order rows per row group and search each row group once.
-			// The run of the current row group ended: start its filtered search.
+			// already started can arrive again. Those are buffered and searched together at Finalize.
+			// The run of the current row group ended: start its filtered search, or buffer its row ids.
 			if (!l_sink.current_row_group_passing_rowids.empty()) {
-				BeginSearchForStagedRowGroup(index, g_sink, l_sink);
+				BeginSearchForRowGroupOrBufferRowIds(index, g_sink, l_sink);
 				l_sink.current_row_group_passing_rowids.clear();
 			}
 			l_sink.current_row_group_id = row_group_idx.GetIndex();
@@ -185,9 +218,9 @@ SinkCombineResultType PhysicalPDXearchIndexFilteredScan::Combine(ExecutionContex
 	auto &l_sink = input.local_state.Cast<PhysicalFilteredScanLocalSinkState>();
 	auto &index = g_sink.index;
 
-	// If this thread's last row group has not been searched (for one iteration), do so now.
+	// The run of this thread's last row group ended: start its filtered search, or buffer its row ids.
 	if (!l_sink.current_row_group_passing_rowids.empty()) {
-		BeginSearchForStagedRowGroup(index, g_sink, l_sink);
+		BeginSearchForRowGroupOrBufferRowIds(index, g_sink, l_sink);
 	}
 
 	// Merge this thread's search cursors into the global sink state.
@@ -258,11 +291,80 @@ public:
 	}
 };
 
+// A task that starts the late search of a row group,
+// over the row ids of its runs that arrived after its first search started.
+class PhysicalFilteredScanLateSearchTask : public ExecutorTask {
+public:
+	PhysicalFilteredScanLateSearchTask(shared_ptr<Event> event_p, ClientContext &context,
+	                                   PhysicalFilteredScanGlobalSinkState &g_sink_p, const idx_t row_group_idx_p,
+	                                   const PhysicalOperator &op_p)
+	    : ExecutorTask(context, std::move(event_p), op_p), g_sink(g_sink_p), row_group_idx(row_group_idx_p) {
+	}
+
+	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
+		auto &late_passing_rowids = g_sink.late_passing_rowids[row_group_idx];
+		auto search_cursor = BeginSearchForStagedRowGroup(g_sink.index, g_sink, row_group_idx, late_passing_rowids);
+		// The search keeps its own copy of the filter.
+		std::vector<size_t>().swap(late_passing_rowids);
+		{
+			const auto guard = g_sink.Lock();
+			g_sink.search_cursors.push_back(std::move(search_cursor));
+		}
+		event->FinishTask();
+		return TaskExecutionResult::TASK_FINISHED;
+	}
+
+	string TaskType() const override {
+		return "PhysicalFilteredScanLateSearchTask";
+	}
+
+private:
+	PhysicalFilteredScanGlobalSinkState &g_sink;
+	const idx_t row_group_idx;
+};
+
+// An event that starts, in parallel, the additional search of every row group with buffered row ids.
+class PhysicalFilteredScanLateSearchEvent : public BasePipelineEvent {
+public:
+	PhysicalFilteredScanLateSearchEvent(Pipeline &pipeline_p, PhysicalFilteredScanGlobalSinkState &g_sink_p)
+	    : BasePipelineEvent(pipeline_p), g_sink(g_sink_p) {
+	}
+
+	PhysicalFilteredScanGlobalSinkState &g_sink;
+
+public:
+	void Schedule() override {
+		auto &context = pipeline->GetClientContext();
+
+		vector<shared_ptr<Task>> tasks;
+		for (idx_t row_group_idx = 0; row_group_idx < g_sink.late_passing_rowids.size(); row_group_idx++) {
+			if (g_sink.late_passing_rowids[row_group_idx].empty()) {
+				continue;
+			}
+			tasks.push_back(make_uniq<PhysicalFilteredScanLateSearchTask>(shared_from_this(), context, g_sink,
+			                                                              row_group_idx, g_sink.op));
+		}
+		SetTasks(std::move(tasks));
+	}
+
+	void FinishEvent() override {
+		g_sink.TryFinalizeSinkPhase(*pipeline, *this);
+	}
+};
+
 SinkFinalizeType PhysicalPDXearchIndexFilteredScan::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                                              OperatorSinkFinalizeInput &input) const {
 	auto &g_sink = input.global_state.Cast<PhysicalFilteredScanGlobalSinkState>();
 
-	g_sink.TryFinalizeSinkPhase(pipeline, event);
+	// Row groups with buffered row ids get their one more search first.
+	const bool has_late_passing_rowids =
+	    std::any_of(g_sink.late_passing_rowids.begin(), g_sink.late_passing_rowids.end(),
+	                [](const std::vector<size_t> &late_passing_rowids) { return !late_passing_rowids.empty(); });
+	if (has_late_passing_rowids) {
+		event.InsertEvent(make_shared_ptr<PhysicalFilteredScanLateSearchEvent>(pipeline, g_sink));
+	} else {
+		g_sink.TryFinalizeSinkPhase(pipeline, event);
+	}
 
 	return SinkFinalizeType::READY;
 }

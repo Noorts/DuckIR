@@ -165,14 +165,14 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 
 # ============================================
 # Subqueries as filters: IN (a SEMI join), NOT EXISTS (an ANTI join) and NOT IN (a MARK join) below the index join.
-# Debug builds compress the key of every SEMI and ANTI join, and a search that reads the key (here id) then runs
-# without the index (see the README): the plan checks also accept that decompression.
+# Debug builds compress the key of every SEMI and ANTI join: the search reads it through the decompression and still
+# uses the index.
 # ============================================
 
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id IN (SELECT x FROM small) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*(PDXEARCH_INDEX_JOIN.*SEMI|__internal_decompress).*
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*SEMI.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id IN (SELECT x FROM small) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -203,7 +203,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE NOT EXISTS (SELECT 1 FROM small WHERE small.x = t.id) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*(PDXEARCH_INDEX_JOIN.*ANTI|__internal_decompress).*
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*ANTI.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE NOT EXISTS (SELECT 1 FROM small WHERE small.x = t.id) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;

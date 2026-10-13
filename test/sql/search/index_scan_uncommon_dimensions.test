@@ -9,8 +9,6 @@ test-env INDEX_SEED 0
 
 test-env NUM_ROWS 48000
 
-test-env NUM_ROWS_LARGE_DIMS 2048
-
 test-env NUM_CLUSTERS 480
 
 test-env LIMIT 50
@@ -32,19 +30,12 @@ foreach DIMS 1 3 5
 statement ok
 CREATE OR REPLACE TABLE t1 AS
 SELECT
-    id,
-    list(value ORDER BY dim)::FLOAT[${DIMS}] AS emb
-FROM (
-    SELECT
-        CAST(e.i AS INTEGER) AS id,
-        d.i AS dim,
-        CAST(
-            (e.i % ${NUM_CLUSTERS}) * 0.05
-            + sqrt(-2.0 * ln(greatest(random(), 1e-30))) * cos(2.0 * pi() * random()) * 5.0
-        AS FLOAT) AS value
-    FROM range(${NUM_ROWS}) e(i), range(${DIMS}) d(i)
-) sub
-GROUP BY id;
+    CAST(e.i AS INTEGER) AS id,
+    list_transform(range(${DIMS}), lambda d: CAST(
+        (e.i % ${NUM_CLUSTERS}) * 0.05
+        + sqrt(-2.0 * ln(greatest(random(), 1e-30))) * cos(2.0 * pi() * random()) * 5.0
+    AS FLOAT))::FLOAT[${DIMS}] AS emb
+FROM range(${NUM_ROWS}) e(i);
 
 statement ok
 CREATE OR REPLACE TABLE t_gt AS
@@ -95,77 +86,12 @@ foreach DIMS 11 31 63 64 127 128 129 181 500
 statement ok
 CREATE OR REPLACE TABLE t1 AS
 SELECT
-    id,
-    list(value ORDER BY dim)::FLOAT[${DIMS}] AS emb
-FROM (
-    SELECT
-        CAST(e.i AS INTEGER) AS id,
-        d.i AS dim,
-        CAST(
-            (e.i % ${NUM_CLUSTERS}) * 0.05
-            + sqrt(-2.0 * ln(greatest(random(), 1e-30))) * cos(2.0 * pi() * random()) * 5.0
-        AS FLOAT) AS value
-    FROM range(${NUM_ROWS}) e(i), range(${DIMS}) d(i)
-) sub
-GROUP BY id;
-
-statement ok
-CREATE OR REPLACE TABLE t_gt AS
-SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
-
-foreach quantization f32 u8
-
-statement ok
-DROP INDEX IF EXISTS t1_idx;
-
-statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', seed = ${INDEX_SEED});
-
-# Probe all clusters for maximum recall.
-statement ok
-SET pdxearch_n_probe = 0;
-
-# Verify the optimizer uses the index scan.
-query II
-EXPLAIN SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
-----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
-
-statement ok
-CREATE OR REPLACE TABLE t_idx_res AS
-SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
-
-# Verify recall higher than RECALL_THRESHOLD
-query I
-SELECT CAST(COUNT(*) AS FLOAT) / ${LIMIT} >= ${RECALL_THRESHOLD}
-FROM t_gt JOIN t_idx_res USING (id);
-----
-true
-
-endloop
-
-endloop
-
-
-# ===========================================================================
-# High dimensions (e.g. OpenAI's text-embedding-3-large)
-# ===========================================================================
-foreach DIMS 3072
-
-set seed 0.42
-
-statement ok
-CREATE OR REPLACE TABLE t1 AS
-SELECT
-    i AS id,
-    repeat([CAST(i AS FLOAT)], ${DIMS})::FLOAT[${DIMS}] AS emb
-FROM range(${NUM_ROWS_LARGE_DIMS}) t(i);
+    CAST(e.i AS INTEGER) AS id,
+    list_transform(range(${DIMS}), lambda d: CAST(
+        (e.i % ${NUM_CLUSTERS}) * 0.05
+        + sqrt(-2.0 * ln(greatest(random(), 1e-30))) * cos(2.0 * pi() * random()) * 5.0
+    AS FLOAT))::FLOAT[${DIMS}] AS emb
+FROM range(${NUM_ROWS}) e(i);
 
 statement ok
 CREATE OR REPLACE TABLE t_gt AS

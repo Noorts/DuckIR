@@ -48,15 +48,14 @@ statement ok
 SET threads = ${threads};
 
 # ============================================
-# IN and EXISTS subqueries: a SEMI join below the search. Debug builds compress the key of every SEMI and ANTI join,
-# and a search that reads the key (here id) then runs without the index (see the README): the plan checks also accept
-# that decompression.
+# IN and EXISTS subqueries: a SEMI join below the search. Debug builds compress the key of every SEMI and ANTI join:
+# the search reads it through the decompression and still uses the index.
 # ============================================
 
 query II
 EXPLAIN SELECT id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*(PDXEARCH_INDEX_FILT_SCAN.*HASH_JOIN.*SEMI.*SEQ_SCAN|__internal_decompress).*
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*HASH_JOIN.*SEMI.*SEQ_SCAN.*
 
 query I rowsort in_subquery_k10
 SELECT id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -75,7 +74,7 @@ SELECT id FROM t_bf WHERE id IN (SELECT x FROM small) ORDER BY array_distance(em
 ----
 
 # The join's runtime filters (the values of small) stay on the table scan below the search. Debug builds compress the
-# key and run the query without the index (see above).
+# key, and DuckDB does not push runtime filters through the compression.
 query II
 EXPLAIN ANALYZE SELECT id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
@@ -147,7 +146,7 @@ SELECT id FROM (SELECT * FROM t_bf WHERE id IN (SELECT x FROM small)) s ORDER BY
 query II
 EXPLAIN SELECT id FROM t WHERE NOT EXISTS (SELECT 1 FROM small s WHERE s.x = t.id) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*(PDXEARCH_INDEX_FILT_SCAN.*HASH_JOIN.*ANTI.*SEQ_SCAN|__internal_decompress).*
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*HASH_JOIN.*ANTI.*SEQ_SCAN.*
 
 query I rowsort not_exists
 SELECT id FROM t WHERE NOT EXISTS (SELECT 1 FROM small s WHERE s.x = t.id) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
@@ -222,3 +221,21 @@ SELECT id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, 
 ----
 
 endloop
+
+# ============================================
+# verify_parallelism hands out single vectors: a row group reaches the search as several runs on several threads.
+# ============================================
+
+statement ok
+PRAGMA verify_parallelism;
+
+query I rowsort verify_parallelism_in_subquery
+SELECT id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+----
+
+query I rowsort verify_parallelism_in_subquery
+SELECT id FROM t_bf WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+----
+
+statement ok
+PRAGMA disable_verify_parallelism;

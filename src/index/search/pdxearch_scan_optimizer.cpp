@@ -6,6 +6,7 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
@@ -330,12 +331,13 @@ namespace duckdb {
  *
  * Therefore `pre_optimize_function` (PreOptimize) looks at the plan before
  * DuckDB's optimizers run, finds each ORDER BY that TryOptimize will turn into
- * a search (TryDisableLateMaterialization, the same checks up to the rewrite),
- * and turns late materialization off for its table scan: the scan's copy of
- * the table function has a `late_materialization` flag that DuckDB checks.
- * Other scans, also of the same table, keep it. DuckDB copies a CTE that it
- * inlines at several places by serializing it, which restores the flag, so a
- * search inside such a CTE still gets the rewrite (correct, but slower).
+ * a search (TryDisableLateMaterialization, matched by TryMatchIndexSearch as in
+ * TryOptimize), and turns late materialization off for its table scan: the
+ * scan's copy of the table function has a `late_materialization` flag that
+ * DuckDB checks. Other scans, also of the same table, keep it. DuckDB copies a
+ * CTE that it inlines at several places by serializing it, which restores the
+ * flag, so a search inside such a CTE still gets the rewrite (correct, but
+ * slower).
  *
  * TODO: Leave out the PROJECTION at the top? Our pattern recognition starts at
  * the TopN operator.
@@ -377,12 +379,32 @@ public:
 		}
 	}
 
+	// DuckDB's compressed materialization (compressed_materialization.cpp) narrows a join key: `__internal_compress_*`
+	// below the join, and `__internal_decompress_*` above it to read the key back. True when `expression` is such a
+	// call, picked by `prefix`, on a column reference; `call` receives it.
+	static bool TryUnwrapCompression(const Expression &expression, const string &prefix,
+	                                 optional_ptr<const BoundFunctionExpression> &call) {
+		if (expression.type != ExpressionType::BOUND_FUNCTION) {
+			return false;
+		}
+		auto &function = expression.Cast<BoundFunctionExpression>();
+		if (!StringUtil::StartsWith(function.function.name, prefix) || function.children.empty() ||
+		    function.children[0]->type != ExpressionType::BOUND_COLUMN_REF) {
+			return false;
+		}
+		call = &function;
+		return true;
+	}
+
 	// Follows a binding read above chain.front() down the chain (ordered from the top down to the table scan) to the
 	// table scan's binding it comes from. A filter forwards its child's bindings, and a projection forwards a binding
-	// when its expression is a plain column reference. False when a projection computes the value instead.
+	// when its expression is a plain column reference. A join key decompressed above a join is followed to its compress
+	// below the join: the pair is the identity. False when a projection computes the value instead.
 	// To support: Filtered subquery, Subquery or view with a residual filter, View or subquery without a predicate,
 	// Renamed embedding.
 	static bool TryTraceToTableScan(const vector<reference<LogicalOperator>> &chain, ColumnBinding &binding) {
+		// Each waits for the compress below its join.
+		vector<reference<const BoundFunctionExpression>> pending_decompressions;
 		for (auto &op : chain) {
 			if (op.get().type != LogicalOperatorType::LOGICAL_PROJECTION) {
 				continue;
@@ -393,12 +415,38 @@ public:
 				return false;
 			}
 			auto &expression = *projection.expressions[binding.column_index];
-			if (expression.type != ExpressionType::BOUND_COLUMN_REF) {
+			if (expression.type == ExpressionType::BOUND_COLUMN_REF) {
+				binding = expression.Cast<BoundColumnRefExpression>().binding;
+				continue;
+			}
+			optional_ptr<const BoundFunctionExpression> call;
+			if (TryUnwrapCompression(expression, "__internal_decompress_", call)) {
+				pending_decompressions.push_back(*call);
+			} else if (!pending_decompressions.empty() &&
+			           TryUnwrapCompression(expression, "__internal_compress_", call)) {
+				// It must undo the decompress: the key's own type and, for integral keys, the same `min`.
+				auto &decompress = pending_decompressions.back().get();
+				if (decompress.return_type != call->children[0]->return_type ||
+				    decompress.children.size() != call->children.size()) {
+					return false;
+				}
+				if (call->children.size() == 2) {
+					auto &decompress_min = *decompress.children[1];
+					auto &compress_min = *call->children[1];
+					if (decompress_min.type != ExpressionType::VALUE_CONSTANT ||
+					    compress_min.type != ExpressionType::VALUE_CONSTANT ||
+					    !Value::NotDistinctFrom(decompress_min.Cast<BoundConstantExpression>().value,
+					                            compress_min.Cast<BoundConstantExpression>().value)) {
+						return false;
+					}
+				}
+				pending_decompressions.pop_back();
+			} else {
 				return false;
 			}
-			binding = expression.Cast<BoundColumnRefExpression>().binding;
+			binding = call->children[0]->Cast<BoundColumnRefExpression>().binding;
 		}
-		return true;
+		return pending_decompressions.empty();
 	}
 
 	// Collects the bindings the projection reads from its child, and the table scan's column each one traces to: an
@@ -884,6 +932,53 @@ public:
 		return std::move(rowid_projection);
 	}
 
+	// An ORDER BY of a distance (or its TopN) that an index search can replace: what TryOptimize rewrites and
+	// TryDisableLateMaterialization checks before DuckDB's optimizers.
+	struct IndexSearchMatch {
+		// The projection that computes the distance, read by the order key at distance_binding.
+		optional_ptr<LogicalProjection> distance_projection;
+		ColumnBinding distance_binding;
+		// From the projection's child down to the table scan (excluded), and whether one of them filters rows.
+		vector<reference<LogicalOperator>> chain;
+		bool chain_filters_rows = false;
+		// The table scan's slot in its parent.
+		unique_ptr<LogicalOperator> *table_scan_slot = nullptr;
+		IndexMatch index_match;
+		// The columns the search emits: those the distance projection reads.
+		vector<ColumnBinding> output_bindings;
+		vector<ColumnIndex> output_column_ids;
+	};
+
+	// Matches `orders` and the operator below them (a TopN's, or an ORDER BY's before DuckDB's optimizers) to an index
+	// search. TryOptimize and TryDisableLateMaterialization both call it, so they match the same plans.
+	static bool TryMatchIndexSearch(ClientContext &context, const vector<BoundOrderByNode> &orders,
+	                                LogicalOperator &child,
+	                                const std::function<bool(const Expression &)> &is_query_argument,
+	                                IndexSearchMatch &match) {
+		if (!TryMatchOrderKey(orders, match.distance_binding)) {
+			return false;
+		}
+		match.distance_projection = TryFindDistanceProjection(child, match.distance_binding);
+		// The projection must sit on top of a get, possibly with a chain of operators in between.
+		if (!match.distance_projection || match.distance_projection->children.size() != 1) {
+			return false;
+		}
+		auto &projection = *match.distance_projection;
+		match.table_scan_slot =
+		    TryWalkChainToTableScan(projection.children.front(), match.chain, match.chain_filters_rows);
+		if (!match.table_scan_slot) {
+			return false;
+		}
+		auto &get = (*match.table_scan_slot)->Cast<LogicalGet>();
+		// The distance expression is a distance function between our index expression and the query vector.
+		if (!TryMatchIndex(context, get, match.chain, projection.expressions[match.distance_binding.column_index],
+		                   is_query_argument, match.index_match)) {
+			return false;
+		}
+		// The columns the search emits: those the projection reads. Checked before the plan is changed.
+		return TryCollectOutputColumns(projection, match.chain, get, match.output_bindings, match.output_column_ids);
+	}
+
 	static bool TryOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
 		auto &context = input.context;
 		// Look for a TopN operator
@@ -894,51 +989,31 @@ public:
 		}
 
 		auto &top_n = op.Cast<LogicalTopN>();
-
-		ColumnBinding distance_binding;
-		if (!TryMatchOrderKey(top_n.orders, distance_binding)) {
-			return false;
-		}
-
-		// find the expression that is referenced
 		if (top_n.children.size() != 1) {
 			return false;
 		}
-		auto distance_projection = TryFindDistanceProjection(*top_n.children.front(), distance_binding);
-		if (!distance_projection) {
-			return false;
-		}
-		auto &projection = *distance_projection;
 
-		// This the expression that is referenced by the order by expression
-		const auto &projection_expr = projection.expressions[distance_binding.column_index];
-
-		// The projection must sit on top of a get, possibly with a chain of operators in between.
-		if (projection.children.size() != 1) {
-			return false;
-		}
-		vector<reference<LogicalOperator>> chain; // From the projection's child down to the table scan (excluded).
-		bool chain_filters_rows = false;
-		auto *get_ptr_ptr = TryWalkChainToTableScan(projection.children.front(), chain, chain_filters_rows);
-		if (!get_ptr_ptr) {
-			return false;
-		}
-
-		// We have a top-n operator on top of a table scan
-		// We can replace the function with a custom index scan (if the table has a custom index)
-		auto &get_ptr = *get_ptr_ptr;
-		auto &get = get_ptr->Cast<LogicalGet>();
-		auto &duck_table = get.GetTable()->Cast<DuckTableEntry>();
-
-		// Find the index: the projection expression is a distance function between our index expression and a constant
-		// query vector.
-		IndexMatch match;
+		// DuckDB's optimizers have folded the query vector into a constant.
+		IndexSearchMatch index_search_match;
 		const auto is_constant = [](const Expression &argument) {
 			return argument.type == ExpressionType::VALUE_CONSTANT;
 		};
-		if (!TryMatchIndex(context, get, chain, projection_expr, is_constant, match)) {
+		if (!TryMatchIndexSearch(context, top_n.orders, *top_n.children.front(), is_constant, index_search_match)) {
 			return false;
 		}
+		auto &projection = *index_search_match.distance_projection;
+		auto &chain = index_search_match.chain;
+		const auto chain_filters_rows = index_search_match.chain_filters_rows;
+		auto &match = index_search_match.index_match;
+		auto &output_bindings = index_search_match.output_bindings;
+		auto &output_column_ids = index_search_match.output_column_ids;
+
+		// We have a top-n operator on top of a table scan
+		// We can replace the function with a custom index scan (if the table has a custom index)
+		auto &get_ptr = *index_search_match.table_scan_slot;
+		auto &get = get_ptr->Cast<LogicalGet>();
+		auto &duck_table = get.GetTable()->Cast<DuckTableEntry>();
+
 		auto query_embedding =
 		    TryDecodeConstantQuery(*match.index, match.query_argument->Cast<BoundConstantExpression>().value);
 		if (!query_embedding) {
@@ -947,13 +1022,6 @@ public:
 		// With an OFFSET the TopN stays in the plan and skips the first `offset` of the rows we return.
 		auto bind_data = make_uniq<PDXearchIndexScanBindData>(duck_table, *match.index, top_n.limit + top_n.offset,
 		                                                      std::move(query_embedding));
-
-		// The columns the index scan emits: those the projection reads. Checked before the plan is changed.
-		vector<ColumnBinding> output_bindings;
-		vector<ColumnIndex> output_column_ids;
-		if (!TryCollectOutputColumns(projection, chain, get, output_bindings, output_column_ids)) {
-			return false;
-		}
 
 		DetachDynamicFilters(get, chain);
 
@@ -1008,45 +1076,21 @@ public:
 	}
 
 	// Runs before DuckDB's optimizers (see LATE MATERIALIZATION above): turns late materialization off for the table
-	// scan of an ORDER BY that TryOptimize will turn into a search, checked as TryOptimize does up to the rewrite. The
-	// constant query vector is not folded yet (e.g. a CAST of a list), so any foldable argument is accepted.
+	// scan of an ORDER BY that TryOptimize will turn into a search, matched by TryMatchIndexSearch as in TryOptimize.
+	// The constant query vector is not folded yet (e.g. a CAST of a list), so any foldable argument is accepted.
 	static bool TryDisableLateMaterialization(ClientContext &context, LogicalOperator &op) {
 		if (op.type != LogicalOperatorType::LOGICAL_ORDER_BY || op.children.size() != 1) {
 			return false;
 		}
-		ColumnBinding distance_binding;
-		if (!TryMatchOrderKey(op.Cast<LogicalOrder>().orders, distance_binding)) {
-			return false;
-		}
-		auto distance_projection = TryFindDistanceProjection(*op.children.front(), distance_binding);
-		if (!distance_projection || distance_projection->children.size() != 1) {
-			return false;
-		}
-		auto &projection = *distance_projection;
-
-		vector<reference<LogicalOperator>> chain; // From the projection's child down to the table scan (excluded).
-		bool chain_filters_rows = false;
-		auto *get_ptr_ptr = TryWalkChainToTableScan(projection.children.front(), chain, chain_filters_rows);
-		if (!get_ptr_ptr) {
-			return false;
-		}
-		auto &get = (*get_ptr_ptr)->Cast<LogicalGet>();
-
-		IndexMatch match;
+		IndexSearchMatch index_search_match;
 		const auto is_foldable = [](const Expression &argument) {
 			return argument.IsFoldable();
 		};
-		if (!TryMatchIndex(context, get, chain, projection.expressions[distance_binding.column_index], is_foldable,
-		                   match)) {
+		if (!TryMatchIndexSearch(context, op.Cast<LogicalOrder>().orders, *op.children.front(), is_foldable,
+		                         index_search_match)) {
 			return false;
 		}
-		vector<ColumnBinding> output_bindings;
-		vector<ColumnIndex> output_column_ids;
-		if (!TryCollectOutputColumns(projection, chain, get, output_bindings, output_column_ids)) {
-			return false;
-		}
-
-		get.function.late_materialization = false;
+		(*index_search_match.table_scan_slot)->Cast<LogicalGet>().function.late_materialization = false;
 		return true;
 	}
 

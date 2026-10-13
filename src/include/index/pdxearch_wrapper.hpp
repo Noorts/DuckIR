@@ -200,14 +200,22 @@ public:
 		row_group->is_dirty = true;
 	}
 
-	unique_ptr<PDX::IIterativeSearch> BeginSearchForRowGroup(const idx_t row_group_idx,
-	                                                         const float *const preprocessed_query_embedding,
-	                                                         const idx_t limit, PDX::TopKHeap &top_k_heap,
-	                                                         const std::vector<size_t> *const passing_row_ids) {
+	unique_ptr<PDX::IIterativeSearch>
+	BeginSearchForRowGroup(const idx_t row_group_idx, const float *const preprocessed_query_embedding,
+	                       const idx_t limit, PDX::TopKHeap &top_k_heap,
+	                       const std::vector<size_t> *const passing_row_ids,
+	                       const std::vector<uint32_t> *const clusters_access_order = nullptr) {
 		auto search_cursor = row_groups[row_group_idx]->index->BeginIterativeSearch(
 		    preprocessed_query_embedding, static_cast<uint32_t>(limit), top_k_heap, passing_row_ids,
-		    /*is_query_transformed=*/true);
+		    /*is_query_transformed=*/true, clusters_access_order);
 		return unique_ptr<PDX::IIterativeSearch>(search_cursor.release());
+	}
+
+	// The row group's clusters, nearest to the query first (searches of one query share it).
+	std::vector<uint32_t> GetClustersAccessOrderForRowGroup(const idx_t row_group_idx,
+	                                                        const float *const preprocessed_query_embedding) {
+		return row_groups[row_group_idx]->index->GetClustersAccessOrder(preprocessed_query_embedding,
+		                                                                /*is_query_transformed=*/true);
 	}
 
 	// Maintenance, one writer at a time (the index's exclusive lock). The row belongs to the DuckDB row group that
