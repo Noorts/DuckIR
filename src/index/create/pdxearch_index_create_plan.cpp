@@ -10,6 +10,8 @@
 #include "index/pdxearch_index.hpp"
 #include "index/create/pdxearch_index_create.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 
 PhysicalOperator &PDXearchIndex::CreatePlan(PlanIndexInput &input) {
@@ -31,6 +33,7 @@ PhysicalOperator &PDXearchIndex::CreatePlan(PlanIndexInput &input) {
 				for (auto &entry : PDXearchIndex::DISTANCE_METRIC_MAP) {
 					allowed_metrics.push_back(StringUtil::Format("'%s'", entry.first));
 				}
+				std::sort(allowed_metrics.begin(), allowed_metrics.end());
 				throw BinderException("PDXearch index 'metric' must be one of: %s",
 				                      StringUtil::Join(allowed_metrics, ", "));
 			}
@@ -44,6 +47,7 @@ PhysicalOperator &PDXearchIndex::CreatePlan(PlanIndexInput &input) {
 				for (auto &entry : PDXearchIndex::QUANTIZATION_MAP) {
 					allowed_quantizations.push_back(StringUtil::Format("'%s'", entry.first));
 				}
+				std::sort(allowed_quantizations.begin(), allowed_quantizations.end());
 				throw BinderException("PDXearch index 'quantization' must be one of: %s",
 				                      StringUtil::Join(allowed_quantizations, ", "));
 			}

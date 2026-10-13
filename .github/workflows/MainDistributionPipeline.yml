@@ -19,13 +19,11 @@ jobs:
       duckdb_version: v1.5.6
       ci_tools_version: v1.5.6
       extension_name: pdxearch
-      extra_toolchains: "fortran;omp"
-      # vcpkg 2026.06.24 (what extension-ci-tools main uses). The v1.5.6 default (84bab45) links the static
-      # openblas[threads,dynamic-arch] without -lpthread -lm when lapack-reference looks for BLAS, and fails on Linux.
-      # Drop this once the extension-ci-tools version we pin defaults to a newer vcpkg.
+      # vcpkg 2026.06.24 (what extension-ci-tools main uses), for Eigen 5.0.1: the v1.5.6 default (84bab45) has 3.4.1.
       vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
-      # Temporarily disabled to focus efforts on macOS and linux stability.
-      exclude_archs: "windows_amd64;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads"
+      # mingw: Rtools' CMake (3.24.1) is older than the 3.26 that PDXearch, PDX and SuperKMeans require.
+      # wasm_threads: threaded Wasm extensions are broken upstream (extension-ci-tools #391).
+      exclude_archs: "windows_amd64_mingw;wasm_threads"
 
   code-quality-check:
     name: Code Quality Check

@@ -1,18 +1,6 @@
 {
         "dependencies": [
-                "eigen3",
-                {
-                        "name": "openblas",
-                        "features": [
-                                "threads",
-                                "dynamic-arch"
-                        ],
-                        "platform": "!osx"
-                },
-                {
-                        "name": "lapack",
-                        "platform": "!osx"
-                }
+                "eigen3"
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [

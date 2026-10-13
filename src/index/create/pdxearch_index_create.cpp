@@ -8,6 +8,7 @@
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
 #include "index/pdxearch_index.hpp"
+#include "index/pdxearch_parallel_executor.hpp"
 
 namespace duckdb {
 
@@ -88,15 +89,16 @@ public:
 };
 
 // Builds the buffered row group, then frees its buffer and gives its build slot to the threads waiting for one.
-static void FlushRowGroup(CreatePDXearchIndexGlobalSinkState &g_sink, CreatePDXearchIndexLocalSinkState &l_sink) {
+static void FlushRowGroup(CreatePDXearchIndexGlobalSinkState &g_sink, CreatePDXearchIndexLocalSinkState &l_sink,
+                          ClientContext &context) {
 	if (!l_sink.has_row_group) {
 		return;
 	}
 	if (l_sink.row_group_embeddings_count > 0) {
+		DuckDBParallelExecutor executor(context, g_sink.default_threads_per_build);
 		g_sink.global_index->Cast<PDXearchIndex>().SetUpIndexForRowGroup(
 		    l_sink.row_group_row_ids.data(), reinterpret_cast<float *>(l_sink.row_group_embeddings.Ptr()),
-		    l_sink.row_group_embeddings_count, l_sink.row_group.row_start, l_sink.row_group.count,
-		    g_sink.default_threads_per_build);
+		    l_sink.row_group_embeddings_count, l_sink.row_group.row_start, l_sink.row_group.count, &executor);
 		l_sink.row_group_embeddings_count = 0;
 	}
 	l_sink.row_group_embeddings.Destroy();
@@ -145,7 +147,7 @@ SinkResultType PhysicalCreatePDXearchIndex::Sink(ExecutionContext &context, Data
 
 	// If we detect a new row group, then finalize the previous row group and prepare to process the new one.
 	if (l_sink.has_row_group && row_group.row_start != l_sink.row_group.row_start) {
-		FlushRowGroup(g_sink, l_sink);
+		FlushRowGroup(g_sink, l_sink, context.client);
 	}
 	if (!l_sink.has_row_group) {
 		// Without a free build slot, DuckDB runs this chunk again once a build gives its slot back.
@@ -187,7 +189,7 @@ SinkCombineResultType PhysicalCreatePDXearchIndex::Combine(ExecutionContext &con
 	auto &g_sink = input.global_state.Cast<CreatePDXearchIndexGlobalSinkState>();
 
 	// Finalize this thread's last row group.
-	FlushRowGroup(g_sink, l_sink);
+	FlushRowGroup(g_sink, l_sink, context.client);
 
 	return SinkCombineResultType::FINISHED;
 }

@@ -6,6 +6,3 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = main
-[submodule "third_party/pdx"]
-	path = third_party/pdx
-	url = https://github.com/cwida/pdx
