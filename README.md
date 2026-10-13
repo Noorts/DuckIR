@@ -154,8 +154,7 @@ DuckDB's WAL as usual.
 When the index is loaded, it is checked against the table, so it never misses committed rows or returns deleted ones,
 even when DuckDB could not replay its log into the index ([duckdb#26112](https://github.com/duckdb/duckdb/issues/26112)).
 If the database closes without a checkpoint right after `CREATE INDEX` (for example, after a crash), the index is built
-again from the table the first time it is used. An index saved in a storage format this version of PDXearch cannot read
-raises an error: drop it and create it again.
+again from the table the first time it is used. An index saved in a storage format this version of PDXearch cannot read raises an error: drop it and create it again.
 
 ## Known Limitations
 

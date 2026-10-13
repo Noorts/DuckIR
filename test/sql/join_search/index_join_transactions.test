@@ -19,6 +19,10 @@ SET checkpoint_threshold = '10GB';
 # Variables
 test-env DIMS 128
 
+# The join ranks clusters across row groups and single-query searches do not: they match when both probe all clusters.
+statement ok
+SET pdxearch_n_probe = 0;
+
 statement ok
 CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
