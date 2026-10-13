@@ -1,0 +1,204 @@
+# name: test/sql/persistence/index_persistence.test
+# description: A persisted index reloads with its options, gets the WAL's changes, and repairs what the WAL missed.
+# group: [persistence]
+
+require parquet
+
+require pdxearch
+
+load __TEST_DIR__/index_persistence_main.db
+
+statement ok
+ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Variables
+test-env DIMS 128
+
+test-env LIMIT 10
+
+test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20,8,3,5,67,17,19,26,5,0,1,22,60,26,7,1,18,22,84,53,85,119,119,4,24,18,7,7,1,81,106,102,72,30,6,0,9,1,9,119,72,1,4,33,119,29,6,1,0,1,14,52,119,30,3,0,0,55,92,111,2,5,4,9,22,89,96,14,1,0,1,82,59,16,20,5,25,14,11,4,0,0,1,26,47,23,4,0,0,4,38,83,30,14,9,4,9,17,23,41,0,0,2,8,19,25,23,1]
+
+# Two IVF row groups and a Flat one (fewer than 2048 rows).
+statement ok
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 17408;
+
+statement ok
+CREATE INDEX t_idx ON p.t USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 7, seed = 5);
+
+statement ok
+CREATE TABLE p.before_restart AS SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+
+statement ok
+CHECKPOINT p;
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# The checkpointed index is loaded with its options and row groups, and answers as before the restart.
+query III
+SELECT quantization, n_probe, seed FROM pdxearch_index_info() WHERE index_name = 't_idx';
+----
+f32	7	5
+
+query II
+EXPLAIN SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+----
+physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Row Groups: 3[^0-9].*
+
+query I
+SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_restart USING (id);
+----
+10
+
+# Changes made after the checkpoint reach the next session through the WAL.
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+INSERT INTO p.t SELECT id, emb::FLOAT[${DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 17408 AND id < 18432;
+
+statement ok
+INSERT INTO p.t VALUES (-1, ${QUERY_EMB}::FLOAT[${DIMS}]);
+
+statement ok
+DELETE FROM p.t WHERE id IN (SELECT id FROM p.before_restart);
+
+statement ok
+CREATE TABLE p.before_replay AS SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+query I
+SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 1;
+----
+-1
+
+query I
+SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_replay USING (id);
+----
+10
+
+query I
+SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_restart USING (id);
+----
+0
+
+# An index whose CREATE INDEX only reached the WAL is built again by its first sync.
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+CREATE TABLE p.t2 AS SELECT * FROM p.t WHERE id < 9000;
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+CREATE INDEX t2_idx ON p.t2 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0);
+
+statement ok
+CREATE TABLE p.t2_before_restart AS SELECT id FROM p.t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+query I
+SELECT count(*) FROM (SELECT id FROM p.t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.t2_before_restart USING (id);
+----
+10
+
+# WAL replays that DuckDB drops are repaired by the first sync after the next bind: replaying inserts does not bind the
+# index, so a session that only attaches the database buffers them, and its shutdown checkpoint drops them
+# (duckdb#26112).
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+INSERT INTO p.t VALUES (-2, ${QUERY_EMB}::FLOAT[${DIMS}]);
+
+statement ok
+CREATE TABLE p.before_dropped_replay AS SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+
+# Restarts keep the settings, and this session must checkpoint when it closes.
+statement ok
+PRAGMA enable_checkpoint_on_shutdown;
+
+restart
+
+statement ok
+ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+query I
+SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_dropped_replay USING (id);
+----
+10
+
+# Checkpoints after a small change rewrite one row group and free the blocks it replaces: the used blocks stay the same.
+statement ok
+INSERT INTO p.t VALUES (-3, ${QUERY_EMB}::FLOAT[${DIMS}]);
+
+statement ok
+SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+SET VARIABLE used_blocks = (SELECT used_blocks FROM pragma_database_size() WHERE database_name = 'p');
+
+loop i 0 2
+
+statement ok
+INSERT INTO p.t VALUES (-4 - ${i}, ${QUERY_EMB}::FLOAT[${DIMS}]);
+
+statement ok
+SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+
+statement ok
+CHECKPOINT p;
+
+query I
+SELECT used_blocks = getvariable('used_blocks') FROM pragma_database_size() WHERE database_name = 'p';
+----
+true
+
+endloop
+
+# DROP INDEX frees the index's blocks at the next checkpoint.
+statement ok
+DROP INDEX p.t_idx;
+
+statement ok
+CHECKPOINT p;
+
+query I
+SELECT used_blocks < getvariable('used_blocks') FROM pragma_database_size() WHERE database_name = 'p';
+----
+true

@@ -6,16 +6,21 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <istream>
 #include <memory>
 #include <mutex>
+#include <ostream>
 #include <vector>
 
 #include "pdx/common.hpp"
 #include "pdx/indexes/flat.hpp"
+#include "pdx/indexes/ivf_tree.hpp"
 #include "pdx/indexes/ivf_vanilla.hpp"
 #include "pdx/ivf_searcher.hpp"
 #include "pdx/pruners/adsampling.hpp"
 #include "index/pdxearch_index_utils.hpp"
+#include "index/pdxearch_storage.hpp"
 
 namespace duckdb {
 
@@ -52,10 +57,11 @@ protected:
 
 public:
 	PDXearchWrapper(PDX::Quantization quantization, PDX::DistanceMetric distance_metric, uint32_t num_dimensions,
-	                uint32_t n_probe, int32_t seed)
+	                uint32_t n_probe, int32_t seed, unique_ptr<float[]> rotation_matrix_p = nullptr)
 	    : num_dimensions(num_dimensions), is_normalized(PDX::DistanceMetricRequiresNormalization(distance_metric)),
 	      distance_metric(distance_metric), quantization(quantization), n_probe(n_probe), seed(seed),
-	      rotation_matrix(GenerateRandomRotationMatrix(num_dimensions, seed)) {
+	      rotation_matrix(rotation_matrix_p ? std::move(rotation_matrix_p)
+	                                        : GenerateRandomRotationMatrix(num_dimensions, seed)) {
 	}
 	virtual ~PDXearchWrapper() = default;
 
@@ -97,6 +103,9 @@ struct PDXRowGroup {
 	std::unique_ptr<PDX::IPDXIndex> index;
 	// Held while the index is built, so that rows of this row group arriving in a later batch wait for it.
 	std::mutex mutex;
+	// Where the index was last persisted. A checkpoint rewrites only the row groups that changed since.
+	PDXearchBlockChain persisted_chain;
+	bool is_dirty = true;
 
 	uint64_t GetInMemorySizeInBytes() const {
 		return sizeof(*this) + (index ? index->GetInMemorySizeInBytes() : 0);
@@ -114,6 +123,8 @@ private:
 	std::vector<unique_ptr<PDXRowGroup>> row_groups;
 	// Lock for the above vector structure.
 	std::mutex row_groups_mutex;
+	// The persisted chains of removed row groups, freed at the next checkpoint.
+	std::vector<PDXearchBlockChain> orphaned_chains;
 
 public:
 	// Below this many embeddings a row group is not worth clustering and gets an exact Flat index.
@@ -137,8 +148,9 @@ public:
 	}
 
 	PDXearchWrapperParallel(PDX::DistanceMetric distance_metric, uint32_t num_dimensions, uint32_t n_probe,
-	                        int32_t seed, idx_t row_group_size)
-	    : PDXearchWrapper(Q, distance_metric, num_dimensions, n_probe, seed), row_group_size(row_group_size) {
+	                        int32_t seed, idx_t row_group_size, unique_ptr<float[]> rotation_matrix = nullptr)
+	    : PDXearchWrapper(Q, distance_metric, num_dimensions, n_probe, seed, std::move(rotation_matrix)),
+	      row_group_size(row_group_size) {
 	}
 
 	idx_t GetRowGroupSize() const {
@@ -185,6 +197,7 @@ public:
 		for (idx_t i = 0; i < num_embeddings; i++) {
 			row_group->index->Append(static_cast<size_t>(row_ids[i]), embeddings + i * GetNumDimensions());
 		}
+		row_group->is_dirty = true;
 	}
 
 	unique_ptr<PDX::IIterativeSearch> BeginSearchForRowGroup(const idx_t row_group_idx,
@@ -206,11 +219,12 @@ public:
 		// Rare: a rebuild of this row group (e.g., a checkpoint merge) ran earlier in the same
 		// sync and fetched all its committed rows, including (some) staged ones. The staged range now
 		// brings them here a second time.
-		if (row_group.index->GetRowIdMapping(static_cast<size_t>(row_id)).first != PDX::DELETED_MARKER) {
+		if (row_group.index->Contains(static_cast<size_t>(row_id))) {
 			return;
 		}
 		row_group.index->Append(static_cast<size_t>(row_id), transformed_embedding);
 		row_group.row_end = MaxValue<row_t>(row_group.row_end, row_id + 1);
+		row_group.is_dirty = true;
 		auto flat_index = dynamic_cast<PDX::FlatIndex *>(row_group.index.get());
 		if (flat_index && flat_index->GetClusterSize(0) >= MIN_EMBEDDINGS_FOR_CLUSTERING) {
 			PromoteToIVF(row_group, *flat_index);
@@ -219,8 +233,13 @@ public:
 
 	void DeleteRow(const row_t row_id) {
 		const auto row_group_idx = LookupRowGroup(row_id);
-		if (row_group_idx.IsValid()) {
-			row_groups[row_group_idx.GetIndex()]->index->Delete(static_cast<size_t>(row_id));
+		if (!row_group_idx.IsValid()) {
+			return;
+		}
+		auto &row_group = *row_groups[row_group_idx.GetIndex()];
+		// Rows the index does not hold (NULL embeddings, deletes replayed from the WAL) leave the row group clean.
+		if (row_group.index->Delete(static_cast<size_t>(row_id))) {
+			row_group.is_dirty = true;
 		}
 	}
 
@@ -281,11 +300,108 @@ public:
 
 	void RemoveRowGroupsOverlapping(const row_t start, const row_t end) {
 		const std::lock_guard<std::mutex> lock(row_groups_mutex);
-		row_groups.erase(std::remove_if(row_groups.begin(), row_groups.end(),
-		                                [&](const unique_ptr<PDXRowGroup> &row_group) {
-			                                return row_group->row_start < end && row_group->row_end > start;
-		                                }),
-		                 row_groups.end());
+		const auto overlaps = [&](const unique_ptr<PDXRowGroup> &row_group) {
+			return row_group->row_start < end && row_group->row_end > start;
+		};
+		// We keep the persisted chains of the removed row groups so that SerializeToDisk can
+		// free them later (via SerializeToDisk -> PersistDirtyRowGroups) when it writes the next snapshot.
+		for (auto &row_group : row_groups) {
+			if (overlaps(row_group) && !row_group->persisted_chain.segments.empty()) {
+				orphaned_chains.push_back(std::move(row_group->persisted_chain));
+			}
+		}
+		row_groups.erase(std::remove_if(row_groups.begin(), row_groups.end(), overlaps), row_groups.end());
+	}
+
+	// Frees the orphaned chains, then rewrites each dirty row group into a new chain. `write_partial_blocks` runs after
+	// each row group, so the allocator never holds more than one rewritten row group in memory.
+	void PersistDirtyRowGroups(FixedSizeAllocator &allocator, const std::function<void()> &write_partial_blocks) {
+		for (auto &chain : orphaned_chains) {
+			chain.Free(allocator);
+		}
+		orphaned_chains.clear();
+		for (auto &row_group : row_groups) {
+			if (!row_group->is_dirty) {
+				continue;
+			}
+			row_group->persisted_chain.Free(allocator);
+			PDXearchBlockChainWriter writer(allocator);
+			std::ostream out(&writer);
+			row_group->index->SaveToStream(out);
+			row_group->persisted_chain = writer.Finish();
+			row_group->is_dirty = false;
+			write_partial_blocks();
+		}
+	}
+
+	// The directory only stores where each chain starts and how long it is.
+	void AddRowGroupEntries(PDXearchDirectory &directory) const {
+		for (const auto &row_group : row_groups) {
+			const auto &chain = row_group->persisted_chain;
+			directory.row_groups.push_back(
+			    {row_group->row_start, row_group->row_end, PDXearchBlockChain {chain.head, chain.num_bytes, {}}});
+		}
+	}
+
+	// The allocator was reset: nothing is persisted anymore.
+	void ResetPersistedChains() {
+		orphaned_chains.clear();
+		for (auto &row_group : row_groups) {
+			row_group->persisted_chain = PDXearchBlockChain();
+			row_group->is_dirty = true;
+		}
+	}
+
+	// Compares the mirror of the table's row group [start, end) with the row group's committed `row_ids` (ascending).
+	// Deletes the rows the mirror holds that the table no longer has, and passes the runs of rows the mirror does not
+	// hold to `stage` (all of them, without a mirror).
+	void ReconcileRowGroup(const row_t start, const row_t end, const row_t *const row_ids, const idx_t count,
+	                       const std::function<void(row_t, row_t)> &stage) {
+		const auto row_group_idx = LookupRowGroup(start);
+		const auto index = row_group_idx.IsValid() ? row_groups[row_group_idx.GetIndex()]->index.get() : nullptr;
+		const auto is_indexed = [&](const row_t row_id) {
+			return index && index->Contains(static_cast<size_t>(row_id));
+		};
+		bool in_missing_run = false;
+		row_t missing_run_start = 0;
+		idx_t next = 0;
+		for (row_t row_id = start; row_id < end; row_id++) {
+			const bool in_table = next < count && row_ids[next] == row_id;
+			if (in_table) {
+				next++;
+			}
+			const bool indexed = is_indexed(row_id);
+			if (!in_table && indexed) {
+				DeleteRow(row_id);
+			}
+			const bool missing = in_table && !indexed;
+			if (missing && !in_missing_run) {
+				in_missing_run = true;
+				missing_run_start = row_id;
+			} else if (!missing && in_missing_run) {
+				in_missing_run = false;
+				stage(missing_run_start, row_id);
+			}
+		}
+		if (in_missing_run) {
+			stage(missing_run_start, end);
+		}
+	}
+
+	// Loads the persisted row groups, in the directory's (row_start) order.
+	void LoadRowGroups(PDXearchBlockChainReader &reader, const vector<PDXearchDirectory::RowGroupEntry> &entries) {
+		for (const auto &entry : entries) {
+			auto row_group = make_uniq<PDXRowGroup>();
+			row_group->row_start = entry.row_start;
+			row_group->row_end = entry.row_end;
+			row_group->pruner = make_uniq<PDX::ADSamplingPruner>(GetNumDimensions(), rotation_matrix.get());
+			reader.Open(entry.chain);
+			std::istream in(&reader);
+			row_group->index = PDX::LoadPDXIndexFromStream(in, *row_group->pruner);
+			row_group->persisted_chain = reader.Finish();
+			row_group->is_dirty = false;
+			row_groups.push_back(std::move(row_group));
+		}
 	}
 
 	idx_t GetTotalNumClusters() const {

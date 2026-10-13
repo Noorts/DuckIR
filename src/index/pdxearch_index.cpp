@@ -6,6 +6,7 @@
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 #include "duckdb/transaction/transaction_data.hpp"
 #include "pdx/common.hpp"
+#include "pdx/utils.hpp"
 #include "index/pdxearch_index.hpp"
 
 #include "index/pdxearch_module.hpp"
@@ -23,14 +24,6 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	if (index_constraint_type != IndexConstraintType::NONE) {
 		throw NotImplementedException("PDXearch indexes do not support unique or primary key constraints");
 	}
-	if (persistence_info.IsValid()) {
-		throw InternalException(
-		    "Something went wrong: the PDXearch index was created without its table. This is likely because a "
-		    "malformed persisted index was loaded. Index persistence is not supported yet, but DuckDB will still "
-		    "try to persist it. Open your database file manually (duckdb test.db) and drop the index(es). Run "
-		    "'SELECT sql FROM duckdb_indexes();' to see the indexes, and then 'DROP INDEX index_name;' to drop the "
-		    "unused index(es).");
-	}
 
 	// We only support one ARRAY column
 	D_ASSERT(logical_types.size() == 1);
@@ -39,10 +32,14 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 
 	const auto num_dimensions = ArrayType::GetSize(embedding_type);
 
+	// DuckDB v1.5.5 does not persist the WITH options in its catalog, so a
+	// persisted index reads them from its storage info (MakeStorageInfo).
+	const auto &options = persistence_info.IsValid() ? persistence_info.options : index_creation_options;
+
 	// Try to get the vector metric from the options, this parameter should be verified during binding.
 	auto dist_metric = PDXearchWrapper::DEFAULT_DISTANCE_METRIC;
-	const auto dist_metric_opt = index_creation_options.find("metric");
-	if (dist_metric_opt != index_creation_options.end()) {
+	const auto dist_metric_opt = options.find("metric");
+	if (dist_metric_opt != options.end()) {
 		const auto dist_metric_val =
 		    PDXearchIndex::DISTANCE_METRIC_MAP.find(dist_metric_opt->second.GetValue<string>());
 		if (dist_metric_val != PDXearchIndex::DISTANCE_METRIC_MAP.end()) {
@@ -51,8 +48,8 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	}
 
 	auto quantization = PDXearchWrapper::DEFAULT_QUANTIZATION;
-	const auto quantization_opt = index_creation_options.find("quantization");
-	if (quantization_opt != index_creation_options.end()) {
+	const auto quantization_opt = options.find("quantization");
+	if (quantization_opt != options.end()) {
 		const auto quantization_val = PDXearchIndex::QUANTIZATION_MAP.find(quantization_opt->second.GetValue<string>());
 		if (quantization_val != PDXearchIndex::QUANTIZATION_MAP.end()) {
 			quantization = quantization_val->second;
@@ -60,27 +57,44 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 	}
 
 	auto n_probe = PDXearchWrapper::DEFAULT_N_PROBE;
-	const auto n_probe_opt = index_creation_options.find("n_probe");
-	if (n_probe_opt != index_creation_options.end()) {
+	const auto n_probe_opt = options.find("n_probe");
+	if (n_probe_opt != options.end()) {
 		n_probe = n_probe_opt->second.GetValue<int32_t>();
 	}
 
 	// TODO: Confirm the static cast is sound.
 	auto seed = static_cast<int32_t>(std::random_device {}());
-	const auto seed_opt = index_creation_options.find("seed");
-	if (seed_opt != index_creation_options.end()) {
+	const auto seed_opt = options.find("seed");
+	if (seed_opt != options.end()) {
 		seed = seed_opt->second.GetValue<int32_t>();
+	}
+
+	auto &block_manager = table_io_manager.GetIndexBlockManager();
+	allocator = make_uniq<FixedSizeAllocator>(PDXearchBlockChain::GetSegmentSize(block_manager), block_manager);
+	// A persisted index keeps its rotation. Its row groups are loaded once the wrapper exists.
+	unique_ptr<PDXearchBlockChainReader> storage_reader;
+	PDXearchDirectory directory;
+	unique_ptr<float[]> rotation_matrix;
+	if (persistence_info.IsValid()) {
+		storage_reader =
+		    OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory, rotation_matrix);
 	}
 
 	const idx_t row_group_size = table_io_manager.GetRowGroupSize();
 	if (quantization == PDX::Quantization::F32) {
 		D_ASSERT(ArrayType::GetChildType(embedding_type).id() == LogicalTypeId::FLOAT);
 
-		pdxearch_wrapper = make_uniq<PDXearchWrapperF32>(dist_metric, num_dimensions, n_probe, seed, row_group_size);
+		pdxearch_wrapper = make_uniq<PDXearchWrapperF32>(dist_metric, num_dimensions, n_probe, seed, row_group_size,
+		                                                 std::move(rotation_matrix));
 	} else if (quantization == PDX::Quantization::U8) {
-		pdxearch_wrapper = make_uniq<PDXearchWrapperU8>(dist_metric, num_dimensions, n_probe, seed, row_group_size);
+		pdxearch_wrapper = make_uniq<PDXearchWrapperU8>(dist_metric, num_dimensions, n_probe, seed, row_group_size,
+		                                                std::move(rotation_matrix));
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
+	}
+	if (storage_reader) {
+		LoadRowGroups(*storage_reader, directory);
+		needs_reconciliation = true;
 	}
 
 	function_matcher = MakeFunctionMatcher(*pdxearch_wrapper.get());
@@ -92,7 +106,7 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
  ******************************************************************/
 
 bool PDXearchIndex::IsInSyncWithTable(DataTable &table) const {
-	return !has_unindexed_rows && FindStaleRowGroups(table).empty();
+	return !needs_reconciliation && !has_unindexed_rows && FindStaleRowGroups(table).empty();
 }
 
 unique_ptr<StorageLockKey> PDXearchIndex::SyncAndLockForSearch(DataTable &table) {
@@ -238,6 +252,53 @@ idx_t PDXearchIndex::FetchRows(DataTable &table, const row_t start, const row_t 
 	return count;
 }
 
+idx_t PDXearchIndex::FetchCommittedRowIds(DataTable &table, const row_t start, const row_t end, row_t *const row_ids) {
+	const vector<StorageIndex> column_ids {StorageIndex()};
+	TableScanState scan_state;
+	scan_state.Initialize(column_ids);
+	table.GetRowGroupCollection()->InitializeScanWithOffset(QueryContext(), scan_state.table_state, column_ids,
+	                                                        static_cast<idx_t>(start), static_cast<idx_t>(end));
+	DataChunk chunk;
+	chunk.Initialize(Allocator::Get(db), {LogicalType::ROW_TYPE});
+	idx_t count = 0;
+	while (true) {
+		chunk.Reset();
+		scan_state.table_state.Scan(chunk, TableScanType::TABLE_SCAN_COMMITTED_ROWS);
+		if (chunk.size() == 0) {
+			break;
+		}
+		chunk.data[0].Flatten(chunk.size());
+		memcpy(row_ids + count, FlatVector::GetData<row_t>(chunk.data[0]), chunk.size() * sizeof(row_t));
+		count += chunk.size();
+	}
+	return count;
+}
+
+// One DuckDB row group of row ids at a time
+void PDXearchIndex::ReconcileWithTable(DataTable &table) {
+	auto row_ids = make_uniq_array<row_t>(GetRowGroupSize());
+	const auto stage = [&](const row_t start, const row_t end) {
+		StageUnindexedRange({start, end});
+	};
+	for (const auto &physical : GetPhysicalRowGroups(table)) {
+		if (physical.count == 0) {
+			continue;
+		}
+		const row_t end = physical.row_start + static_cast<row_t>(physical.count);
+		const idx_t count = FetchCommittedRowIds(table, physical.row_start, end, row_ids.get());
+		ReconcileRowGroup(physical.row_start, end, row_ids.get(), count, stage);
+	}
+}
+
+void PDXearchIndex::ReconcileRowGroup(const row_t start, const row_t end, const row_t *const row_ids, const idx_t count,
+                                      const std::function<void(row_t, row_t)> &stage) {
+	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->ReconcileRowGroup(start, end, row_ids, count, stage);
+	} else {
+		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->ReconcileRowGroup(start, end, row_ids, count, stage);
+	}
+}
+
 void PDXearchIndex::SyncWithTable(DataTable &table) {
 	auto _lock = rwlock.GetExclusiveLock();
 
@@ -259,6 +320,12 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 		if (count > 0) {
 			SetUpIndexForRowGroup(row_ids.get(), embeddings.get(), count, bounds.row_start, bounds.count);
 		}
+	}
+
+	// Only happens on the first query after the first index bind
+	if (needs_reconciliation) {
+		ReconcileWithTable(table);
+		needs_reconciliation = false;
 	}
 
 	// Unindexed rows, gathered per DuckDB row group: a row group without a mirror is clustered once from all of its
@@ -357,10 +424,10 @@ ErrorData PDXearchIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_id
 			range.end++;
 			continue;
 		}
-		unindexed_row_ranges.push_back(range);
+		StageUnindexedRange(range);
 		range = {row_id_data[i], row_id_data[i] + 1};
 	}
-	unindexed_row_ranges.push_back(range);
+	StageUnindexedRange(range);
 	has_unindexed_rows = true;
 	return ErrorData();
 }
@@ -379,6 +446,25 @@ void PDXearchIndex::Delete(IndexLock &lock, DataChunk &entries, Vector &row_ids)
 		RemoveUnindexedRow(row_id_data[i]);
 	}
 	has_unindexed_rows = !unindexed_row_ranges.empty();
+}
+
+void PDXearchIndex::StageUnindexedRange(const PDXearchRowRange range) {
+	auto &ranges = unindexed_row_ranges;
+	// The first staged range that starts after this one.
+	auto it = std::upper_bound(ranges.begin(), ranges.end(), range.start,
+	                           [](row_t start, const PDXearchRowRange &staged) { return start < staged.start; });
+	if (it != ranges.begin() && std::prev(it)->end > range.start) {
+		--it;
+		it->end = MaxValue<row_t>(it->end, range.end);
+	} else {
+		it = ranges.insert(it, range);
+	}
+	// Absorb the following ranges this one now overlaps.
+	auto next = std::next(it);
+	while (next != ranges.end() && next->start < it->end) {
+		it->end = MaxValue<row_t>(it->end, next->end);
+		next = ranges.erase(next);
+	}
 }
 
 // A deleted row that was never indexed has nothing left to index: take it out of its staged range.
@@ -412,10 +498,15 @@ void PDXearchIndex::RemoveUnindexedRow(const row_t row_id) {
 	}
 }
 
+// Called by DROP INDEX.
+// Dropping the allocator's buffers marks their blocks modified; DuckDB frees them at the next checkpoint.
 void PDXearchIndex::ResetStorage(IndexLock &lock) {
 	auto _lock = rwlock.GetExclusiveLock();
 
-	// TODO: Implement when we implement persistence.
+	allocator->Reset();
+	directory_chain = PDXearchBlockChain();
+	rotation_chain = PDXearchBlockChain();
+	ResetPersistedChains();
 }
 
 bool PDXearchIndex::MergeIndexes(IndexLock &state, BoundIndex &other_index) {
@@ -437,15 +528,16 @@ void PDXearchIndex::VerifyAllocations(IndexLock &state) {
 	throw NotImplementedException("PDXearchIndex::VerifyAllocations() not implemented");
 }
 
+// Called in debug builds: at most one empty buffer.
 void PDXearchIndex::VerifyBuffers(IndexLock &state) {
-	// Needed for debug builds 
-	// TODO: Implement when we implement persistence
+	allocator->VerifyBuffers();
 }
 
 idx_t PDXearchIndex::GetInMemorySize(IndexLock &state) {
 	auto _lock = rwlock.GetSharedLock();
 
-	return pdxearch_wrapper->GetInMemorySizeInBytes();
+	// The allocator only holds the buffers that were not written to disk yet.
+	return pdxearch_wrapper->GetInMemorySizeInBytes() + allocator->GetInMemorySize();
 }
 
 unique_ptr<PDXearchIndexStats> PDXearchIndex::GetStats(const ClientContext &context) const {
@@ -468,41 +560,152 @@ unique_ptr<PDXearchIndexStats> PDXearchIndex::GetStats(const ClientContext &cont
  * Index persistence
  ******************************************************************/
 
+unique_ptr<PDXearchBlockChainReader> PDXearchIndex::OpenStorage(const IndexStorageInfo &info,
+                                                                const uint32_t num_dimensions,
+                                                                PDXearchDirectory &directory,
+                                                                unique_ptr<float[]> &rotation_matrix) {
+	const auto version = info.options.find("storage_version");
+	if (version == info.options.end() || version->second.GetValue<uint32_t>() != PDXEARCH_STORAGE_VERSION) {
+		throw NotImplementedException("The PDXearch index \"%s\" was persisted in a storage format this version of the "
+		                              "extension cannot read. Update the extension, or DROP INDEX and create it again.",
+		                              name);
+	}
+	const auto &allocator_info = info.allocator_infos[0];
+	if (allocator_info.segment_size != allocator->GetSegmentSize()) {
+		throw SerializationException("The PDXearch index \"%s\" has segments of %llu bytes instead of %llu", name,
+		                             allocator_info.segment_size, allocator->GetSegmentSize());
+	}
+	// Registers the persisted blocks without reading them: the next checkpoints keep or free them.
+	allocator->Init(allocator_info);
+
+	auto reader = make_uniq<PDXearchBlockChainReader>(table_io_manager.GetIndexBlockManager(), allocator_info);
+	std::istream in(reader.get());
+	PDXearchBlockChain root;
+	root.head.Set(info.root);
+	root.num_bytes = info.options.at("directory_bytes").GetValue<idx_t>();
+	reader->Open(root);
+	directory = PDXearchDirectory::Read(in);
+	directory_chain = reader->Finish();
+	if (directory.num_dimensions != num_dimensions) {
+		throw SerializationException("The PDXearch index \"%s\" was persisted with %u dimensions instead of %u", name,
+		                             directory.num_dimensions, num_dimensions);
+	}
+	// A directory written to the WAL has no rotation.
+	if (directory.rotation.num_bytes > 0) {
+		const size_t num_values = static_cast<size_t>(num_dimensions) * num_dimensions;
+		rotation_matrix = make_uniq_array<float>(num_values);
+		reader->Open(directory.rotation);
+		PDX::StreamReader rotation_reader {in};
+		rotation_reader.Read(rotation_matrix.get(), sizeof(float) * num_values);
+		rotation_chain = reader->Finish();
+	}
+	return reader;
+}
+
+void PDXearchIndex::LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory) {
+	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->LoadRowGroups(reader, directory.row_groups);
+	} else {
+		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->LoadRowGroups(reader, directory.row_groups);
+	}
+}
+
+void PDXearchIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
+	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
+		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks);
+	} else {
+		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
+		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks);
+	}
+}
+
+void PDXearchIndex::AddRowGroupEntries(PDXearchDirectory &directory) const {
+	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->AddRowGroupEntries(directory);
+	} else {
+		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->AddRowGroupEntries(directory);
+	}
+}
+
+void PDXearchIndex::ResetPersistedChains() {
+	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
+		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->ResetPersistedChains();
+	} else {
+		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->ResetPersistedChains();
+	}
+}
+
+// Like ART::WritePartialBlocks. Flushing every time keeps a later New() from landing in a buffer whose block is not on
+// disk yet. Empty buffers go first: DuckDB asserts that the buffers it serializes are not empty.
+void PDXearchIndex::WritePartialBlocks(QueryContext context) {
+	allocator->RemoveEmptyBuffers();
+	PartialBlockManager partial_block_manager(context, table_io_manager.GetIndexBlockManager(),
+	                                          PartialBlockType::FULL_CHECKPOINT);
+	allocator->SerializeBuffers(partial_block_manager);
+	partial_block_manager.FlushPartialBlocks();
+}
+
+void PDXearchIndex::WriteDirectory(const PDXearchDirectory &directory) {
+	directory_chain.Free(*allocator);
+	PDXearchBlockChainWriter writer(*allocator);
+	std::ostream out(&writer);
+	directory.Write(out);
+	directory_chain = writer.Finish();
+}
+
+IndexStorageInfo PDXearchIndex::MakeStorageInfo() const {
+	IndexStorageInfo info(name);
+	info.root = directory_chain.head.Get();
+	info.options.emplace("storage_version", Value::UINTEGER(PDXEARCH_STORAGE_VERSION));
+	info.options.emplace("directory_bytes", Value::UBIGINT(directory_chain.num_bytes));
+	info.options.emplace("metric", Value(GetDistanceMetric()));
+	info.options.emplace("quantization", Value(GetQuantization()));
+	info.options.emplace("n_probe", Value::INTEGER(static_cast<int32_t>(pdxearch_wrapper->GetNProbe())));
+	info.options.emplace("seed", Value::INTEGER(pdxearch_wrapper->GetSeed()));
+	info.allocator_infos.push_back(allocator->GetInfo());
+	return info;
+}
+
+// Called at every checkpoint, also when nothing changed: only the dirty row groups and the directory are rewritten.
 IndexStorageInfo PDXearchIndex::SerializeToDisk(QueryContext context,
                                                 const case_insensitive_map_t<Value> &serialization_options) {
-	// For serialization_options see:
-	// https://github.com/duckdb/duckdb/blob/32afee3e788394973ce4df4fcae7610832d5550a/src/storage/write_ahead_log.cpp#L374
-
-	PersistToDisk();
-
-	IndexStorageInfo info(name);
-	case_insensitive_map_t<Value> options;
-	options.emplace("testDisk", Value::INTEGER(12));
-	info.options = options;
-
-	// Temporary empty FixedSizeAllocatorInfo to satisfy the DuckDB RelDebug build's index_storage_info.IsValid() check.
-	info.allocator_infos.push_back(FixedSizeAllocatorInfo {});
-
-	return info;
-}
-
-IndexStorageInfo PDXearchIndex::SerializeToWAL(const case_insensitive_map_t<Value> &serialization_options) {
-	PersistToDisk();
-
-	IndexStorageInfo info(name);
-	case_insensitive_map_t<Value> options;
-	options.emplace("testWAL", Value::INTEGER(12));
-	info.options = options;
-
-	// Temporary empty FixedSizeAllocatorInfo to satisfy the DuckDB RelDebug build's index_storage_info.IsValid() check.
-	info.allocator_infos.push_back(FixedSizeAllocatorInfo {});
-
-	return info;
-}
-
-// TODO: Implement persistence.
-void PDXearchIndex::PersistToDisk() {
 	auto _lock = rwlock.GetExclusiveLock();
+
+	PersistDirtyRowGroups([&]() { WritePartialBlocks(context); });
+	// Written once: the rotation never changes.
+	if (rotation_chain.segments.empty()) {
+		const auto num_dimensions = GetNumDimensions();
+		PDXearchBlockChainWriter writer(*allocator);
+		std::ostream out(&writer);
+		out.write(reinterpret_cast<const char *>(GetRotationMatrix()),
+		          static_cast<std::streamsize>(sizeof(float) * num_dimensions * num_dimensions));
+		rotation_chain = writer.Finish();
+	}
+
+	PDXearchDirectory directory;
+	directory.num_dimensions = static_cast<uint32_t>(GetNumDimensions());
+	directory.rotation = PDXearchBlockChain {rotation_chain.head, rotation_chain.num_bytes, {}};
+	AddRowGroupEntries(directory);
+	WriteDirectory(directory);
+	WritePartialBlocks(context);
+	return MakeStorageInfo();
+}
+
+// Called when CREATE INDEX commits. The WAL only gets an empty directory and the options: if the process stops before
+// the next checkpoint, replay binds an empty index and its first sync indexes the table. Logging the whole index would
+// keep it in memory twice until that checkpoint (2x the index size).
+IndexStorageInfo PDXearchIndex::SerializeToWAL(const case_insensitive_map_t<Value> &serialization_options) {
+	auto _lock = rwlock.GetExclusiveLock();
+
+	PDXearchDirectory directory;
+	directory.num_dimensions = static_cast<uint32_t>(GetNumDimensions());
+	WriteDirectory(directory);
+	// Sets the buffers' allocation sizes, which GetInfo reads.
+	auto buffers = allocator->InitSerializationToWAL();
+	auto info = MakeStorageInfo();
+	info.buffers.push_back(std::move(buffers));
+	return info;
 }
 
 /******************************************************************

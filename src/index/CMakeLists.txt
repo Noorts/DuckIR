@@ -1,6 +1,7 @@
 set(EXTENSION_SOURCES
     ${EXTENSION_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_index.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_storage.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_index_info_function.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_sync_function.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/create/pdxearch_index_create_plan.cpp

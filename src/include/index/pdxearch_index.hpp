@@ -9,6 +9,7 @@
 #include <atomic>
 
 #include "pdx/common.hpp"
+#include "index/pdxearch_storage.hpp"
 #include "index/pdxearch_wrapper.hpp"
 
 namespace duckdb {
@@ -42,6 +43,8 @@ private:
 	// Row ids committed to the table whose embeddings are not in the index yet
 	std::vector<PDXearchRowRange> unindexed_row_ranges;
 	std::atomic<bool> has_unindexed_rows {false};
+	// Set when the index is loaded from storage: its first sync reconciles it with the table (ReconcileWithTable).
+	bool needs_reconciliation = false;
 
 	void AppendRow(idx_t row_group_idx, row_t row_id, const float *transformed_embedding);
 	void DeleteRow(row_t row_id);
@@ -51,12 +54,27 @@ private:
 	// `rows_returned` counts every committed row the table returned, NULL embeddings included.
 	idx_t FetchRows(DataTable &table, row_t start, row_t end, row_t *row_ids, float *embeddings, idx_t &rows_returned);
 
+	// The committed rows of [start, end), ascending, written to `row_ids`. Scans only the row id column, so it reads no
+	// column data.
+	idx_t FetchCommittedRowIds(DataTable &table, row_t start, row_t end, row_t *row_ids);
+
+	// The first sync after the index was loaded from storage. The index can lack rows the table has (a crash before the
+	// first checkpoint, inserts in WAL replays DuckDB dropped, #26112) and hold rows the table deleted (deletes in
+	// those replays).
+	void ReconcileWithTable(DataTable &table);
+	void ReconcileRowGroup(row_t start, row_t end, const row_t *row_ids, idx_t count,
+	                       const std::function<void(row_t, row_t)> &stage);
+
 	// Find row groups whose mirrors are stale:
 	// - DuckDB merged two or more row groups into one
 	// - DuckDB dropped a rowgroup (e.g., VACUUM, CHECKPOINT merging)
 	vector<PDXearchRowGroupBounds> FindStaleRowGroups(DataTable &table) const;
 
 	void RemoveRowGroupsOverlapping(row_t start, row_t end);
+
+	// Adds the rows of one commit to unindexed_row_ranges, which needs to stay sorted and disjoint.
+	// A range that overlaps staged ones (DuckDB replaying a commit from the WAL) is merged with them.
+	void StageUnindexedRange(PDXearchRowRange range);
 
 	void RemoveUnindexedRow(row_t row_id);
 
@@ -65,8 +83,27 @@ private:
 	// - Every mirrored row group matches its DuckDB row group.
 	bool IsInSyncWithTable(DataTable &table) const;
 
+	// The index's storage: the directory chain points to the rotation chain and to each row group's chain.
+	unique_ptr<FixedSizeAllocator> allocator;
+	PDXearchBlockChain directory_chain;
+	PDXearchBlockChain rotation_chain;
+
+	// Writes the allocator's dirty buffers to disk, which releases their memory.
+	void WritePartialBlocks(QueryContext context);
+	// Frees the current directory chain and writes `directory` into a new one.
+	void WriteDirectory(const PDXearchDirectory &directory);
+	IndexStorageInfo MakeStorageInfo() const;
+	void PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks);
+	void AddRowGroupEntries(PDXearchDirectory &directory) const;
+	void ResetPersistedChains();
+	// Reads the directory and the rotation of a persisted index. The returned reader
+	// then reads the row groups' chains.
+	unique_ptr<PDXearchBlockChainReader> OpenStorage(const IndexStorageInfo &info, uint32_t num_dimensions,
+	                                                 PDXearchDirectory &directory,
+	                                                 unique_ptr<float[]> &rotation_matrix);
+	void LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory);
+
 	unique_ptr<ExpressionMatcher> function_matcher;
-	IndexPointer root_block_ptr;
 
 	// A readers-writers (shared-exclusive; exclusive prioritized) lock that
 	// lets any number of index scans run concurrently (shared) while a
@@ -156,8 +193,6 @@ public:
 	/******************************************************************
 	 * Index persistence
 	 ******************************************************************/
-
-	void PersistToDisk();
 
 	IndexStorageInfo SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) override;
 
