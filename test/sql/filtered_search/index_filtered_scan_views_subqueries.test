@@ -1,7 +1,5 @@
 # name: test/sql/filtered_search/index_filtered_scan_views_subqueries.test
-# description: Searches over subqueries and views of the indexed table use the index scans: projections that only
-#              forward the table's columns (DuckDB binds a view as a subquery) sit between the distance projection and
-#              the table scan, and the results equal the brute-force search.
+# description: Searches over subqueries and views of the indexed table use the index scans: projections that only forward the table's columns (DuckDB binds a view as a subquery) sit between the distance projection and the table scan, and the results equal the brute-force search.
 # group: [filtered_search]
 
 require parquet

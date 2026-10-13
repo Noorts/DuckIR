@@ -1,7 +1,5 @@
 # name: test/sql/create/index_create_null_embeddings.test
-# description: Rows with a NULL embedding are absent from the index; searches never return them and filtered searches
-#              whose predicate passes them are unaffected. The UPDATE of an ARRAY column is a delete plus an insert, so
-#              the NULL rows end up in a row group of their own that has no index row group.
+# description: Rows with a NULL embedding are absent from the index; searches never return them and filtered searches whose predicate passes them are unaffected. The UPDATE of an ARRAY column is a delete plus an insert, so the NULL rows end up in a row group of their own that has no index row group.
 # group: [create]
 
 require parquet

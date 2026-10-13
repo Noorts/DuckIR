@@ -1,7 +1,5 @@
 # name: test/sql/create/index_create_degenerate_row_groups.test
-# description: Degenerate physical layouts, all with two row groups: a one-row last row group, a one-row first row
-#              group, last row groups on both sides of the Flat/IVF threshold, a last row group with a single non-NULL
-#              embedding, and one with a single live row. The degenerate row has id -1 and a marker embedding.
+# description: Degenerate physical layouts, all with two row groups: a one-row last row group, a one-row first row group, last row groups on both sides of the Flat/IVF threshold, a last row group with a single non-NULL embedding, and one with a single live row. The degenerate row has id -1 and a marker embedding.
 # group: [create]
 
 require parquet

@@ -1,9 +1,5 @@
 # name: test/sql/join_search/index_join_filtered.test
-# description: A LATERAL join whose KNN subquery filters the indexed table: the index join collects the rowids that
-#              pass the predicate once, then searches them for each query. The rows of each query equal those of the
-#              filtered single-query index search with that query vector as a constant (via getvariable). join_result
-#              holds the LATERAL join's rows, single_result those of the single-query searches, and their difference
-#              (both ways, as multisets) must be empty.
+# description: A LATERAL join whose KNN subquery filters the indexed table: the index join collects the rowids that pass the predicate once, then searches them for each query. The rows of each query equal those of the filtered single-query index search with that query vector as a constant (via getvariable). join_result holds the LATERAL join's rows, single_result those of the single-query searches, and their difference (both ways, as multisets) must be empty.
 # group: [join_search]
 
 require parquet

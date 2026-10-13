@@ -1,9 +1,5 @@
 # name: test/sql/join_search/index_join_lateral.test
-# description: A LATERAL join whose subquery is a KNN query over the indexed table, with the query vector of each outer
-#              row, searches the index once per query (PDXEARCH_INDEX_JOIN). The rows of each query equal those of the
-#              single-query index search with that query vector as a constant (via getvariable), so the results do
-#              not depend on how exact the index is. join_result holds the LATERAL join's rows, single_result those
-#              of the single-query searches, and their difference (both ways, as multisets) must be empty.
+# description: A LATERAL join whose subquery is a KNN query over the indexed table, with the query vector of each outer row, searches the index once per query (PDXEARCH_INDEX_JOIN). The rows of each query equal those of the single-query index search with that query vector as a constant (via getvariable), so the results do not depend on how exact the index is. join_result holds the LATERAL join's rows, single_result those of the single-query searches, and their difference (both ways, as multisets) must be empty.
 # group: [join_search]
 
 require parquet

@@ -1,3 +1,4 @@
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/storage/table/row_group_collection.hpp"
 #include "duckdb/storage/table/row_group_segment_tree.hpp"
@@ -32,7 +33,7 @@ PDXearchIndex::PDXearchIndex(const string &name, IndexConstraintType index_const
 
 	const auto num_dimensions = ArrayType::GetSize(embedding_type);
 
-	// DuckDB v1.5.5 does not persist the WITH options in its catalog, so a
+	// DuckDB v1.5.6 does not persist the WITH options in its catalog, so a
 	// persisted index reads them from its storage info (MakeStorageInfo).
 	const auto &options = persistence_info.IsValid() ? persistence_info.options : index_creation_options;
 
@@ -827,6 +828,21 @@ unique_ptr<ExpressionMatcher> PDXearchIndex::MakeFunctionMatcher(const PDXearchW
 	matcher->matchers.push_back(std::move(rhs_matcher));
 
 	return std::move(matcher);
+}
+
+string ColumnNamesToString(const TableCatalogEntry &table, const vector<ColumnIndex> &column_ids) {
+	string result;
+	for (auto &column_id : column_ids) {
+		if (!result.empty()) {
+			result += "\n";
+		}
+		if (column_id.IsRowIdColumn()) {
+			result += "rowid";
+		} else {
+			result += table.GetColumn(LogicalIndex(column_id.GetPrimaryIndex())).Name();
+		}
+	}
+	return result;
 }
 
 void PDXearchModule::RegisterIndex(DatabaseInstance &db) {

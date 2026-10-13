@@ -1331,46 +1331,84 @@ public:
 		return ok;
 	}
 
-	static void MergeProjections(unique_ptr<LogicalOperator> &plan) {
-		if (plan->type == LogicalOperatorType::LOGICAL_PROJECTION) {
-			if (plan->children[0]->type == LogicalOperatorType::LOGICAL_PROJECTION) {
-				auto &child = plan->children[0];
-
-				if (child->children[0]->type == LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR &&
-				    ( // Targets non-filtered.
-				        child->children[0]->GetName() == "PDXEARCH_INDEX_SCAN" ||
-				        // Targets filtered.
-				        child->children[0]->GetName() == "PDXEARCH_INDEX_FILT_SCAN")) {
-					auto &parent_projection = plan->Cast<LogicalProjection>();
-					auto &child_projection = child->Cast<LogicalProjection>();
-
-					column_binding_set_t referenced_bindings;
-					for (auto &expr : parent_projection.expressions) {
-						ExpressionIterator::EnumerateExpression(expr, [&](Expression &expr_ref) {
-							if (expr_ref.type == ExpressionType::BOUND_COLUMN_REF) {
-								auto &bound_column_ref = expr_ref.Cast<BoundColumnRefExpression>();
-								referenced_bindings.insert(bound_column_ref.binding);
-							}
-						});
-					}
-
-					auto child_bindings = child_projection.GetColumnBindings();
-					for (idx_t i = 0; i < child_projection.expressions.size(); i++) {
-						auto &expr = child_projection.expressions[i];
-						auto &outgoing_binding = child_bindings[i];
-
-						if (referenced_bindings.find(outgoing_binding) == referenced_bindings.end()) {
-							// The binding is not referenced
-							// We can remove this expression. But positionality matters so just replace with int.
-							expr = make_uniq_base<Expression, BoundConstantExpression>(Value(LogicalType::TINYINT));
-						}
-					}
-					return;
+	static column_binding_set_t CollectReadBindings(LogicalProjection &projection) {
+		column_binding_set_t read_bindings;
+		for (auto &expression : projection.expressions) {
+			ExpressionIterator::EnumerateExpression(expression, [&](Expression &child) {
+				if (child.type == ExpressionType::BOUND_COLUMN_REF) {
+					read_bindings.insert(child.Cast<BoundColumnRefExpression>().binding);
 				}
+			});
+		}
+		return read_bindings;
+	}
+
+	// Replaces each expression of `projection` that `reader`, the projection above it, does not read with a constant,
+	// so it is no longer computed. The expressions stay: a projection's bindings are positions in its expression list.
+	static void DropUnreadExpressions(LogicalProjection &reader, LogicalProjection &projection) {
+		const auto read_bindings = CollectReadBindings(reader);
+		const auto bindings = projection.GetColumnBindings();
+		for (idx_t i = 0; i < projection.expressions.size(); i++) {
+			if (read_bindings.find(bindings[i]) == read_bindings.end()) {
+				projection.expressions[i] =
+				    make_uniq_base<Expression, BoundConstantExpression>(Value(LogicalType::TINYINT));
 			}
 		}
-		for (auto &child : plan->children) {
-			MergeProjections(child);
+	}
+
+	// Keeps only the columns of an index scan that `projection` reads: once MergeProjections has dropped an unread
+	// distance, the embedding is no longer fetched. Any change to the binding list is safe: the projection resolves
+	// its column references by binding.
+	template <class INDEX_SCAN>
+	static void DropUnreadColumns(INDEX_SCAN &index_scan, LogicalProjection &projection) {
+		const auto read_bindings = CollectReadBindings(projection);
+		vector<ColumnIndex> column_ids;
+		vector<ColumnBinding> column_bindings;
+		for (idx_t i = 0; i < index_scan.column_ids.size(); i++) {
+			if (read_bindings.find(index_scan.column_bindings[i]) != read_bindings.end()) {
+				column_ids.push_back(index_scan.column_ids[i]);
+				column_bindings.push_back(index_scan.column_bindings[i]);
+			}
+		}
+		// Still fetch the rowid, under a binding nothing reads: the fetch drops the rows the transaction cannot see,
+		// and a rowid is computed without reading a block.
+		if (column_ids.empty() && !index_scan.column_ids.empty()) {
+			column_ids.emplace_back(COLUMN_IDENTIFIER_ROW_ID);
+			column_bindings.push_back(index_scan.column_bindings[0]);
+		}
+		index_scan.column_ids = std::move(column_ids);
+		index_scan.column_bindings = std::move(column_bindings);
+		index_scan.ResolveOperatorTypes();
+	}
+
+	// Drops what the projections above an index scan compute or fetch for nothing: the distance that the removed TopN
+	// read, and the embedding only that distance read. The top projection of the run stays as is, its outputs may be
+	// read by position (the query result, a UNION); any other projection is only read by the one above it (e.g. those
+	// a view or a subquery adds).
+	static void MergeProjections(unique_ptr<LogicalOperator> &plan) {
+		vector<reference<LogicalProjection>> projections;
+		reference<LogicalOperator> below = *plan;
+		while (below.get().type == LogicalOperatorType::LOGICAL_PROJECTION) {
+			projections.push_back(below.get().Cast<LogicalProjection>());
+			below = *below.get().children[0];
+		}
+		auto &op = below.get();
+		const auto is_index_scan =
+		    op.type == LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR &&
+		    (op.GetName() == "PDXEARCH_INDEX_SCAN" || op.GetName() == "PDXEARCH_INDEX_FILT_SCAN");
+		if (projections.size() < 2 || !is_index_scan) {
+			for (auto &child : op.children) {
+				MergeProjections(child);
+			}
+			return;
+		}
+		for (idx_t i = 1; i < projections.size(); i++) {
+			DropUnreadExpressions(projections[i - 1], projections[i]);
+		}
+		if (op.GetName() == "PDXEARCH_INDEX_SCAN") {
+			DropUnreadColumns(op.Cast<LogicalPDXearchIndexScan>(), projections.back());
+		} else {
+			DropUnreadColumns(op.Cast<LogicalPDXearchIndexFilteredScan>(), projections.back());
 		}
 	}
 

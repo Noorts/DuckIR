@@ -376,6 +376,7 @@ InsertionOrderPreservingMap<string> PhysicalPDXearchIndexFilteredScan::ParamsToS
 	InsertionOrderPreservingMap<string> result;
 	result["Table"] = bind_data->table.name;
 	result["PDXearch Index"] = bind_data->index.GetIndexName();
+	result["Projections"] = ColumnNamesToString(bind_data->table, column_ids);
 	result["Total Clusters"] = StringUtil::Format("%zu", index.GetTotalNumClusters());
 	result["Row Groups"] = StringUtil::Format("%zu", index.GetNumRowGroups());
 	const idx_t index_in_memory_size = bind_data->index.Cast<BoundIndex>().GetInMemorySize();

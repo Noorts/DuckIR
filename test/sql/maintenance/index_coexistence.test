@@ -1,6 +1,5 @@
 # name: test/sql/maintenance/index_coexistence.test
-# description: The index next to other DuckDB features: a second PDXearch index on another column, a unique ART index,
-#              an UPDATE of a column no index uses, the VACUUM statement, and an index in another schema.
+# description: The index next to other DuckDB features: a second PDXearch index on another column, a unique ART index, an UPDATE of a column no index uses, the VACUUM statement, and an index in another schema.
 # group: [maintenance]
 
 require parquet

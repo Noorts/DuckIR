@@ -1,8 +1,5 @@
 # name: test/sql/join_search/index_join_transactions.test
-# description: The index join sees the table as its transaction does, as the single-query index search does: rows
-#              the transaction deleted are not returned, and committed inserts are searched. join_result holds the
-#              LATERAL join's rows, single_result those of the single-query searches, and their difference (both ways,
-#              as multisets) must be empty.
+# description: The index join sees the table as its transaction does, as the single-query index search does: rows the transaction deleted are not returned, and committed inserts are searched. join_result holds the LATERAL join's rows, single_result those of the single-query searches, and their difference (both ways, as multisets) must be empty.
 # group: [join_search]
 
 require parquet

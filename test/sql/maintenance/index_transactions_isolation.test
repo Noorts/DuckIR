@@ -1,7 +1,5 @@
 # name: test/sql/maintenance/index_transactions_isolation.test
-# description: Two connections: a search under an old snapshot syncs rows committed after the snapshot but never returns
-#              them; a transaction's own uncommitted inserts are not in the index yet, and its own uncommitted deletes
-#              are dropped when the results are materialized.
+# description: Two connections: a search under an old snapshot syncs rows committed after the snapshot but never returns them; a transaction's own uncommitted inserts are not in the index yet, and its own uncommitted deletes are dropped when the results are materialized.
 # group: [maintenance]
 
 require parquet

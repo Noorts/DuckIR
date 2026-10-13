@@ -1,7 +1,5 @@
 # name: test/sql/filtered_search/index_filtered_scan_residual_filters.test
-# description: Predicates DuckDB keeps in FILTER operators above the table scan (it cannot push them into the scan) feed
-#              the filtered index search: the filters stay below the search, only the rowids of the passing rows reach
-#              it, and the results equal the brute-force search.
+# description: Predicates DuckDB keeps in FILTER operators above the table scan (it cannot push them into the scan) feed the filtered index search: the filters stay below the search, only the rowids of the passing rows reach it, and the results equal the brute-force search.
 # group: [filtered_search]
 
 require parquet

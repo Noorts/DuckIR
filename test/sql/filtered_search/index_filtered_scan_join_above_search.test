@@ -1,8 +1,5 @@
 # name: test/sql/filtered_search/index_filtered_scan_join_above_search.test
-# description: A join above the vector search filters the K rows the search returns; it does not decide which K rows
-#              those are. DuckDB's join filter pushdown hands the join's runtime filters to the table scan through the
-#              TopN, and the index scans must not apply them. The same predicate inside the subquery is a predicate of
-#              the search.
+# description: A join above the vector search filters the K rows the search returns; it does not decide which K rows those are. DuckDB's join filter pushdown hands the join's runtime filters to the table scan through the TopN, and the index scans must not apply them. The same predicate inside the subquery is a predicate of the search.
 # group: [filtered_search]
 
 require parquet
