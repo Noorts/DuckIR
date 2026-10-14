@@ -6,6 +6,9 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # ============================================
 # 1. Encode/decode round-trip (within quantization tolerance)
 # ============================================

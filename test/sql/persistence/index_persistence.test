@@ -42,6 +42,9 @@ ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
 statement ok
 SET checkpoint_threshold = '10GB';
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # The checkpointed index is loaded with its options and row groups, and answers as before the restart.
 query III
 SELECT quantization, n_probe, seed FROM duckir_vss_index_info() WHERE index_name = 't_idx';

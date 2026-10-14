@@ -6,6 +6,9 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # Row groups of 8192 rows (4 in the table).
 statement ok
 ATTACH '__TEST_DIR__/index_join_lateral.db' AS index_join_lateral (ROW_GROUP_SIZE 8192);
