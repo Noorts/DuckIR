@@ -14,10 +14,10 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.6
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@969bc76276acec1c0a3922ff500d2ec3a1a3b037 # v2.0-cyanoptera 2026-10-01 pin
     with:
-      duckdb_version: v1.5.6
-      ci_tools_version: v1.5.6
+      duckdb_version: 57eff1742dfb706c19d9a8a7c45e46b7cb7cc34f # v2.0-cyanoptera 2026-10-13 pin
+      ci_tools_version: 969bc76276acec1c0a3922ff500d2ec3a1a3b037 # v2.0-cyanoptera 2026-10-01 pin
       extension_name: duckir
       # vcpkg 2026.06.24 (what extension-ci-tools main uses), for Eigen 5.0.1: the v1.5.6 default (84bab45) has 3.4.1.
       vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
@@ -27,9 +27,9 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.6
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@969bc76276acec1c0a3922ff500d2ec3a1a3b037 # v2.0-cyanoptera 2026-10-01 pin
     with:
-      duckdb_version: v1.5.6
-      ci_tools_version: v1.5.6
+      duckdb_version: 57eff1742dfb706c19d9a8a7c45e46b7cb7cc34f # v2.0-cyanoptera 2026-10-13 pin
+      ci_tools_version: 969bc76276acec1c0a3922ff500d2ec3a1a3b037 # v2.0-cyanoptera 2026-10-01 pin
       extension_name: duckir
       format_checks: 'format'
