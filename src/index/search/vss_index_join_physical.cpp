@@ -49,9 +49,9 @@ public:
 	      preprocessor(index.GetNumDimensions(), index.GetRotationMatrix()),
 	      buffer_manager(BufferManager::GetBufferManager(context)) {
 		auto n_probe = index.GetEffectiveNProbe(context);
-		const idx_t num_clusters_for_full_row_group = VSSIndex::GetNumClustersForFullRowGroup();
+		const idx_t max_num_clusters = index.GetMaxNumClusters();
 		clusters_to_probe_on_first_iteration =
-		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
+		    (n_probe == 0 || n_probe > max_num_clusters) ? max_num_clusters : n_probe;
 		Value rank_clusters_across_row_groups_setting;
 		if (context.TryGetCurrentSetting("duckir_vss_rank_clusters_across_row_groups",
 		                                 rank_clusters_across_row_groups_setting) &&
@@ -257,6 +257,7 @@ static double EstimateOnTheFlyBuildPeakBytes(const idx_t num_passing_rows, const
 // number of clusters). One window after another, so that only one window's gathered embeddings are held at a time.
 // The rows are numbered by position in on_the_fly_indexes_row_ids. Returns false only when DuckDB cannot reserve the
 // build's memory (the join then searches the row groups); true otherwise, even when there was nothing to build.
+// TODO(@MSc): We need ot analyze the tradeoffs and decisions taken here for IVF with actual benchmarks.
 static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_groups_per_window, const bool build_flat,
                                  PDX::ParallelExecutor *const executor) {
 	const idx_t num_dimensions = search.index.GetNumDimensions();
