@@ -7,15 +7,15 @@
 #include "duckdb/transaction/local_storage.hpp"
 #include "duckdb/catalog/catalog_entry/duck_index_entry.hpp"
 
-#include "index/pdxearch_index.hpp"
-#include "index/pdxearch_module.hpp"
+#include "index/vss_index.hpp"
+#include "index/vss_module.hpp"
 
 namespace duckdb {
 
 struct IndexInfoColumnInput {
 	const IndexCatalogEntry &index_entry;
 	const TableCatalogEntry &table_entry;
-	const PDXearchIndexStats &stats;
+	const VSSIndexStats &stats;
 };
 
 struct IndexInfoColumn {
@@ -24,8 +24,8 @@ struct IndexInfoColumn {
 	std::function<Value(const IndexInfoColumnInput &)> get_value;
 };
 
-// Defines the columns included in `CALL pdxearch_index_info();`.
-// Make sure to sync any changes made here to `PDXearchIndex::GetStats`.
+// Defines the columns included in `CALL duckir_vss_index_info();`.
+// Make sure to sync any changes made here to `VSSIndex::GetStats`.
 static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
     {"catalog_name", LogicalType::VARCHAR,
      [](const IndexInfoColumnInput &input) {
@@ -89,8 +89,8 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
      }},
 };
 
-static unique_ptr<FunctionData> PDXearchIndexInfoBind(ClientContext &context, TableFunctionBindInput &input,
-                                                      vector<LogicalType> &return_types, vector<string> &names) {
+static unique_ptr<FunctionData> VSSIndexInfoBind(ClientContext &context, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &return_types, vector<string> &names) {
 	for (const auto &col : INDEX_INFO_COLUMNS) {
 		names.emplace_back(col.name);
 		return_types.push_back(col.type);
@@ -98,21 +98,21 @@ static unique_ptr<FunctionData> PDXearchIndexInfoBind(ClientContext &context, Ta
 	return nullptr;
 }
 
-struct PDXearchIndexInfoGlobalState : public GlobalTableFunctionState {
+struct VSSIndexInfoGlobalState : public GlobalTableFunctionState {
 	idx_t offset = 0;
 	vector<reference<IndexCatalogEntry>> entries;
 };
 
-static unique_ptr<GlobalTableFunctionState> PDXearchIndexInfoInitGlobal(ClientContext &context,
-                                                                        TableFunctionInitInput &input) {
-	auto result = make_uniq<PDXearchIndexInfoGlobalState>();
+static unique_ptr<GlobalTableFunctionState> VSSIndexInfoInitGlobal(ClientContext &context,
+                                                                   TableFunctionInitInput &input) {
+	auto result = make_uniq<VSSIndexInfoGlobalState>();
 
 	// scan all the schemas for indexes and collect them
 	auto schemas = Catalog::GetAllSchemas(context);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::INDEX_ENTRY, [&](CatalogEntry &entry) {
 			auto &index_entry = entry.Cast<IndexCatalogEntry>();
-			if (index_entry.index_type == PDXearchIndex::TYPE_NAME) {
+			if (index_entry.index_type == VSSIndex::TYPE_NAME) {
 				result->entries.push_back(index_entry);
 			}
 		});
@@ -120,8 +120,8 @@ static unique_ptr<GlobalTableFunctionState> PDXearchIndexInfoInitGlobal(ClientCo
 	return std::move(result);
 }
 
-static void PDXearchIndexInfoExecute(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &data = data_p.global_state->Cast<PDXearchIndexInfoGlobalState>();
+static void VSSIndexInfoExecute(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = data_p.global_state->Cast<VSSIndexInfoGlobalState>();
 	if (data.offset >= data.entries.size()) {
 		return;
 	}
@@ -132,28 +132,28 @@ static void PDXearchIndexInfoExecute(ClientContext &context, TableFunctionInput 
 		auto &table_entry = index_entry.schema.catalog.GetEntry<TableCatalogEntry>(context, index_entry.GetSchemaName(),
 		                                                                           index_entry.GetTableName());
 		auto &storage = table_entry.GetStorage();
-		PDXearchIndex *pdxearch_index = nullptr;
+		VSSIndex *vss_index = nullptr;
 
 		auto &table_info = *storage.GetDataTableInfo();
 
-		table_info.BindIndexes(context, PDXearchIndex::TYPE_NAME);
+		table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
 		for (auto &index : table_info.GetIndexes().Indexes()) {
-			if (!index.IsBound() || PDXearchIndex::TYPE_NAME != index.GetIndexType()) {
+			if (!index.IsBound() || VSSIndex::TYPE_NAME != index.GetIndexType()) {
 				continue;
 			}
-			auto &cast_index = index.Cast<PDXearchIndex>();
+			auto &cast_index = index.Cast<VSSIndex>();
 			if (cast_index.name == index_entry.name) {
-				pdxearch_index = &cast_index;
+				vss_index = &cast_index;
 				break;
 			}
 			continue;
 		};
 
-		if (!pdxearch_index) {
+		if (!vss_index) {
 			throw BinderException("Index %s not found", index_entry.name);
 		}
 
-		auto stats = pdxearch_index->GetStats(context);
+		auto stats = vss_index->GetStats(context);
 		IndexInfoColumnInput col_input {index_entry, table_entry, *stats};
 
 		for (idx_t col = 0; col < sizeof(INDEX_INFO_COLUMNS) / sizeof(INDEX_INFO_COLUMNS[0]); col++) {
@@ -165,9 +165,9 @@ static void PDXearchIndexInfoExecute(ClientContext &context, TableFunctionInput 
 	output.SetCardinality(row);
 }
 
-void PDXearchModule::RegisterIndexInfo(ExtensionLoader &loader) {
-	TableFunction info_function("pdxearch_index_info", {}, PDXearchIndexInfoExecute, PDXearchIndexInfoBind,
-	                            PDXearchIndexInfoInitGlobal);
+void VSSModule::RegisterIndexInfo(ExtensionLoader &loader) {
+	TableFunction info_function("duckir_vss_index_info", {}, VSSIndexInfoExecute, VSSIndexInfoBind,
+	                            VSSIndexInfoInitGlobal);
 	loader.RegisterFunction(info_function);
 }
 

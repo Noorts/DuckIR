@@ -2,7 +2,7 @@
 # description: An index that fails to load when DuckDB binds it raises the error in the queries that use it, and the next statements on its table do not wait for it.
 # group: [out_of_core]
 
-require pdxearch
+require duckir
 
 load __TEST_DIR__/index_bind_error_main.db
 
@@ -14,7 +14,7 @@ statement ok
 CREATE TABLE b.t AS SELECT range AS id, list_transform(range(4096), x -> random())::FLOAT[4096] AS emb FROM range(1000);
 
 statement ok
-CREATE INDEX t_idx ON b.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON b.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
 statement ok
 CHECKPOINT b;

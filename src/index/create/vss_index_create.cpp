@@ -1,4 +1,4 @@
-#include "index/create/pdxearch_index_create.hpp"
+#include "index/create/vss_index_create.hpp"
 
 #include "duckdb/catalog/catalog_entry/duck_index_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
@@ -7,17 +7,16 @@
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
-#include "index/pdxearch_index.hpp"
-#include "index/pdxearch_parallel_executor.hpp"
+#include "index/vss_index.hpp"
+#include "index/vss_parallel_executor.hpp"
 
 namespace duckdb {
 
-PhysicalCreatePDXearchIndex::PhysicalCreatePDXearchIndex(PhysicalPlan &physical_plan,
-                                                         const vector<LogicalType> &types_p, TableCatalogEntry &table_p,
-                                                         const vector<column_t> &column_ids,
-                                                         unique_ptr<CreateIndexInfo> info,
-                                                         vector<unique_ptr<Expression>> unbound_expressions,
-                                                         idx_t estimated_cardinality)
+PhysicalCreateVSSIndex::PhysicalCreateVSSIndex(PhysicalPlan &physical_plan, const vector<LogicalType> &types_p,
+                                               TableCatalogEntry &table_p, const vector<column_t> &column_ids,
+                                               unique_ptr<CreateIndexInfo> info,
+                                               vector<unique_ptr<Expression>> unbound_expressions,
+                                               idx_t estimated_cardinality)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::EXTENSION, types_p, estimated_cardinality),
       table(table_p.Cast<DuckTableEntry>()), info(std::move(info)), unbound_expressions(std::move(unbound_expressions)),
       sorted(false) {
@@ -29,17 +28,17 @@ PhysicalCreatePDXearchIndex::PhysicalCreatePDXearchIndex(PhysicalPlan &physical_
 // Row groups are built as concurrently as DuckDB's memory manager grants memory for, and at least one at a time. A
 // thread that starts a row group takes one of `max_concurrent_builds` slots, or waits until another thread finishes
 // building and gives its slot back.
-class CreatePDXearchIndexGlobalSinkState : public GlobalSinkState {
+class CreateVSSIndexGlobalSinkState : public GlobalSinkState {
 public:
-	CreatePDXearchIndexGlobalSinkState(const PhysicalCreatePDXearchIndex &op, ClientContext &context)
-	    : global_index(make_uniq<PDXearchIndex>(op.info->index_name, op.info->constraint_type, op.storage_ids,
-	                                            TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
-	                                            op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
+	CreateVSSIndexGlobalSinkState(const PhysicalCreateVSSIndex &op, ClientContext &context)
+	    : global_index(make_uniq<VSSIndex>(op.info->index_name, op.info->constraint_type, op.storage_ids,
+	                                       TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
+	                                       op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
 	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->return_type)),
-	      embedding_preprocessor(make_uniq<EmbeddingPreprocessor>(
-	          num_dimensions, global_index->Cast<PDXearchIndex>().GetRotationMatrix())),
-	      is_normalized(global_index->Cast<PDXearchIndex>().IsNormalized()) {
-		const auto &index = global_index->Cast<PDXearchIndex>();
+	      embedding_preprocessor(
+	          make_uniq<EmbeddingPreprocessor>(num_dimensions, global_index->Cast<VSSIndex>().GetRotationMatrix())),
+	      is_normalized(global_index->Cast<VSSIndex>().IsNormalized()) {
+		const auto &index = global_index->Cast<VSSIndex>();
 		const idx_t row_group_size = index.GetRowGroupSize();
 		const idx_t build_bytes =
 		    row_group_size * num_dimensions * sizeof(float) + index.EstimateBuildHeapBytes(row_group_size);
@@ -66,20 +65,20 @@ public:
 	idx_t default_threads_per_build = 1;
 };
 
-unique_ptr<GlobalSinkState> PhysicalCreatePDXearchIndex::GetGlobalSinkState(ClientContext &context) const {
-	return make_uniq<CreatePDXearchIndexGlobalSinkState>(*this, context);
+unique_ptr<GlobalSinkState> PhysicalCreateVSSIndex::GetGlobalSinkState(ClientContext &context) const {
+	return make_uniq<CreateVSSIndexGlobalSinkState>(*this, context);
 }
 
-class CreatePDXearchIndexLocalSinkState : public LocalSinkState {
+class CreateVSSIndexLocalSinkState : public LocalSinkState {
 public:
-	explicit CreatePDXearchIndexLocalSinkState(const PhysicalCreatePDXearchIndex &op, ClientContext &context,
-	                                           CreatePDXearchIndexGlobalSinkState &g_sink) {
-		const auto row_group_size = g_sink.global_index->Cast<PDXearchIndex>().GetRowGroupSize();
+	explicit CreateVSSIndexLocalSinkState(const PhysicalCreateVSSIndex &op, ClientContext &context,
+	                                      CreateVSSIndexGlobalSinkState &g_sink) {
+		const auto row_group_size = g_sink.global_index->Cast<VSSIndex>().GetRowGroupSize();
 		row_group_row_ids.resize(row_group_size);
 	}
 
 	// The DuckDB row group whose rows are currently buffered.
-	PDXearchRowGroupBounds row_group {0, 0};
+	VSSRowGroupBounds row_group {0, 0};
 	bool has_row_group {false};
 	// Number of embeddings currently buffered in the row group.
 	idx_t row_group_embeddings_count {0};
@@ -89,14 +88,14 @@ public:
 };
 
 // Builds the buffered row group, then frees its buffer and gives its build slot to the threads waiting for one.
-static void FlushRowGroup(CreatePDXearchIndexGlobalSinkState &g_sink, CreatePDXearchIndexLocalSinkState &l_sink,
+static void FlushRowGroup(CreateVSSIndexGlobalSinkState &g_sink, CreateVSSIndexLocalSinkState &l_sink,
                           ClientContext &context) {
 	if (!l_sink.has_row_group) {
 		return;
 	}
 	if (l_sink.row_group_embeddings_count > 0) {
 		DuckDBParallelExecutor executor(context, g_sink.default_threads_per_build);
-		g_sink.global_index->Cast<PDXearchIndex>().SetUpIndexForRowGroup(
+		g_sink.global_index->Cast<VSSIndex>().SetUpIndexForRowGroup(
 		    l_sink.row_group_row_ids.data(), reinterpret_cast<float *>(l_sink.row_group_embeddings.Ptr()),
 		    l_sink.row_group_embeddings_count, l_sink.row_group.row_start, l_sink.row_group.count, &executor);
 		l_sink.row_group_embeddings_count = 0;
@@ -108,16 +107,16 @@ static void FlushRowGroup(CreatePDXearchIndexGlobalSinkState &g_sink, CreatePDXe
 	g_sink.UnblockTasks(guard);
 }
 
-unique_ptr<LocalSinkState> PhysicalCreatePDXearchIndex::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<CreatePDXearchIndexLocalSinkState>(*this, context.client,
-	                                                    sink_state->Cast<CreatePDXearchIndexGlobalSinkState>());
+unique_ptr<LocalSinkState> PhysicalCreateVSSIndex::GetLocalSinkState(ExecutionContext &context) const {
+	return make_uniq<CreateVSSIndexLocalSinkState>(*this, context.client,
+	                                               sink_state->Cast<CreateVSSIndexGlobalSinkState>());
 }
 
-SinkResultType PhysicalCreatePDXearchIndex::Sink(ExecutionContext &context, DataChunk &input_chunk,
-                                                 OperatorSinkInput &input) const {
-	auto &g_sink = input.global_state.Cast<CreatePDXearchIndexGlobalSinkState>();
-	auto &l_sink = input.local_state.Cast<CreatePDXearchIndexLocalSinkState>();
-	auto &pdxearch_index = g_sink.global_index->Cast<PDXearchIndex>();
+SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk &input_chunk,
+                                            OperatorSinkInput &input) const {
+	auto &g_sink = input.global_state.Cast<CreateVSSIndexGlobalSinkState>();
+	auto &l_sink = input.local_state.Cast<CreateVSSIndexLocalSinkState>();
+	auto &vss_index = g_sink.global_index->Cast<VSSIndex>();
 
 	// Early exit if the chunk is empty.
 	if (input_chunk.size() == 0) {
@@ -139,9 +138,9 @@ SinkResultType PhysicalCreatePDXearchIndex::Sink(ExecutionContext &context, Data
 	const auto row_id_data = FlatVector::GetData<row_t>(row_id_column);
 
 	// A chunk never spans two DuckDB row groups, so the first row id tells which one this chunk belongs to.
-	PDXearchRowGroupBounds row_group;
-	if (!pdxearch_index.TryGetPhysicalRowGroup(table.GetStorage(), row_id_data[0], row_group)) {
-		throw InternalException("PDXearch: row id %lld is not in any row group of the table", row_id_data[0]);
+	VSSRowGroupBounds row_group;
+	if (!vss_index.TryGetPhysicalRowGroup(table.GetStorage(), row_id_data[0], row_group)) {
+		throw InternalException("DuckIR VSS: row id %lld is not in any row group of the table", row_id_data[0]);
 	}
 	D_ASSERT(!l_sink.has_row_group || l_sink.row_group.row_start <= row_group.row_start);
 
@@ -183,10 +182,10 @@ SinkResultType PhysicalCreatePDXearchIndex::Sink(ExecutionContext &context, Data
 	return SinkResultType::NEED_MORE_INPUT;
 }
 
-SinkCombineResultType PhysicalCreatePDXearchIndex::Combine(ExecutionContext &context,
-                                                           OperatorSinkCombineInput &input) const {
-	auto &l_sink = input.local_state.Cast<CreatePDXearchIndexLocalSinkState>();
-	auto &g_sink = input.global_state.Cast<CreatePDXearchIndexGlobalSinkState>();
+SinkCombineResultType PhysicalCreateVSSIndex::Combine(ExecutionContext &context,
+                                                      OperatorSinkCombineInput &input) const {
+	auto &l_sink = input.local_state.Cast<CreateVSSIndexLocalSinkState>();
+	auto &g_sink = input.global_state.Cast<CreateVSSIndexGlobalSinkState>();
 
 	// Finalize this thread's last row group.
 	FlushRowGroup(g_sink, l_sink, context.client);
@@ -194,9 +193,9 @@ SinkCombineResultType PhysicalCreatePDXearchIndex::Combine(ExecutionContext &con
 	return SinkCombineResultType::FINISHED;
 }
 
-SinkFinalizeType PhysicalCreatePDXearchIndex::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
-                                                       OperatorSinkFinalizeInput &input) const {
-	auto &g_sink = input.global_state.Cast<CreatePDXearchIndexGlobalSinkState>();
+SinkFinalizeType PhysicalCreateVSSIndex::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
+                                                  OperatorSinkFinalizeInput &input) const {
+	auto &g_sink = input.global_state.Cast<CreateVSSIndexGlobalSinkState>();
 
 	auto &storage = table.GetStorage();
 	if (!storage.IsMainTable()) {

@@ -20,7 +20,7 @@ namespace duckdb {
 
 // One serialized object (the directory, the rotation, a row group's PDX index) in a chain of allocator segments. Each
 // segment starts with the IndexPointer of the next one.
-struct PDXearchBlockChain {
+struct VSSBlockChain {
 	IndexPointer head;
 	idx_t num_bytes = 0;
 	// In memory only, so that freeing the chain does not read it back.
@@ -33,12 +33,12 @@ struct PDXearchBlockChain {
 
 // Streams bytes into a new chain. Segments are marked modified as they are allocated: SegmentHandle never sets the
 // dirty flag, and the checkpoint only writes dirty buffers.
-class PDXearchBlockChainWriter : public std::streambuf {
+class VSSBlockChainWriter : public std::streambuf {
 public:
-	explicit PDXearchBlockChainWriter(FixedSizeAllocator &allocator);
+	explicit VSSBlockChainWriter(FixedSizeAllocator &allocator);
 
 	// Returns the chain and releases its last segment.
-	PDXearchBlockChain Finish();
+	VSSBlockChain Finish();
 
 protected:
 	int_type overflow(int_type ch) override;
@@ -48,12 +48,12 @@ private:
 
 	FixedSizeAllocator &allocator;
 	const idx_t segment_size;
-	PDXearchBlockChain chain;
+	VSSBlockChain chain;
 	unique_ptr<SegmentHandle> current_segment;
 };
 
-// What an index's paging did since it loaded (if pdxearch_paging_counters was on when it loaded).
-struct PDXearchPagingCounters {
+// What an index's paging did since it loaded (if duckir_vss_paging_counters was on when it loaded).
+struct VSSPagingCounters {
 	atomic<bool> enabled {false};
 	atomic<idx_t> cluster_acquires {0};
 	atomic<idx_t> cluster_cache_misses {0};
@@ -62,21 +62,21 @@ struct PDXearchPagingCounters {
 };
 
 // Streams chains from the blocks the allocator was persisted to, one pinned block at a time.
-class PDXearchBlockChainReader : public std::streambuf {
+class VSSBlockChainReader : public std::streambuf {
 public:
-	PDXearchBlockChainReader(BlockManager &block_manager, const FixedSizeAllocatorInfo &allocator_info);
+	VSSBlockChainReader(BlockManager &block_manager, const FixedSizeAllocatorInfo &allocator_info);
 
-	void Open(const PDXearchBlockChain &chain);
+	void Open(const VSSBlockChain &chain);
 	// Returns the chain with its segments. All of its bytes must have been read.
-	PDXearchBlockChain Finish();
+	VSSBlockChain Finish();
 	idx_t GetBytesRead() const;
 	void Close();
 	// Copies `size` bytes at offset of a chain whose segments are known into `dst`. Concurrent searches can call it.
-	void ReadRange(const PDXearchBlockChain &chain, idx_t offset, idx_t size, char *dst) const;
+	void ReadRange(const VSSBlockChain &chain, idx_t offset, idx_t size, char *dst) const;
 	// A checkpoint can move the allocator's buffers to other blocks.
 	void UpdateBlockPointers(const FixedSizeAllocatorInfo &allocator_info);
 
-	mutable PDXearchPagingCounters counters;
+	mutable VSSPagingCounters counters;
 	bool cache_tiers = false;
 
 protected:
@@ -89,7 +89,7 @@ private:
 	BlockManager &block_manager;
 	const idx_t segment_size;
 	unordered_map<idx_t, BlockPointer> block_pointers_by_buffer_id;
-	PDXearchBlockChain chain;
+	VSSBlockChain chain;
 	IndexPointer next_segment;
 	idx_t unread_bytes = 0;
 	BufferHandle pinned_block;
@@ -98,7 +98,7 @@ private:
 // A row group's serialized index until a checkpoint persists it, in DuckDB buffers of one block each: DuckDB writes
 // them to its temporary files when it evicts them, and reads them back when they are pinned. Destroying the chain frees
 // them.
-struct PDXearchTemporaryChain {
+struct VSSTemporaryChain {
 	vector<shared_ptr<BlockHandle>> blocks;
 	idx_t num_bytes = 0;
 
@@ -107,12 +107,12 @@ struct PDXearchTemporaryChain {
 };
 
 // Streams bytes into a new temporary chain. Each block is unpinned once full, so DuckDB can evict it.
-class PDXearchTemporaryChainWriter : public std::streambuf {
+class VSSTemporaryChainWriter : public std::streambuf {
 public:
-	explicit PDXearchTemporaryChainWriter(BufferManager &buffer_manager);
+	explicit VSSTemporaryChainWriter(BufferManager &buffer_manager);
 
 	// Returns the chain and unpins its last block.
-	PDXearchTemporaryChain Finish();
+	VSSTemporaryChain Finish();
 
 protected:
 	int_type overflow(int_type ch) override;
@@ -122,14 +122,14 @@ private:
 
 	BufferManager &buffer_manager;
 	const idx_t block_size;
-	PDXearchTemporaryChain chain;
+	VSSTemporaryChain chain;
 	BufferHandle current_block;
 };
 
 // Streams a temporary chain, one pinned block at a time.
-class PDXearchTemporaryChainReader : public std::streambuf {
+class VSSTemporaryChainReader : public std::streambuf {
 public:
-	PDXearchTemporaryChainReader(BufferManager &buffer_manager, const PDXearchTemporaryChain &chain);
+	VSSTemporaryChainReader(BufferManager &buffer_manager, const VSSTemporaryChain &chain);
 
 	idx_t GetBytesRead() const;
 
@@ -139,21 +139,21 @@ protected:
 private:
 	BufferManager &buffer_manager;
 	const idx_t block_size;
-	const PDXearchTemporaryChain &chain;
+	const VSSTemporaryChain &chain;
 	idx_t next_block = 0;
 	BufferHandle pinned_block;
 };
 
-// The clusters of a row group that was loaded with paging (pdxearch_cluster_paging).
+// The clusters of a row group that was loaded with paging (duckir_vss_cluster_paging).
 // Each cluster a search probes gets its own DuckDB buffer, allocated on miss and sized to its bytes. DuckDB may evict
 // an unpinned buffer. The next Acquire then reads the cluster from the row group's chain again.
-class PDXearchClusterCache : public PDX::IClusterSource {
+class VSSClusterCache : public PDX::IClusterSource {
 public:
-	PDXearchClusterCache(const PDXearchBlockChainReader &reader, BufferManager &buffer_manager);
+	VSSClusterCache(const VSSBlockChainReader &reader, BufferManager &buffer_manager);
 
 	// Called right after the row group's resident data is loaded (PageRowGroup).
-	void Bind(const PDX::IPDXIndex &index, const PDXearchBlockChain &chain, idx_t cluster_data_start);
-	void Bind(const PDX::IPDXIndex &index, const PDXearchTemporaryChain &chain, idx_t cluster_data_start);
+	void Bind(const PDX::IPDXIndex &index, const VSSBlockChain &chain, idx_t cluster_data_start);
+	void Bind(const PDX::IPDXIndex &index, const VSSTemporaryChain &chain, idx_t cluster_data_start);
 
 	const char *Acquire(uint32_t cluster_id) override;
 	void Release(uint32_t cluster_id) override;
@@ -161,8 +161,8 @@ public:
 	uint64_t GetInMemorySizeInBytes() const;
 
 private:
-	// pdxearch_cache_tiers: the access counts halve every ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS acquires per cluster, and
-	// a cluster acquired at least HOT_ACCESS_FACTOR times the average when it is fetched goes to the eviction queue
+	// duckir_vss_cache_tiers: the access counts halve every ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS acquires per cluster,
+	// and a cluster acquired at least HOT_ACCESS_FACTOR times the average when it is fetched goes to the eviction queue
 	// HOT_CLUSTER_EVICTION_QUEUE: evicted after the other clusters, before the temporary chains.
 	static constexpr idx_t ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS = 10;
 	static constexpr idx_t HOT_ACCESS_FACTOR = 2;
@@ -180,12 +180,12 @@ private:
 	void SetEvictionQueue(const CachedCluster &cluster, BufferHandle &new_block) const;
 	void BindIndex(const PDX::IPDXIndex &index, idx_t cluster_data_start);
 
-	const PDXearchBlockChainReader &reader;
+	const VSSBlockChainReader &reader;
 	BufferManager &buffer_manager;
 	optional_ptr<const PDX::IPDXIndex> index;
 	// The chain the row group was loaded from: a persisted one, or a temporary one until a checkpoint persists it.
-	optional_ptr<const PDXearchBlockChain> chain;
-	optional_ptr<const PDXearchTemporaryChain> temporary_chain;
+	optional_ptr<const VSSBlockChain> chain;
+	optional_ptr<const VSSTemporaryChain> temporary_chain;
 	idx_t cluster_data_start = 0;
 	idx_t num_clusters = 0;
 	unique_array<CachedCluster> clusters;
@@ -193,22 +193,22 @@ private:
 	atomic<idx_t> acquires_since_decay {0};
 };
 
-static constexpr uint32_t PDXEARCH_STORAGE_VERSION = 4;
+static constexpr uint32_t VSS_STORAGE_VERSION = 4;
 
 // The root chain: where the rotation and the row groups are.
-struct PDXearchDirectory {
+struct VSSDirectory {
 	struct RowGroupEntry {
 		row_t row_start;
 		row_t row_end;
-		PDXearchBlockChain chain;
+		VSSBlockChain chain;
 	};
 
 	uint32_t num_dimensions = 0;
-	PDXearchBlockChain rotation;
+	VSSBlockChain rotation;
 	vector<RowGroupEntry> row_groups;
 
 	void Write(std::ostream &out) const;
-	static PDXearchDirectory Read(std::istream &in);
+	static VSSDirectory Read(std::istream &in);
 };
 
 } // namespace duckdb

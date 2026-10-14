@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Variables
 test-env DIMS 128
@@ -23,7 +23,7 @@ statement ok
 CREATE TABLE t1_bf AS FROM t1;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
 
 # ============================================
 # OFFSET: the index searches LIMIT + OFFSET neighbours and the TopN stays to skip the first OFFSET of them.
@@ -38,7 +38,7 @@ physical_plan	<!REGEX>:.*TOP_N.*
 query II
 EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 5;
 ----
-physical_plan	<REGEX>:.*TOP_N.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*TOP_N.*DUCKIR_VSS_INDEX_SCAN.*
 
 query I nosort offset_unfiltered
 SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 5;
@@ -51,7 +51,7 @@ SELECT id FROM t1_bf ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) 
 query II
 EXPLAIN SELECT id FROM t1 WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 20;
 ----
-physical_plan	<REGEX>:.*TOP_N.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*TOP_N.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I nosort offset_filtered
 SELECT id FROM t1 WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 20;
@@ -88,7 +88,7 @@ SELECT COUNT(*) FROM (SELECT id FROM t1 WHERE id BETWEEN 0 AND 11 ORDER BY array
 query II
 EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) NULLS FIRST LIMIT 5;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
 query I
 SELECT COUNT(*) FILTER (WHERE id < 0) FROM (SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) NULLS FIRST LIMIT 5);
@@ -98,7 +98,7 @@ SELECT COUNT(*) FILTER (WHERE id < 0) FROM (SELECT id FROM t1 ORDER BY array_dis
 query II
 EXPLAIN SELECT id FROM t1 WHERE id % 3 = 0 OR id < 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) NULLS FIRST LIMIT 5;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
 # The default null order is resolved while binding, so changing it has the same effect on a plain ORDER BY.
 statement ok
@@ -107,7 +107,7 @@ SET default_null_order = 'nulls_first';
 query II
 EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
 query I
 SELECT COUNT(*) FILTER (WHERE id < 0) FROM (SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5);
@@ -120,10 +120,10 @@ RESET default_null_order;
 query II
 EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 # An explicit NULLS LAST is the default order and keeps using the index.
 query II
 EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) NULLS LAST LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*

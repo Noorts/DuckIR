@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 load __TEST_DIR__/index_temporary_chains_main.db
 
@@ -31,19 +31,19 @@ statement ok
 SET memory_limit = '32MB';
 
 statement ok
-SET pdxearch_cluster_paging = false;
+SET duckir_vss_cluster_paging = false;
 
 # Without paging, the index stays on the heap: it does not fit (about 47 MB).
 statement error
-CREATE INDEX t_idx ON p.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 ----
 Out of Memory Error
 
 statement ok
-SET pdxearch_cluster_paging = true;
+SET duckir_vss_cluster_paging = true;
 
 statement ok
-CREATE INDEX t_idx ON p.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
 # An insert into the partial row group, which the next search loads fully and moves to a new temporary chain.
 statement ok
@@ -60,7 +60,7 @@ statement ok
 SET memory_limit = '1GB';
 
 statement ok
-SET pdxearch_cluster_paging = false;
+SET duckir_vss_cluster_paging = false;
 
 restart
 

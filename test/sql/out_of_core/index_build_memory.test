@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 load __TEST_DIR__/index_build_memory_main.db
 
@@ -29,7 +29,7 @@ SET memory_limit = '128MB';
 
 # A build does not fit.
 statement error
-CREATE INDEX t_idx ON b.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON b.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 ----
 Out of Memory Error
 
@@ -38,7 +38,7 @@ SET memory_limit = '256MB';
 
 # One build fits at a time: the second row group waits for the first.
 statement ok
-CREATE INDEX t_idx ON b.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON b.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
 # Both row groups were built: their rows find themselves.
 query I

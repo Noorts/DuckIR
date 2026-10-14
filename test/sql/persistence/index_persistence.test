@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 load __TEST_DIR__/index_persistence_main.db
 
@@ -26,7 +26,7 @@ statement ok
 CREATE TABLE p.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 17408;
 
 statement ok
-CREATE INDEX t_idx ON p.t USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 7, seed = 5);
+CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 7, seed = 5);
 
 statement ok
 CREATE TABLE p.before_restart AS SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
@@ -44,14 +44,14 @@ SET checkpoint_threshold = '10GB';
 
 # The checkpointed index is loaded with its options and row groups, and answers as before the restart.
 query III
-SELECT quantization, n_probe, seed FROM pdxearch_index_info() WHERE index_name = 't_idx';
+SELECT quantization, n_probe, seed FROM duckir_vss_index_info() WHERE index_name = 't_idx';
 ----
 f32	7	5
 
 query II
 EXPLAIN SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Row Groups: 3[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 3[^0-9].*
 
 query I
 SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_restart USING (id);
@@ -108,7 +108,7 @@ statement ok
 CHECKPOINT p;
 
 statement ok
-CREATE INDEX t2_idx ON p.t2 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0);
+CREATE INDEX t2_idx ON p.t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0);
 
 statement ok
 CREATE TABLE p.t2_before_restart AS SELECT id FROM p.t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};

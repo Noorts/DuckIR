@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Variables
 test-env ROW_GROUP_SIZE 122880
@@ -43,7 +43,7 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', n_probe = ${N_PROBE});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', n_probe = ${N_PROBE});
 
 # Trigger the iteration mechanism by ensuring < K (9 in this case) tuples enter the heap in the first iteration.
 # The search will conclude once all partitions have been probed (this is done in multiple iterations).

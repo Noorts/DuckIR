@@ -8,17 +8,17 @@ namespace duckdb {
 class Index;
 class DuckTableEntry;
 
-// Runs the LogicalPDXearchIndexJoin. When the table is filtered (children[1]), it is a sink first: it collects the
+// Runs the LogicalVSSIndexJoin. When the table is filtered (children[1]), it is a sink first: it collects the
 // rowids that pass the predicate, per row group. Then it is an operator over the query rows (children[0]): it searches
 // the index for each query, one query after another, fetches the K nearest rows, and emits them with the query row.
-class PhysicalPDXearchIndexJoin : public PhysicalOperator {
+class PhysicalVSSIndexJoin : public PhysicalOperator {
 public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::EXTENSION;
 
 public:
-	PhysicalPDXearchIndexJoin(PhysicalPlan &physical_plan, vector<LogicalType> types, DuckTableEntry &table,
-	                          Index &index, idx_t limit, idx_t query_column, const vector<ColumnIndex> &column_ids,
-	                          idx_t estimated_cardinality);
+	PhysicalVSSIndexJoin(PhysicalPlan &physical_plan, vector<LogicalType> types, DuckTableEntry &table, Index &index,
+	                     idx_t limit, idx_t query_column, const vector<ColumnIndex> &column_ids,
+	                     idx_t estimated_cardinality);
 
 	DuckTableEntry &table;
 	Index &index;
@@ -33,7 +33,7 @@ public:
 
 public:
 	string GetName() const override {
-		return "PDXEARCH_INDEX_JOIN";
+		return "DUCKIR_VSS_INDEX_JOIN";
 	}
 
 	InsertionOrderPreservingMap<string> ParamsToString() const override;

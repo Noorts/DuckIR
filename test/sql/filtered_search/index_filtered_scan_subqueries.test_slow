@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Row groups of 8192 rows.
 statement ok
@@ -39,13 +39,13 @@ statement ok
 CREATE TABLE big_ids AS SELECT (range + 16384)::BIGINT AS id, 'k' || (range + 16384) AS k FROM range(1100000);
 
 statement ok
-CREATE INDEX t_big_idx ON t_big USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
+CREATE INDEX t_big_idx ON t_big USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
 
 # The search reads the compressed integer key through its decompression.
 query II
 EXPLAIN SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
 
 query I rowsort compressed_integral_key
 SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -59,7 +59,7 @@ SELECT id FROM t_big_bf WHERE id IN (SELECT id FROM big_ids) ORDER BY array_dist
 query II
 EXPLAIN SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
 
 query I rowsort compressed_string_key
 SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -73,7 +73,7 @@ SELECT k FROM t_big_bf WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distanc
 query II
 EXPLAIN SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
 query I rowsort computed_from_compressed_key
 SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;

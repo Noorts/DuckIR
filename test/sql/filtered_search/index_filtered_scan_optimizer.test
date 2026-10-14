@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Variables
 test-env INDEX_SEED 0
@@ -25,30 +25,30 @@ INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet'
 foreach distance_func array_distance
 
 # ============================================
-# Filtered PDXearch index scan is not used if there is no index.
+# Filtered DuckIR VSS index scan is not used if there is no index.
 # ============================================
 
 query II
 EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 endloop
 
 # ============================================
-# Filtered PDXearch index scan + sequential scan (with pushed down filters) is
+# Filtered DuckIR VSS index scan + sequential scan (with pushed down filters) is
 # used for simple filters.
 # ============================================
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (seed = ${INDEX_SEED});
 
 foreach distance_func array_distance
 
 query II
 EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*SEQ_SCAN.*Filters.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*SEQ_SCAN.*Filters.*
 
 query II
 EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
@@ -64,7 +64,7 @@ physical_plan	<!REGEX>:.*HASH_JOIN.*
 query II
 EXPLAIN SELECT id FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I rowsort
 SELECT id FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -79,7 +79,7 @@ SELECT id FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::F
 query II
 EXPLAIN SELECT emb FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I rowsort
 SELECT emb FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -94,7 +94,7 @@ SELECT emb FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::
 query II
 EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query II rowsort
 SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -109,7 +109,7 @@ SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FL
 query II
 EXPLAIN SELECT rowid FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I rowsort
 SELECT rowid FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -124,7 +124,7 @@ SELECT rowid FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}
 query II
 EXPLAIN SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I rowsort
 SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -135,12 +135,12 @@ SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000
 252.75284
 252.78053
 
-# TODO: Re-enable. Initial idea is that this has to do with the PDXearch WHERE id=1 bug.
+# TODO: Re-enable. Initial idea is that this has to do with the DuckIR VSS WHERE id=1 bug.
 # rowid (with rowid in pushed down filter)
 # query II
 # EXPLAIN SELECT rowid FROM t1 WHERE id > 1000 AND rowid > 1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 # ----
-# physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
+# physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 # query I rowsort
 # SELECT rowid FROM t1 WHERE id > 1000 AND rowid > 1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -157,14 +157,14 @@ SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000
 #       tests. Consider verifying projections at filter and seq scan levels.
 
 # ============================================
-# Filtered PDXearch index scan + filter + sequential scan (with no filters) is
+# Filtered DuckIR VSS index scan + filter + sequential scan (with no filters) is
 # used for composite filters.
 # ============================================
 
 # query II
 # EXPLAIN SELECT * FROM t1 WHERE id > 1000 OR emb = ${QUERY_EMB}::FLOAT[${DIMS}] ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
 # ----
-# physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+# physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 # query II
 # EXPLAIN SELECT * FROM t1 WHERE id > 1000 OR emb = ${QUERY_EMB}::FLOAT[${DIMS}] ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
@@ -172,14 +172,14 @@ SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000
 # physical_plan	<!REGEX>:.*SEQ_SCAN.*Filters.*
 
 # ============================================
-# Filtered PDXearch index scan + filter + sequential scan (with pushed down
+# Filtered DuckIR VSS index scan + filter + sequential scan (with pushed down
 # filters) is used for simple + composite filters.
 # ============================================
 
 # query II
 # EXPLAIN SELECT * FROM t1 WHERE id > 1500 AND (id > 1000 OR emb = ${QUERY_EMB}::FLOAT[${DIMS}]) ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
 # ----
-# physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*Filters.*
+# physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*Filters.*
 
 
 

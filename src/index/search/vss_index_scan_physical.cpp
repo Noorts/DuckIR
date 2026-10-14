@@ -1,7 +1,7 @@
-#include "index/search/pdxearch_index_scan_physical.hpp"
+#include "index/search/vss_index_scan_physical.hpp"
 #include "duckdb/parallel/event.hpp"
-#include "index/pdxearch_index.hpp"
-#include "index/pdxearch_index_utils.hpp"
+#include "index/vss_index.hpp"
+#include "index/vss_index_utils.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_lock.hpp"
@@ -14,23 +14,21 @@
 
 namespace duckdb {
 
-PhysicalPDXearchIndexScan::PhysicalPDXearchIndexScan(PhysicalPlan &physical_plan, vector<LogicalType> types,
-                                                     unique_ptr<PDXearchIndexScanBindData> bind_data,
-                                                     vector<ColumnIndex> column_ids, idx_t estimated_cardinality)
-    : PhysicalOperator(physical_plan, PhysicalPDXearchIndexScan::TYPE, std::move(types), estimated_cardinality),
+PhysicalVSSIndexScan::PhysicalVSSIndexScan(PhysicalPlan &physical_plan, vector<LogicalType> types,
+                                           unique_ptr<VSSIndexScanBindData> bind_data, vector<ColumnIndex> column_ids,
+                                           idx_t estimated_cardinality)
+    : PhysicalOperator(physical_plan, PhysicalVSSIndexScan::TYPE, std::move(types), estimated_cardinality),
       bind_data(std::move(bind_data)), column_ids(std::move(column_ids)) {
 }
 
-class PDXearchScanGlobalSourceState : public GlobalSourceState {
+class VSSScanGlobalSourceState : public GlobalSourceState {
 public:
-	PDXearchScanGlobalSourceState(ClientContext &context, const PhysicalPDXearchIndexScan &op,
-	                              const PDXearchIndexScanBindData &bind_data,
-	                              const vector<ColumnIndex> &operator_column_ids)
-	    : search_lock(
-	          bind_data.index.Cast<PDXearchIndex>().SyncAndLockForSearch(context, bind_data.table.GetStorage())),
-	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<PDXearchIndex>()),
+	VSSScanGlobalSourceState(ClientContext &context, const PhysicalVSSIndexScan &op,
+	                         const VSSIndexScanBindData &bind_data, const vector<ColumnIndex> &operator_column_ids)
+	    : search_lock(bind_data.index.Cast<VSSIndex>().SyncAndLockForSearch(context, bind_data.table.GetStorage())),
+	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<VSSIndex>()),
 	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), search_started(false),
-	      search_completed(false), pdxearch_row_ids(nullptr), pdxearch_row_ids_idx(0) {
+	      search_completed(false), vss_row_ids(nullptr), vss_row_ids_idx(0) {
 		// Preprocess the query embedding.
 		const EmbeddingPreprocessor embedding_preprocessor =
 		    EmbeddingPreprocessor(index.GetNumDimensions(), index.GetRotationMatrix());
@@ -41,7 +39,7 @@ public:
 		// upper bound is used here. We use the count for a full row group: for full row groups it matches exactly, and
 		// for smaller row groups the per-row-group searcher clamps internally.
 		const auto n_probe = index.GetEffectiveNProbe(context);
-		const auto num_clusters_for_full_row_group = PDXearchIndex::GetNumClustersForFullRowGroup();
+		const auto num_clusters_for_full_row_group = VSSIndex::GetNumClustersForFullRowGroup();
 		num_clusters_to_probe_per_row_group =
 		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
 
@@ -71,10 +69,10 @@ public:
 	unique_ptr<StorageLockKey> search_lock;
 
 	ClientContext &context;
-	const PhysicalPDXearchIndexScan &op;
+	const PhysicalVSSIndexScan &op;
 	// The limit (the K in KNN search).
 	const idx_t limit;
-	PDXearchIndex &index;
+	VSSIndex &index;
 
 	const unique_ptr<float[]> preprocessed_query_embedding;
 
@@ -89,10 +87,10 @@ public:
 
 	// Row ids of the final result of the search. For these rows the projected columns are fetched from local storage
 	// and emitted through the Source interface.
-	std::unique_ptr<std::vector<row_t>> pdxearch_row_ids;
-	//! Current position in pdxearch_rowids when emitting fetched rows. Used in case the operator has to emit multiple
+	std::unique_ptr<std::vector<row_t>> vss_row_ids;
+	//! Current position in vss_rowids when emitting fetched rows. Used in case the operator has to emit multiple
 	//! chunks of results.
-	idx_t pdxearch_row_ids_idx;
+	idx_t vss_row_ids_idx;
 
 	// For fetching the result rows from storage.
 	vector<StorageIndex> column_ids;
@@ -100,10 +98,10 @@ public:
 	ColumnFetchState fetch_state;
 };
 
-class PDXearchScanSearchTask : public ExecutorTask {
+class VSSScanSearchTask : public ExecutorTask {
 public:
-	PDXearchScanSearchTask(shared_ptr<Event> event_p, ClientContext &context, PDXearchScanGlobalSourceState &g_state_p,
-	                       const PhysicalOperator &op_p, idx_t row_group_id_p)
+	VSSScanSearchTask(shared_ptr<Event> event_p, ClientContext &context, VSSScanGlobalSourceState &g_state_p,
+	                  const PhysicalOperator &op_p, idx_t row_group_id_p)
 	    : ExecutorTask(context, std::move(event_p), op_p), g_state(g_state_p), row_group_id(row_group_id_p) {
 	}
 
@@ -119,21 +117,21 @@ public:
 	}
 
 	string TaskType() const override {
-		return "PDXearchScanSearchTask";
+		return "VSSScanSearchTask";
 	}
 
 private:
-	PDXearchScanGlobalSourceState &g_state;
+	VSSScanGlobalSourceState &g_state;
 	idx_t row_group_id;
 };
 
-class PDXearchScanSearchEvent : public Event {
+class VSSScanSearchEvent : public Event {
 public:
-	PDXearchScanSearchEvent(Executor &executor_p, PDXearchScanGlobalSourceState &g_state_p)
+	VSSScanSearchEvent(Executor &executor_p, VSSScanGlobalSourceState &g_state_p)
 	    : Event(executor_p), g_state(g_state_p) {
 	}
 
-	PDXearchScanGlobalSourceState &g_state;
+	VSSScanGlobalSourceState &g_state;
 
 public:
 	void Schedule() override {
@@ -141,7 +139,7 @@ public:
 		vector<shared_ptr<Task>> tasks;
 		for (idx_t row_group_id = 0; row_group_id < g_state.index.GetNumRowGroups(); row_group_id++) {
 			tasks.push_back(
-			    make_uniq<PDXearchScanSearchTask>(shared_from_this(), context, g_state, g_state.op, row_group_id));
+			    make_uniq<VSSScanSearchTask>(shared_from_this(), context, g_state, g_state.op, row_group_id));
 		}
 		if (tasks.empty()) {
 			// An index without row groups
@@ -154,9 +152,9 @@ public:
 	void FinishEvent() override {
 		// Store PDXearch result into the source state.
 		const auto result_rowids = PDX::BuildResultSetFromHeap(g_state.limit, g_state.top_k_heap.heap);
-		g_state.pdxearch_row_ids = make_uniq<std::vector<row_t>>(result_rowids.size());
+		g_state.vss_row_ids = make_uniq<std::vector<row_t>>(result_rowids.size());
 		for (size_t i = 0; i < result_rowids.size(); i++) {
-			(*g_state.pdxearch_row_ids)[i] = result_rowids[i].index;
+			(*g_state.vss_row_ids)[i] = result_rowids[i].index;
 		}
 
 		g_state.search_completed = true;
@@ -166,25 +164,25 @@ public:
 	}
 };
 
-class PDXearchScanLocalSourceState : public LocalSourceState {};
+class VSSScanLocalSourceState : public LocalSourceState {};
 
-unique_ptr<GlobalSourceState> PhysicalPDXearchIndexScan::GetGlobalSourceState(ClientContext &context) const {
-	return make_uniq<PDXearchScanGlobalSourceState>(context, *this, *bind_data, column_ids);
+unique_ptr<GlobalSourceState> PhysicalVSSIndexScan::GetGlobalSourceState(ClientContext &context) const {
+	return make_uniq<VSSScanGlobalSourceState>(context, *this, *bind_data, column_ids);
 }
 
-unique_ptr<LocalSourceState> PhysicalPDXearchIndexScan::GetLocalSourceState(ExecutionContext &context,
-                                                                            GlobalSourceState &g_state) const {
-	return make_uniq<PDXearchScanLocalSourceState>();
+unique_ptr<LocalSourceState> PhysicalVSSIndexScan::GetLocalSourceState(ExecutionContext &context,
+                                                                       GlobalSourceState &g_state) const {
+	return make_uniq<VSSScanLocalSourceState>();
 }
 
-SourceResultType PhysicalPDXearchIndexScan::GetDataInternal(ExecutionContext &context, DataChunk &output_chunk,
-                                                            OperatorSourceInput &input) const {
-	auto &g_state = input.global_state.Cast<PDXearchScanGlobalSourceState>();
+SourceResultType PhysicalVSSIndexScan::GetDataInternal(ExecutionContext &context, DataChunk &output_chunk,
+                                                       OperatorSourceInput &input) const {
+	auto &g_state = input.global_state.Cast<VSSScanGlobalSourceState>();
 
 	// Trigger parallel search of all row groups.
 	if (!g_state.search_started.exchange(true)) {
 		auto &executor = Executor::Get(context.client);
-		auto event = make_shared_ptr<PDXearchScanSearchEvent>(executor, g_state);
+		auto event = make_shared_ptr<VSSScanSearchEvent>(executor, g_state);
 		executor.AddEvent(event);
 		event->Schedule();
 	}
@@ -197,11 +195,11 @@ SourceResultType PhysicalPDXearchIndexScan::GetDataInternal(ExecutionContext &co
 
 	// Search is done, now fetch and emit results. Note that if K > STANDARD_VECTOR_SIZE, then GetData will be called
 	// multiple times and multiple chunks of results will be emitted.
-	D_ASSERT(g_state.pdxearch_row_ids);
-	D_ASSERT(g_state.pdxearch_row_ids_idx <= g_state.pdxearch_row_ids->size());
+	D_ASSERT(g_state.vss_row_ids);
+	D_ASSERT(g_state.vss_row_ids_idx <= g_state.vss_row_ids->size());
 
 	const idx_t num_results_to_emit =
-	    MinValue<idx_t>(STANDARD_VECTOR_SIZE, g_state.pdxearch_row_ids->size() - g_state.pdxearch_row_ids_idx);
+	    MinValue<idx_t>(STANDARD_VECTOR_SIZE, g_state.vss_row_ids->size() - g_state.vss_row_ids_idx);
 
 	if (num_results_to_emit == 0) {
 		return SourceResultType::FINISHED;
@@ -211,9 +209,9 @@ SourceResultType PhysicalPDXearchIndexScan::GetDataInternal(ExecutionContext &co
 	Vector row_ids_vector(LogicalType::ROW_TYPE, num_results_to_emit);
 	auto row_ids_data = FlatVector::GetData<row_t>(row_ids_vector);
 	for (idx_t i = 0; i < num_results_to_emit; i++) {
-		row_ids_data[i] = g_state.pdxearch_row_ids->at(g_state.pdxearch_row_ids_idx + i);
+		row_ids_data[i] = g_state.vss_row_ids->at(g_state.vss_row_ids_idx + i);
 	}
-	g_state.pdxearch_row_ids_idx += num_results_to_emit;
+	g_state.vss_row_ids_idx += num_results_to_emit;
 
 	// Fetch the data (visible to the transaction) from storage.
 	auto &transaction = DuckTransaction::Get(context.client, bind_data->table.catalog);
@@ -223,13 +221,13 @@ SourceResultType PhysicalPDXearchIndexScan::GetDataInternal(ExecutionContext &co
 	return SourceResultType::HAVE_MORE_OUTPUT;
 }
 
-InsertionOrderPreservingMap<string> PhysicalPDXearchIndexScan::ParamsToString() const {
+InsertionOrderPreservingMap<string> PhysicalVSSIndexScan::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
 	result["Table"] = bind_data->table.name;
-	result["PDXearch Index"] = bind_data->index.GetIndexName();
+	result["DuckIR VSS Index"] = bind_data->index.GetIndexName();
 	result["Projections"] = ColumnNamesToString(bind_data->table, column_ids);
-	result["Total Clusters"] = StringUtil::Format("%zu", bind_data->index.Cast<PDXearchIndex>().GetTotalNumClusters());
-	result["Row Groups"] = StringUtil::Format("%zu", bind_data->index.Cast<PDXearchIndex>().GetNumRowGroups());
+	result["Total Clusters"] = StringUtil::Format("%zu", bind_data->index.Cast<VSSIndex>().GetTotalNumClusters());
+	result["Row Groups"] = StringUtil::Format("%zu", bind_data->index.Cast<VSSIndex>().GetNumRowGroups());
 	const idx_t index_in_memory_size = bind_data->index.Cast<BoundIndex>().GetInMemorySize();
 	result["Index Size"] = ConvertBytesToHumanReadableString(index_in_memory_size);
 	SetEstimatedCardinality(result, estimated_cardinality);

@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 load __TEST_DIR__/index_unwritten_deletes_main.db
 
@@ -24,7 +24,7 @@ statement ok
 CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
 
 statement ok
-CREATE INDEX t_idx ON p.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
 statement ok
 CHECKPOINT p;

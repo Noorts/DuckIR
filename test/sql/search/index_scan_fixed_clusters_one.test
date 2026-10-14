@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Variables
 test-env INDEX_SEED 0
@@ -36,7 +36,7 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', seed = ${INDEX_SEED});
 
 statement ok
 CREATE OR REPLACE TABLE results (n_probe INTEGER, recall FLOAT);
@@ -45,12 +45,12 @@ CREATE OR REPLACE TABLE results (n_probe INTEGER, recall FLOAT);
 foreach n_probe 1
 
 statement ok
-SET pdxearch_n_probe = ${n_probe};
+SET duckir_vss_n_probe = ${n_probe};
 
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Total Clusters: 1[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 1[^0-9].*
 
 statement ok
 CREATE OR REPLACE TABLE t_idx_res AS SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};

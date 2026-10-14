@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Row groups of 8192 rows.
 statement ok
@@ -38,13 +38,13 @@ statement ok
 CREATE TABLE big_ids AS SELECT (range + 16384)::BIGINT AS id FROM range(1100000);
 
 statement ok
-CREATE INDEX t_big_idx ON t_big USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
+CREATE INDEX t_big_idx ON t_big USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
 
 # The index join reads the compressed key through its decompression.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t_big.id FROM t_big WHERE t_big.id IN (SELECT id FROM big_ids) ORDER BY array_distance(t_big.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*__internal_decompress.*SEMI.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*__internal_decompress.*SEMI.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t_big.id FROM t_big WHERE t_big.id IN (SELECT id FROM big_ids) ORDER BY array_distance(t_big.emb, q.vec) LIMIT 10) s;

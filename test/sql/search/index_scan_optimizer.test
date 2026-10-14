@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Variables
 test-env INDEX_SEED 0
@@ -49,7 +49,7 @@ Binder Error: LIMIT/OFFSET cannot be negative
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 endloop
 
@@ -63,7 +63,7 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = '${metric_name}', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}', seed = ${INDEX_SEED});
 
 foreach limit 1 5 50 51 100 500
 
@@ -71,7 +71,7 @@ foreach limit 1 5 50 51 100 500
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${limit};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${limit};
@@ -88,7 +88,7 @@ foreach limit 10000 20000
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${limit};
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${limit};
@@ -108,13 +108,13 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', seed = ${INDEX_SEED});
 
 # id
 query II
 EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 query I rowsort
 SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -129,7 +129,7 @@ SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIM
 query II
 EXPLAIN SELECT emb FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 query I rowsort
 SELECT emb FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -144,7 +144,7 @@ SELECT emb FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LI
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 query II rowsort
 SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -159,7 +159,7 @@ SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMI
 query II
 EXPLAIN SELECT rowid FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 query I rowsort
 SELECT rowid FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -174,7 +174,7 @@ SELECT rowid FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) 
 query II
 EXPLAIN SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 query I rowsort
 SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
@@ -227,4 +227,4 @@ physical_plan	<REGEX>:.*HASH_JOIN.*rowid = rowid.*
 query II
 EXPLAIN SELECT x FROM (SELECT id * 2 AS x, emb FROM t1) s ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN.*rowid = rowid.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*HASH_JOIN.*rowid = rowid.*DUCKIR_VSS_INDEX_SCAN.*

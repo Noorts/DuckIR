@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Variables
 test-env INDEX_SEED 0
@@ -28,10 +28,10 @@ statement ok
 INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT ${NUM_ROWS};
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = ${INDEX_SEED});
 
 statement ok
-SET pdxearch_n_probe = 16;
+SET duckir_vss_n_probe = 16;
 
 # ============================================
 # Unfiltered: two index scans in one statement.
@@ -48,7 +48,7 @@ CREATE OR REPLACE TABLE res_b AS SELECT id FROM t1 ORDER BY array_distance(emb, 
 query II
 EXPLAIN (SELECT 'a' AS q, id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT});
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE res_union AS (SELECT 'a' AS q, id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT});
@@ -79,7 +79,7 @@ CREATE OR REPLACE TABLE res_b AS SELECT id FROM t1 WHERE id > 1000 ORDER BY arra
 query II
 EXPLAIN (SELECT 'a' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT});
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE res_union AS (SELECT 'a' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT});

@@ -2,7 +2,7 @@
 # description: Test index scan with toy embeddings (prime number as dimensionality, 2048 embeddings: the fewest that get an IVF index).
 # group: [search]
 
-require pdxearch
+require duckir
 
 # Variables
 test-env INDEX_SEED 0
@@ -43,11 +43,11 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', seed = ${INDEX_SEED});
 
 # Probe all clusters for exact results.
 statement ok
-SET pdxearch_n_probe = 0;
+SET duckir_vss_n_probe = 0;
 
 # Verify the optimizer uses the index scan.
 query II
@@ -55,7 +55,7 @@ EXPLAIN SELECT * FROM t1
 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}])
 LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE t_idx_res AS
@@ -89,10 +89,10 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = ${INDEX_SEED});
 
 statement ok
-SET pdxearch_n_probe = 1;
+SET duckir_vss_n_probe = 1;
 
 # Verify the optimizer uses the index scan.
 query II
@@ -100,7 +100,7 @@ EXPLAIN SELECT * FROM t1
 ORDER BY array_distance(emb, ${EASY_QUERY_EMB}::FLOAT[${DIMS}])
 LIMIT 1;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE t_idx_res AS

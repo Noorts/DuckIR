@@ -1,10 +1,10 @@
 # name: test/sql/maintenance/index_failed_commit.test
-# description: A commit that fails after the PDXearch index has staged its row ids (a unique ART index created after it rejects the batch at COMMIT): the rows never land, the next commit reuses their row ids, and the index must neither keep the phantom ids nor index the reused ones twice.
+# description: A commit that fails after the DuckIR VSS index has staged its row ids (a unique ART index created after it rejects the batch at COMMIT): the rows never land, the next commit reuses their row ids, and the index must neither keep the phantom ids nor index the reused ones twice.
 # group: [maintenance]
 
 require parquet
 
-require pdxearch
+require duckir
 
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
@@ -38,9 +38,9 @@ foreach quantization f32
 statement ok
 CREATE OR REPLACE TABLE t1 AS SELECT * FROM sift WHERE id < 8192;
 
-# The PDXearch index comes first in the table's index list, so at COMMIT its Append runs before the ART's.
+# The DuckIR VSS index comes first in the table's index list, so at COMMIT its Append runs before the ART's.
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 statement ok
 CREATE UNIQUE INDEX t1_uid ON t1 (id);
@@ -54,7 +54,7 @@ INSERT INTO t1 VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
 statement ok con2
 INSERT INTO t1 VALUES (-1, ${MARKER_B}::FLOAT[${DIMS}]);
 
-# con2 committed the same key first: con1's commit fails after the PDXearch index staged con1's row id.
+# con2 committed the same key first: con1's commit fails after the DuckIR VSS index staged con1's row id.
 statement error con1
 COMMIT;
 ----
@@ -86,7 +86,7 @@ SELECT COUNT(*), COUNT(DISTINCT id) FROM (SELECT id FROM t1 ORDER BY array_dista
 5	5
 
 query II
-CALL pdxearch_sync_index('t1_idx');
+CALL duckir_vss_sync_index('t1_idx');
 ----
 t1_idx	false
 

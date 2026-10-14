@@ -33,7 +33,7 @@ duckdb -unsigned
 2. Load the locally built extension by providing a full path to it.
 
 ```sql
-LOAD '<Fill in>/PDXearch/build/release/extension/pdxearch/pdxearch.duckdb_extension';
+LOAD '<Fill in>/DuckIR/build/release/extension/duckir/duckir.duckdb_extension';
 ```
 
 3. Create a DuckDB table with an empty vector index
@@ -46,7 +46,7 @@ LOAD '<Fill in>/PDXearch/build/release/extension/pdxearch/pdxearch.duckdb_extens
   );
   CREATE INDEX movies_idx 
   ON movies 
-  USING PDXEARCH (embedding) 
+  USING DUCKIR_VSS (embedding) 
     WITH (metric = 'cosine');
 ```
 
@@ -94,7 +94,7 @@ You can set `CREATE INDEX` options using the `WITH` clause. These options cannot
 
 ```sql
 CREATE INDEX t1_idx 
-ON t1 USING PDXEARCH (embedding) 
+ON t1 USING DUCKIR_VSS (embedding) 
 WITH (metric = 'l2sq', quantization = 'f32');
 ```
 
@@ -106,7 +106,7 @@ Available options:
 - `quantization`: The precision of the embeddings stored inside the index. 
   - `f32` (full-precision, 4 bytes, no compression)
   - `u8` (*default*; scalar quantization, 1 byte, ×4 compression, small quality loss).
-- `n_probe`: Increasing `n_probe` increases the effort spent during vector search, thus increasing recall, but also increasing search latency. You can set it at search time using `pdxearch_n_probe` (see below).
+- `n_probe`: Increasing `n_probe` increases the effort spent during vector search, thus increasing recall, but also increasing search latency. You can set it at search time using `duckir_vss_n_probe` (see below).
   - `[0, 2147483647]`. *Default* is `24`. This is per row group, which likely has 480 lists. Set `n_probe` to `0` to run a brute force search. 
 - `seed`
   - `[-2147483647, 2147483647]`. *Default* is random.
@@ -126,7 +126,7 @@ LIMIT k [OFFSET o]
 
 - `OFFSET o`: The index searches the `k + o` nearest neighbours and skips the first `o` results.    
 
-You can set the number of clusters to probe on a search using `SET pdxearch_n_probe = 48`. Note that this will overwrite the value for subsequent searches. You can reset it by doing: `RESET pdxearch_n_probe;`.
+You can set the number of clusters to probe on a search using `SET duckir_vss_n_probe = 48`. Note that this will overwrite the value for subsequent searches. You can reset it by doing: `RESET duckir_vss_n_probe;`.
 
 **Threading**: We use all the threads available in DuckDB. To force a number of threads, use `SET threads = 1;`. 
 
@@ -137,7 +137,7 @@ We support arbitrary predicates: **any predicate DuckDB can evaluate on the tabl
 
 Index search also kicks in if the predicate is rewritten as a `HASH JOIN` (e.g., `WHERE id IN (SELECT item_id FROM purchases)`). Even if it goes out-of-core or the join key is compressed. 
 
-See [#27](https://github.com/Noorts/PDXearch/pull/27) for a full list of supported query shapes.   
+See [#27](https://github.com/Noorts/DuckIR/pull/27) for a full list of supported query shapes.   
 
 
 ### LATERAL JOIN (a.k.a. NEAREST, SIMILARITY JOIN)
@@ -158,11 +158,11 @@ FROM queries q, LATERAL (
 ) s;
 ```
 
-*[EXPERIMENTAL]* Mid-range selectivities are known to be hard for vector search. To tackle this on LATERAL JOINs, we build a temporary index at query time only with the passing tuples. You can enable this feature with `SET pdxearch_experimental_on_the_fly_indexing = 'auto';` option. 
+*[EXPERIMENTAL]* Mid-range selectivities are known to be hard for vector search. To tackle this on LATERAL JOINs, we build a temporary index at query time only with the passing tuples. You can enable this feature with `SET duckir_vss_experimental_on_the_fly_indexing = 'auto';` option. 
 
 ### Index Metadata
 
-Execute `CALL pdxearch_index_info();` to print metadata about all vector indexes. This includes the index's size in-memory.
+Execute `CALL duckir_vss_index_info();` to print metadata about all vector indexes. This includes the index's size in-memory.
 
 ### Persistence
 
@@ -170,7 +170,7 @@ The index is saved with the database file. DuckDB's checkpoints persist the inde
 
 When the index is loaded, it is validated against the table, so it never misses committed rows or returns deleted ones, even when DuckDB could not replay its log into the index ([duckdb#26112](https://github.com/duckdb/duckdb/issues/26112)). If the database closes without a checkpoint right after `CREATE INDEX` (for example, after a crash), the index is built again from the table the first time it is used. 
 
-See [PR#35](https://github.com/Noorts/PDXearch/pull/35) for a more detailed explanation of persistence in DuckIR.
+See [PR#35](https://github.com/Noorts/DuckIR/pull/35) for a more detailed explanation of persistence in DuckIR.
 
 ## Operational Notes
 
@@ -180,7 +180,7 @@ See [PR#35](https://github.com/Noorts/PDXearch/pull/35) for a more detailed expl
 
 - **Concurrency**: An index can be searched concurrently. However, maintenance operations exclude all searches while they run. 
 
-- **Inserts and Deletes**: `DELETE`s are applied to the index when the transaction commits. `INSERT`ed rows are buffered. They are only indexed by the first search that runs after the commit, one DuckDB row group at a time. Thus, the first query after a bulk load pays the indexing cost of the new rows (a few seconds per million rows). You can manually trigger a sync doing: `CALL pdxearch_sync_index('my_idx');` 
+- **Inserts and Deletes**: `DELETE`s are applied to the index when the transaction commits. `INSERT`ed rows are buffered. They are only indexed by the first search that runs after the commit, one DuckDB row group at a time. Thus, the first query after a bulk load pays the indexing cost of the new rows (a few seconds per million rows). You can manually trigger a sync doing: `CALL duckir_vss_sync_index('my_idx');` 
 
 - **Our index mirrors DuckDB's row groups**: when a checkpoint merges or drops row groups, the next search rebuilds the affected part of the index from the table. 
 
@@ -227,7 +227,7 @@ ORDER BY array_distance(
 - Joins with other tables. This doesn't use the index: `JOIN categories c ON t.cat = c.id WHERE c.name = 'x' ORDER BY ... LIMIT 10`. This will: `WHERE t.cat IN (SELECT id FROM categories WHERE name = 'x')`.
 - Searches that read a value that a subquery computes (e.g. `id * 2 AS x`) with $k > 50$.
 
-You can check whether your query is currently being optimized by prepending the `EXPLAIN` keyword to your search query and checking if a `PDXEARCH` operator is part of the query plan.
+You can check whether your query is currently being optimized by prepending the `EXPLAIN` keyword to your search query and checking if a `DUCKIR_VSS` operator is part of the query plan.
 
 ## Acknowledgements
 

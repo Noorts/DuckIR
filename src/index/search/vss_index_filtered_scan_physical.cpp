@@ -1,6 +1,6 @@
-#include "index/search/pdxearch_index_filtered_scan_physical.hpp"
+#include "index/search/vss_index_filtered_scan_physical.hpp"
 #include "duckdb/parallel/event.hpp"
-#include "index/pdxearch_index.hpp"
+#include "index/vss_index.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_lock.hpp"
@@ -20,10 +20,10 @@
 
 namespace duckdb {
 
-PhysicalPDXearchIndexFilteredScan::PhysicalPDXearchIndexFilteredScan(
-    PhysicalPlan &physical_plan, vector<LogicalType> types, unique_ptr<PDXearchIndexPhysicalScanBindData> bind_data,
-    vector<ColumnIndex> column_ids, idx_t estimated_cardinality)
-    : PhysicalOperator(physical_plan, PhysicalPDXearchIndexFilteredScan::TYPE, std::move(types), estimated_cardinality),
+PhysicalVSSIndexFilteredScan::PhysicalVSSIndexFilteredScan(PhysicalPlan &physical_plan, vector<LogicalType> types,
+                                                           unique_ptr<VSSIndexPhysicalScanBindData> bind_data,
+                                                           vector<ColumnIndex> column_ids, idx_t estimated_cardinality)
+    : PhysicalOperator(physical_plan, PhysicalVSSIndexFilteredScan::TYPE, std::move(types), estimated_cardinality),
       bind_data(std::move(bind_data)), column_ids(std::move(column_ids)) {
 }
 
@@ -33,12 +33,11 @@ PhysicalPDXearchIndexFilteredScan::PhysicalPDXearchIndexFilteredScan(
 
 class PhysicalFilteredScanGlobalSinkState : public GlobalSinkState {
 public:
-	PhysicalFilteredScanGlobalSinkState(ClientContext &context, const PhysicalPDXearchIndexFilteredScan &op,
-	                                    const PDXearchIndexPhysicalScanBindData &bind_data)
-	    : search_lock(
-	          bind_data.index.Cast<PDXearchIndex>().SyncAndLockForSearch(context, bind_data.table.GetStorage())),
-	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<PDXearchIndex>()),
-	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), pdxearch_row_ids(nullptr) {
+	PhysicalFilteredScanGlobalSinkState(ClientContext &context, const PhysicalVSSIndexFilteredScan &op,
+	                                    const VSSIndexPhysicalScanBindData &bind_data)
+	    : search_lock(bind_data.index.Cast<VSSIndex>().SyncAndLockForSearch(context, bind_data.table.GetStorage())),
+	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<VSSIndex>()),
+	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), vss_row_ids(nullptr) {
 		// Preprocess the query embedding.
 		EmbeddingPreprocessor embedding_preprocessor(index.GetNumDimensions(), index.GetRotationMatrix());
 		embedding_preprocessor.PreprocessEmbedding(bind_data.query_embedding.get(), preprocessed_query_embedding.get(),
@@ -48,7 +47,7 @@ public:
 		// The cluster count varies per row group, but the iteration loop uses a single value across all row groups. We
 		// use the count for a full row group as the upper bound: for full row groups it matches exactly, and for
 		// smaller row groups (e.g., the last one) the per-row-group searcher clamps internally.
-		const idx_t num_clusters_for_full_row_group = PDXearchIndex::GetNumClustersForFullRowGroup();
+		const idx_t num_clusters_for_full_row_group = VSSIndex::GetNumClustersForFullRowGroup();
 		partitions_to_probe_per_row_group_on_first_iteration =
 		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
 
@@ -73,10 +72,10 @@ public:
 	unique_ptr<StorageLockKey> search_lock;
 
 	const ClientContext &context;
-	const PhysicalPDXearchIndexFilteredScan &op;
+	const PhysicalVSSIndexFilteredScan &op;
 	// The limit (the K in KNN search).
 	const idx_t limit;
-	PDXearchIndex &index;
+	VSSIndex &index;
 
 	const unique_ptr<float[]> preprocessed_query_embedding;
 
@@ -108,26 +107,26 @@ public:
 
 	// Row ids of the final result of the filtered search. For these rows, during the Source phase, the projected
 	// columns are fetched from local storage and emitted to the next operator.
-	std::unique_ptr<std::vector<row_t>> pdxearch_row_ids;
-	//! Current position in pdxearch_rowids when emitting fetched rows. Used in case the operator has to emit multiple
+	std::unique_ptr<std::vector<row_t>> vss_row_ids;
+	//! Current position in vss_rowids when emitting fetched rows. Used in case the operator has to emit multiple
 	//! chunks of results.
-	idx_t pdxearch_row_ids_idx {0};
+	idx_t vss_row_ids_idx {0};
 };
 
-unique_ptr<GlobalSinkState> PhysicalPDXearchIndexFilteredScan::GetGlobalSinkState(ClientContext &context) const {
+unique_ptr<GlobalSinkState> PhysicalVSSIndexFilteredScan::GetGlobalSinkState(ClientContext &context) const {
 	return make_uniq<PhysicalFilteredScanGlobalSinkState>(context, *this, *bind_data);
 }
 
 class PhysicalFilteredScanLocalSinkState : public LocalSinkState {
 public:
-	explicit PhysicalFilteredScanLocalSinkState(const PDXearchIndex &index) : current_row_group_passing_rowids() {
+	explicit PhysicalFilteredScanLocalSinkState(const VSSIndex &index) : current_row_group_passing_rowids() {
 		current_row_group_passing_rowids.reserve(index.GetRowGroupSize());
 	}
 
 	// Temporary row group staging area.
 	idx_t current_row_group_id {0};
 	// The row ids covered by the row group at current_row_group_id. Empty until the first row arrives.
-	PDXearchRowRange current_row_group_range {0, 0};
+	VSSRowRange current_row_group_range {0, 0};
 	// The row ids of the current row group that passed the predicate and were thus emitted by the child operator (e.g.,
 	// sequential scan operator). size_t because they are handed to PDX as-is.
 	std::vector<size_t> current_row_group_passing_rowids;
@@ -136,15 +135,15 @@ public:
 	std::vector<unique_ptr<PDX::IIterativeSearch>> search_cursors;
 };
 
-unique_ptr<LocalSinkState> PhysicalPDXearchIndexFilteredScan::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<PhysicalFilteredScanLocalSinkState>(bind_data->index.Cast<PDXearchIndex>());
+unique_ptr<LocalSinkState> PhysicalVSSIndexFilteredScan::GetLocalSinkState(ExecutionContext &context) const {
+	return make_uniq<PhysicalFilteredScanLocalSinkState>(bind_data->index.Cast<VSSIndex>());
 }
 
 // Starts the filtered search of a row group with the row ids that passed the SQL predicate, and runs its first
 // iteration: the n_probe nearest clusters that hold passing tuples. The row group's clusters are ranked once for the
 // query and shared by all of its searches. A row group with at most n_probe passing rows is not ranked: they are in at
 // most n_probe clusters, which the first iteration probes in any order.
-static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(PDXearchIndex &index,
+static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(VSSIndex &index,
                                                                       PhysicalFilteredScanGlobalSinkState &g_sink,
                                                                       const idx_t row_group_idx,
                                                                       const std::vector<size_t> &passing_rowids) {
@@ -169,7 +168,7 @@ static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(PDXearchIn
 
 // Called when a thread's run of a row group ends. The first run of a row group to end is searched now; the row ids of
 // a later run are buffered in late_passing_rowids for the row group's one more search at Finalize.
-static void BeginSearchForRowGroupOrBufferRowIds(PDXearchIndex &index, PhysicalFilteredScanGlobalSinkState &g_sink,
+static void BeginSearchForRowGroupOrBufferRowIds(VSSIndex &index, PhysicalFilteredScanGlobalSinkState &g_sink,
                                                  PhysicalFilteredScanLocalSinkState &l_sink) {
 	const auto row_group_idx = l_sink.current_row_group_id;
 	const auto &passing_rowids = l_sink.current_row_group_passing_rowids;
@@ -182,11 +181,11 @@ static void BeginSearchForRowGroupOrBufferRowIds(PDXearchIndex &index, PhysicalF
 	late_passing_rowids.insert(late_passing_rowids.end(), passing_rowids.begin(), passing_rowids.end());
 }
 
-SinkResultType PhysicalPDXearchIndexFilteredScan::Sink(ExecutionContext &context, DataChunk &input_chunk,
-                                                       OperatorSinkInput &input) const {
+SinkResultType PhysicalVSSIndexFilteredScan::Sink(ExecutionContext &context, DataChunk &input_chunk,
+                                                  OperatorSinkInput &input) const {
 	auto &l_sink = input.local_state.Cast<PhysicalFilteredScanLocalSinkState>();
 	auto &g_sink = input.global_state.Cast<PhysicalFilteredScanGlobalSinkState>();
-	auto &index = bind_data->index.Cast<PDXearchIndex>();
+	auto &index = bind_data->index.Cast<VSSIndex>();
 
 	if (input_chunk.size() == 0) {
 		return SinkResultType::NEED_MORE_INPUT;
@@ -231,8 +230,8 @@ SinkResultType PhysicalPDXearchIndexFilteredScan::Sink(ExecutionContext &context
 	return SinkResultType::NEED_MORE_INPUT;
 }
 
-SinkCombineResultType PhysicalPDXearchIndexFilteredScan::Combine(ExecutionContext &context,
-                                                                 OperatorSinkCombineInput &input) const {
+SinkCombineResultType PhysicalVSSIndexFilteredScan::Combine(ExecutionContext &context,
+                                                            OperatorSinkCombineInput &input) const {
 	auto &g_sink = input.global_state.Cast<PhysicalFilteredScanGlobalSinkState>();
 	auto &l_sink = input.local_state.Cast<PhysicalFilteredScanLocalSinkState>();
 	auto &index = g_sink.index;
@@ -371,8 +370,8 @@ public:
 	}
 };
 
-SinkFinalizeType PhysicalPDXearchIndexFilteredScan::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
-                                                             OperatorSinkFinalizeInput &input) const {
+SinkFinalizeType PhysicalVSSIndexFilteredScan::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
+                                                        OperatorSinkFinalizeInput &input) const {
 	auto &g_sink = input.global_state.Cast<PhysicalFilteredScanGlobalSinkState>();
 
 	// Row groups with buffered row ids get their one more search first.
@@ -403,9 +402,9 @@ void PhysicalFilteredScanGlobalSinkState::TryFinalizeSinkPhase(Pipeline &pipelin
 	if (is_heap_filled_with_k_results || are_all_partitions_probed) {
 		// If we are done, then prepare emission of the results by moving the result row ids into the Source state.
 		const auto result_rowids = PDX::BuildResultSetFromHeap(limit, top_k_heap.heap);
-		this->pdxearch_row_ids = make_uniq<std::vector<row_t>>(result_rowids.size());
+		this->vss_row_ids = make_uniq<std::vector<row_t>>(result_rowids.size());
 		for (size_t i = 0; i < result_rowids.size(); i++) {
-			(*this->pdxearch_row_ids)[i] = result_rowids[i].index;
+			(*this->vss_row_ids)[i] = result_rowids[i].index;
 		}
 		// We return such that the Sink phase completes, allowing the Source phase to start.
 		return;
@@ -422,7 +421,7 @@ void PhysicalFilteredScanGlobalSinkState::TryFinalizeSinkPhase(Pipeline &pipelin
 
 class PhysicalFilteredScanGlobalSourceState : public GlobalSourceState {
 public:
-	PhysicalFilteredScanGlobalSourceState(ClientContext &context, const PDXearchIndexPhysicalScanBindData &bind_data,
+	PhysicalFilteredScanGlobalSourceState(ClientContext &context, const VSSIndexPhysicalScanBindData &bind_data,
 	                                      const vector<ColumnIndex> &operator_column_ids) {
 		// Set up column IDs for fetching data from storage.
 		column_ids.reserve(operator_column_ids.size());
@@ -448,27 +447,27 @@ public:
 	ColumnFetchState fetch_state;
 };
 
-unique_ptr<GlobalSourceState> PhysicalPDXearchIndexFilteredScan::GetGlobalSourceState(ClientContext &context) const {
+unique_ptr<GlobalSourceState> PhysicalVSSIndexFilteredScan::GetGlobalSourceState(ClientContext &context) const {
 	return make_uniq<PhysicalFilteredScanGlobalSourceState>(context, *bind_data, column_ids);
 }
 
 class PhysicalFilteredScanLocalSourceState : public LocalSourceState {};
 
-unique_ptr<LocalSourceState> PhysicalPDXearchIndexFilteredScan::GetLocalSourceState(ExecutionContext &context,
-                                                                                    GlobalSourceState &gstate) const {
+unique_ptr<LocalSourceState> PhysicalVSSIndexFilteredScan::GetLocalSourceState(ExecutionContext &context,
+                                                                               GlobalSourceState &gstate) const {
 	return make_uniq<PhysicalFilteredScanLocalSourceState>();
 }
 
-SourceResultType PhysicalPDXearchIndexFilteredScan::GetDataInternal(ExecutionContext &context, DataChunk &output_chunk,
-                                                                    OperatorSourceInput &input) const {
+SourceResultType PhysicalVSSIndexFilteredScan::GetDataInternal(ExecutionContext &context, DataChunk &output_chunk,
+                                                               OperatorSourceInput &input) const {
 	auto &g_sink = sink_state->Cast<PhysicalFilteredScanGlobalSinkState>();
 	auto &g_source = input.global_state.Cast<PhysicalFilteredScanGlobalSourceState>();
 
-	D_ASSERT(g_sink.pdxearch_row_ids);
-	D_ASSERT(g_sink.pdxearch_row_ids_idx <= g_sink.pdxearch_row_ids->size());
+	D_ASSERT(g_sink.vss_row_ids);
+	D_ASSERT(g_sink.vss_row_ids_idx <= g_sink.vss_row_ids->size());
 
 	const idx_t num_results_to_emit =
-	    MinValue<idx_t>(STANDARD_VECTOR_SIZE, g_sink.pdxearch_row_ids->size() - g_sink.pdxearch_row_ids_idx);
+	    MinValue<idx_t>(STANDARD_VECTOR_SIZE, g_sink.vss_row_ids->size() - g_sink.vss_row_ids_idx);
 
 	if (num_results_to_emit == 0) {
 		return SourceResultType::FINISHED;
@@ -478,9 +477,9 @@ SourceResultType PhysicalPDXearchIndexFilteredScan::GetDataInternal(ExecutionCon
 	Vector row_ids_vector(LogicalType::ROW_TYPE, num_results_to_emit);
 	auto row_ids_data = FlatVector::GetData<row_t>(row_ids_vector);
 	for (idx_t i = 0; i < num_results_to_emit; i++) {
-		row_ids_data[i] = g_sink.pdxearch_row_ids->at(g_sink.pdxearch_row_ids_idx + i);
+		row_ids_data[i] = g_sink.vss_row_ids->at(g_sink.vss_row_ids_idx + i);
 	}
-	g_sink.pdxearch_row_ids_idx += num_results_to_emit;
+	g_sink.vss_row_ids_idx += num_results_to_emit;
 
 	// Fetch the data from storage.
 	auto &transaction = DuckTransaction::Get(context.client, bind_data->table.catalog);
@@ -492,11 +491,11 @@ SourceResultType PhysicalPDXearchIndexFilteredScan::GetDataInternal(ExecutionCon
 }
 
 // Defines this operator's details shown in the query plan.
-InsertionOrderPreservingMap<string> PhysicalPDXearchIndexFilteredScan::ParamsToString() const {
-	auto &index = bind_data->index.Cast<PDXearchIndex>();
+InsertionOrderPreservingMap<string> PhysicalVSSIndexFilteredScan::ParamsToString() const {
+	auto &index = bind_data->index.Cast<VSSIndex>();
 	InsertionOrderPreservingMap<string> result;
 	result["Table"] = bind_data->table.name;
-	result["PDXearch Index"] = bind_data->index.GetIndexName();
+	result["DuckIR VSS Index"] = bind_data->index.GetIndexName();
 	result["Projections"] = ColumnNamesToString(bind_data->table, column_ids);
 	result["Total Clusters"] = StringUtil::Format("%zu", index.GetTotalNumClusters());
 	result["Row Groups"] = StringUtil::Format("%zu", index.GetNumRowGroups());

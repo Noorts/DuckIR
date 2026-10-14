@@ -1,10 +1,10 @@
 # name: test/sql/maintenance/index_coexistence.test
-# description: The index next to other DuckDB features: a second PDXearch index on another column, a unique ART index, an UPDATE of a column no index uses, the VACUUM statement, and an index in another schema.
+# description: The index next to other DuckDB features: a second DuckIR VSS index on another column, a unique ART index, an UPDATE of a column no index uses, the VACUUM statement, and an index in another schema.
 # group: [maintenance]
 
 require parquet
 
-require pdxearch
+require duckir
 
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
@@ -33,15 +33,15 @@ CREATE TABLE sift AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('te
 
 foreach quantization f32
 
-# Two PDXearch indexes on two embedding columns, both maintained by the same commits.
+# Two DuckIR VSS indexes on two embedding columns, both maintained by the same commits.
 statement ok
 CREATE OR REPLACE TABLE t1 AS SELECT id, emb, emb AS emb2, id % 7 AS extra FROM sift WHERE id < 8192;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 statement ok
-CREATE INDEX t1_idx2 ON t1 USING PDXEARCH (emb2) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx2 ON t1 USING DUCKIR_VSS (emb2) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 statement ok
 INSERT INTO t1 VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}], ${MARKER_A}::FLOAT[${DIMS}], 0);
@@ -57,12 +57,12 @@ SELECT id FROM t1 ORDER BY array_distance(emb2, ${MARKER_A}::FLOAT[${DIMS}]) LIM
 -1
 
 query II
-CALL pdxearch_sync_index('t1_idx');
+CALL duckir_vss_sync_index('t1_idx');
 ----
 t1_idx	false
 
 query II
-CALL pdxearch_sync_index('t1_idx2');
+CALL duckir_vss_sync_index('t1_idx2');
 ----
 t1_idx2	false
 
@@ -103,7 +103,7 @@ SELECT id <> -2 FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]
 true
 
 query II
-CALL pdxearch_sync_index('t1_idx');
+CALL duckir_vss_sync_index('t1_idx');
 ----
 t1_idx	false
 
@@ -164,7 +164,7 @@ DROP INDEX t1_idx;
 statement ok
 DROP INDEX t1_idx2;
 
-# An index on a table in another schema is found by CALL pdxearch_sync_index.
+# An index on a table in another schema is found by CALL duckir_vss_sync_index.
 statement ok
 CREATE SCHEMA IF NOT EXISTS other;
 
@@ -172,18 +172,18 @@ statement ok
 CREATE OR REPLACE TABLE other.t2 AS SELECT id, emb FROM sift WHERE id < 8192;
 
 statement ok
-CREATE INDEX t2_idx ON other.t2 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t2_idx ON other.t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 statement ok
 INSERT INTO other.t2 VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
 
 query II
-CALL pdxearch_sync_index('t2_idx');
+CALL duckir_vss_sync_index('t2_idx');
 ----
 t2_idx	true
 
 query II
-CALL pdxearch_sync_index('t2_idx');
+CALL duckir_vss_sync_index('t2_idx');
 ----
 t2_idx	false
 

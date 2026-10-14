@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
@@ -50,12 +50,12 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t1') WHERE column_name
 4	8192
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Total Clusters: 600[^0-9].*Row Groups: 5[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 600[^0-9].*Row Groups: 5[^0-9].*
 
 # Rows committed but not yet indexed when the checkpoint runs land in a new row group of their own.
 statement ok
@@ -82,7 +82,7 @@ SELECT id FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMI
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Total Clusters: 481[^0-9].*Row Groups: 5[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 481[^0-9].*Row Groups: 5[^0-9].*
 
 # A row from the second half of the merged row group is still found exactly.
 query I
@@ -139,7 +139,7 @@ statement ok
 CREATE OR REPLACE TABLE t2 AS SELECT * FROM sift WHERE id < 4096;
 
 statement ok
-CREATE INDEX t2_idx ON t2 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 statement ok
 INSERT INTO t2 SELECT * FROM sift WHERE id >= 4096 AND id < 16384;
@@ -161,7 +161,7 @@ SELECT id FROM t2 ORDER BY array_distance(emb, ${ROW_4113}::FLOAT[${DIMS}]) LIMI
 query II
 EXPLAIN SELECT * FROM t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Row Groups: 2[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
 
 statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t2;
@@ -182,12 +182,12 @@ statement ok
 CREATE OR REPLACE TABLE t3 AS SELECT * FROM sift WHERE id < 8192 UNION ALL SELECT -1, ${MARKER_A}::FLOAT[${DIMS}];
 
 statement ok
-CREATE INDEX t3_idx ON t3 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t3_idx ON t3 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 query II
 EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Row Groups: 2[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
 
 statement ok
 DELETE FROM t3 WHERE id = -1;
@@ -208,7 +208,7 @@ true
 query II
 EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Row Groups: 1[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 1[^0-9].*
 
 # A row group whose embeddings are all NULL (no mirror) merged with a mirrored partial one: the mirror no longer
 # starts with its row group and is rebuilt. Observable through a filter whose DuckDB chunk starts in the NULL rows.
@@ -228,12 +228,12 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t4') WHERE column_name
 4	8192
 
 statement ok
-CREATE INDEX t4_idx ON t4 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t4_idx ON t4 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 query II
 EXPLAIN SELECT * FROM t4 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Total Clusters: 480[^0-9].*Row Groups: 4[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 480[^0-9].*Row Groups: 4[^0-9].*
 
 statement ok
 CHECKPOINT;
@@ -254,7 +254,7 @@ SELECT COUNT(*) FROM (SELECT id FROM t4 WHERE id < 5048 ORDER BY array_distance(
 query II
 EXPLAIN SELECT * FROM t4 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Total Clusters: 480[^0-9].*Row Groups: 4[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 480[^0-9].*Row Groups: 4[^0-9].*
 
 statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t4;
@@ -292,12 +292,12 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t5') WHERE column_name
 5	8192
 
 statement ok
-CREATE INDEX t5_idx ON t5 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t5_idx ON t5 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 query II
 EXPLAIN SELECT * FROM t5 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Total Clusters: 720[^0-9].*Row Groups: 6[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 720[^0-9].*Row Groups: 6[^0-9].*
 
 statement ok
 CHECKPOINT;
@@ -328,7 +328,7 @@ true
 query II
 EXPLAIN SELECT * FROM t5 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Total Clusters: 600[^0-9].*Row Groups: 5[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 600[^0-9].*Row Groups: 5[^0-9].*
 
 # Filtered search over the rows of the merged region.
 statement ok
