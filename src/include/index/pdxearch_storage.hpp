@@ -193,7 +193,7 @@ private:
 	atomic<idx_t> acquires_since_decay {0};
 };
 
-static constexpr uint32_t PDXEARCH_STORAGE_VERSION = 3;
+static constexpr uint32_t PDXEARCH_STORAGE_VERSION = 4;
 
 // The root chain: where the rotation and the row groups are.
 struct PDXearchDirectory {
