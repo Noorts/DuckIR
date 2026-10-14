@@ -31,7 +31,7 @@ public:
 	      search_completed(false), vss_row_ids(nullptr), vss_row_ids_idx(0) {
 		// Preprocess the query embedding.
 		const EmbeddingPreprocessor embedding_preprocessor =
-		    EmbeddingPreprocessor(index.GetNumDimensions(), index.GetRotationMatrix());
+		    EmbeddingPreprocessor(index.GetNumDimensions(), index.GetRotationMatrix(), index.GetMemoryAllocator());
 		embedding_preprocessor.PreprocessEmbedding(bind_data.query_embedding.get(), preprocessed_query_embedding.get(),
 		                                           index.IsNormalized());
 

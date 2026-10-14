@@ -53,8 +53,10 @@ private:
 	const size_t num_dimensions;
 
 public:
-	explicit EmbeddingPreprocessor(const size_t num_dimensions, const float *const rotation_matrix)
-	    : pruner(num_dimensions, rotation_matrix), quantizer(num_dimensions), num_dimensions(num_dimensions) {
+	EmbeddingPreprocessor(const size_t num_dimensions, const float *const rotation_matrix,
+	                      PDX::MemoryAllocator &memory_allocator)
+	    : pruner(num_dimensions, rotation_matrix, &memory_allocator), quantizer(num_dimensions),
+	      num_dimensions(num_dimensions) {
 	}
 
 	// Warning: modifies the input_embedding.
