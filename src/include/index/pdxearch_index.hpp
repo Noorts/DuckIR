@@ -67,13 +67,15 @@ private:
 	// evicted.
 	void UpdateReservedMemory(int64_t delta);
 
-	void AppendRow(idx_t row_group_idx, row_t row_id, const float *transformed_embedding);
+	void AppendRow(idx_t row_group_idx, row_t row_id, const float *transformed_embedding,
+	               PDX::ParallelExecutor *executor);
 	void DeleteRow(row_t row_id);
 
 	// Returns the committed rows of [start, end) whose embedding is not NULL,
 	// We transform them (random rotation) and return how many were written to `embeddings`.
 	// `rows_returned` counts every committed row the table returned, NULL embeddings included.
-	idx_t FetchRows(DataTable &table, row_t start, row_t end, row_t *row_ids, float *embeddings, idx_t &rows_returned);
+	idx_t FetchRows(DataTable &table, row_t start, row_t end, row_t *row_ids, float *embeddings, idx_t &rows_returned,
+	                PDX::ParallelExecutor *executor);
 
 	// The committed rows of [start, end), ascending, written to `row_ids`. Scans only the row id column, so it reads no
 	// column data.
@@ -153,7 +155,7 @@ public:
 	 ******************************************************************/
 
 	// Syncs the index with the table if it is out of date, then returns the shared lock a search holds while it runs.
-	unique_ptr<StorageLockKey> SyncAndLockForSearch(DataTable &table);
+	unique_ptr<StorageLockKey> SyncAndLockForSearch(ClientContext &context, DataTable &table);
 
 	bool HasUnindexedRows() const {
 		return has_unindexed_rows;
@@ -162,7 +164,7 @@ public:
 	// Detect and rebuild rowgroups whose mirrors no longer match the table rowgroups.
 	// Append unindexed rows to the index, and retire them from the unindexed list
 	// Rows whose commit is still in flight stay unindexed.
-	void SyncWithTable(DataTable &table);
+	void SyncWithTable(ClientContext &context, DataTable &table);
 
 	idx_t GetRowGroupSize() const;
 

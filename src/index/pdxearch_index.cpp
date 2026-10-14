@@ -1,4 +1,5 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/storage/table/row_group_collection.hpp"
 #include "duckdb/storage/table/row_group_segment_tree.hpp"
@@ -9,6 +10,7 @@
 #include "pdx/common.hpp"
 #include "pdx/utils.hpp"
 #include "index/pdxearch_index.hpp"
+#include "index/pdxearch_parallel_executor.hpp"
 
 #include "index/pdxearch_module.hpp"
 
@@ -159,14 +161,14 @@ bool PDXearchIndex::IsInSyncWithTable(DataTable &table) const {
 	return !bind_error.HasError() && !needs_reconciliation && !has_unindexed_rows && FindStaleRowGroups(table).empty();
 }
 
-unique_ptr<StorageLockKey> PDXearchIndex::SyncAndLockForSearch(DataTable &table) {
+unique_ptr<StorageLockKey> PDXearchIndex::SyncAndLockForSearch(ClientContext &context, DataTable &table) {
 	bool in_sync;
 	{
 		auto _lock = rwlock.GetSharedLock();
 		in_sync = IsInSyncWithTable(table);
 	}
 	if (!in_sync) {
-		SyncWithTable(table);
+		SyncWithTable(context, table);
 	}
 	return rwlock.GetSharedLock();
 }
@@ -213,13 +215,14 @@ PDXearchRowRange PDXearchIndex::GetRowGroupRange(const idx_t row_group_idx) cons
 	return {row_group.row_start, row_group.row_end};
 }
 
-void PDXearchIndex::AppendRow(const idx_t row_group_idx, const row_t row_id, const float *const transformed_embedding) {
+void PDXearchIndex::AppendRow(const idx_t row_group_idx, const row_t row_id, const float *const transformed_embedding,
+                              PDX::ParallelExecutor *const executor) {
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get(), buffer_manager);
+		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get(), buffer_manager, executor);
 	} else {
 		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get(), buffer_manager);
+		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get(), buffer_manager, executor);
 	}
 }
 
@@ -248,7 +251,7 @@ void PDXearchIndex::RemoveRowGroupsOverlapping(const row_t start, const row_t en
 }
 
 idx_t PDXearchIndex::FetchRows(DataTable &table, const row_t start, const row_t end, row_t *const row_ids,
-                               float *const embeddings, idx_t &rows_returned) {
+                               float *const embeddings, idx_t &rows_returned, PDX::ParallelExecutor *const executor) {
 	rows_returned = 0;
 	// Fetches every committed row, whatever the calling transaction's snapshot. The mirror
 	// holds the committed state, and rows a query must not see are dropped when it fetches its results.
@@ -295,7 +298,7 @@ idx_t PDXearchIndex::FetchRows(DataTable &table, const row_t start, const row_t 
 		}
 		if (batch_count > 0) {
 			embedding_preprocessor->PreprocessEmbeddings(raw_embeddings.get(), embeddings + count * num_dimensions,
-			                                             batch_count, IsNormalized());
+			                                             batch_count, IsNormalized(), executor);
 			count += batch_count;
 		}
 	}
@@ -349,13 +352,16 @@ void PDXearchIndex::ReconcileRowGroup(const row_t start, const row_t end, const 
 	}
 }
 
-void PDXearchIndex::SyncWithTable(DataTable &table) {
+void PDXearchIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 	auto _lock = rwlock.GetExclusiveLock();
 
 	// The index failed to load when DuckDB bound it: the queries that use it raise the error.
 	if (bind_error.HasError()) {
 		bind_error.Throw();
 	}
+
+	DuckDBParallelExecutor executor(context,
+	                                static_cast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads()));
 
 	// One DuckDB row group of transformed embeddings at a time, like the create sink, in a DuckDB buffer of the rows
 	// fetched.
@@ -377,10 +383,9 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 		auto embeddings_buffer = allocate_embeddings(bounds.count);
 		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.Ptr());
 		const idx_t count = FetchRows(table, bounds.row_start, bounds.row_start + static_cast<row_t>(bounds.count),
-		                              row_ids.get(), embeddings, rows_returned);
+		                              row_ids.get(), embeddings, rows_returned, &executor);
 		if (count > 0) {
-			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
-			                      /*executor=*/nullptr);
+			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
 		}
 	}
 
@@ -414,7 +419,7 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 			auto &range = unindexed_row_ranges[range_idx];
 			const row_t sub_end = MinValue<row_t>(range.end, bounds_end);
 			const idx_t range_count = FetchRows(table, range.start, sub_end, row_ids.get() + count,
-			                                    embeddings + count * num_dimensions, rows_returned);
+			                                    embeddings + count * num_dimensions, rows_returned, &executor);
 			if (rows_returned == 0) {
 				// Not committed yet: a later sync indexes them.
 				still_unindexed.push_back({range.start, sub_end});
@@ -438,11 +443,10 @@ void PDXearchIndex::SyncWithTable(DataTable &table) {
 				    static_cast<int64_t>(EstimateBuildHeapBytes(static_cast<idx_t>(range.end - range.start))));
 			}
 			for (idx_t i = 0; i < count; i++) {
-				AppendRow(row_group_idx.GetIndex(), row_ids[i], embeddings + i * num_dimensions);
+				AppendRow(row_group_idx.GetIndex(), row_ids[i], embeddings + i * num_dimensions, &executor);
 			}
 		} else {
-			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
-			                      /*executor=*/nullptr);
+			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
 		}
 	}
 	unindexed_row_ranges = std::move(still_unindexed);

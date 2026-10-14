@@ -68,14 +68,15 @@ public:
 
 	// Warning: modifies the input_embeddings.
 	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings,
-	                          const size_t num_embeddings, const bool normalize) const {
+	                          const size_t num_embeddings, const bool normalize,
+	                          PDX::ParallelExecutor *const executor = nullptr) const {
 		// In-place normalization.
 		if (normalize) {
 			for (size_t i = 0; i < num_embeddings; i++) {
 				quantizer.NormalizeQuery(input_embeddings + i * num_dimensions, input_embeddings + i * num_dimensions);
 			}
 		}
-		pruner.PreprocessEmbeddings(input_embeddings, output_embeddings, num_embeddings);
+		pruner.PreprocessEmbeddings(input_embeddings, output_embeddings, num_embeddings, executor);
 	}
 };
 
