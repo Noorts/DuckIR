@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <numeric>
 
 namespace duckdb {
 
@@ -49,6 +50,13 @@ public:
 		const idx_t num_clusters_for_full_row_group = PDXearchIndex::GetNumClustersForFullRowGroup();
 		partitions_to_probe_per_row_group_on_first_iteration =
 		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
+
+		uint32_t max_num_clusters = 0;
+		for (idx_t row_group_idx = 0; row_group_idx < index.GetNumRowGroups(); row_group_idx++) {
+			max_num_clusters = MaxValue(max_num_clusters, index.GetRowGroupIndex(row_group_idx).GetNumClusters());
+		}
+		identity_clusters_access_order.resize(max_num_clusters);
+		std::iota(identity_clusters_access_order.begin(), identity_clusters_access_order.end(), 0);
 
 		search_cursors.reserve(index.GetNumRowGroups());
 		clusters_access_orders.resize(index.GetNumRowGroups());
@@ -88,6 +96,8 @@ public:
 	// other searches (several when a hash join below spills). Written once, under the row group's once_flag.
 	std::vector<std::vector<uint32_t>> clusters_access_orders;
 	unique_ptr<std::once_flag[]> clusters_access_orders_once;
+	// The clusters in id order, for the row groups that are not ranked. Sized for the largest row group.
+	std::vector<uint32_t> identity_clusters_access_order;
 	// Per row group, whether the first run of it to end was searched. The row ids of its later runs (a hash join below
 	// spilled and replays its rows, or verify_parallelism split the row group) go to late_passing_rowids, appended
 	// under the sink lock, and get one more search of the row group at Finalize.
@@ -131,11 +141,19 @@ unique_ptr<LocalSinkState> PhysicalPDXearchIndexFilteredScan::GetLocalSinkState(
 
 // Starts the filtered search of a row group with the row ids that passed the SQL predicate, and runs its first
 // iteration: the n_probe nearest clusters that hold passing tuples. The row group's clusters are ranked once for the
-// query and shared by all of its searches.
+// query and shared by all of its searches. A row group with at most n_probe passing rows is not ranked: they are in at
+// most n_probe clusters, which the first iteration probes in any order.
 static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(PDXearchIndex &index,
                                                                       PhysicalFilteredScanGlobalSinkState &g_sink,
                                                                       const idx_t row_group_idx,
                                                                       const std::vector<size_t> &passing_rowids) {
+	if (passing_rowids.size() <= g_sink.partitions_to_probe_per_row_group_on_first_iteration) {
+		auto search_cursor =
+		    index.BeginSearchForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit,
+		                                 g_sink.top_k_heap, &passing_rowids, &g_sink.identity_clusters_access_order);
+		search_cursor->Next(search_cursor->ClustersRemaining());
+		return search_cursor;
+	}
 	auto &clusters_access_order = g_sink.clusters_access_orders[row_group_idx];
 	std::call_once(g_sink.clusters_access_orders_once[row_group_idx], [&]() {
 		clusters_access_order =
