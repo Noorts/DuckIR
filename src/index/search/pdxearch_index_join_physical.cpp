@@ -45,7 +45,7 @@ enum class OnTheFlyIndexingMode : uint8_t { NEVER, ALWAYS, AUTO };
 class PDXearchIndexJoinSearch {
 public:
 	PDXearchIndexJoinSearch(ClientContext &context, const PhysicalPDXearchIndexJoin &op)
-	    : search_lock(op.index.Cast<PDXearchIndex>().SyncAndLockForSearch(op.table.GetStorage())),
+	    : search_lock(op.index.Cast<PDXearchIndex>().SyncAndLockForSearch(context, op.table.GetStorage())),
 	      index(op.index.Cast<PDXearchIndex>()), limit(op.limit),
 	      preprocessor(index.GetNumDimensions(), index.GetRotationMatrix()),
 	      buffer_manager(BufferManager::GetBufferManager(context)) {

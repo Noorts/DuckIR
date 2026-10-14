@@ -73,7 +73,7 @@ static void PDXearchSyncIndexExecute(ClientContext &context, TableFunctionInput 
 	optional_ptr<DataTable> table;
 	auto &index = FindPDXearchIndex(context, bind_data.index_name, table);
 	const bool had_unindexed_rows = index.HasUnindexedRows();
-	index.SyncWithTable(*table);
+	index.SyncWithTable(context, *table);
 
 	output.SetValue(0, 0, Value(bind_data.index_name));
 	output.SetValue(1, 0, Value::BOOLEAN(had_unindexed_rows));

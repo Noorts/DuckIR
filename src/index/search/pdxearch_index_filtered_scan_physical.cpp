@@ -35,7 +35,8 @@ class PhysicalFilteredScanGlobalSinkState : public GlobalSinkState {
 public:
 	PhysicalFilteredScanGlobalSinkState(ClientContext &context, const PhysicalPDXearchIndexFilteredScan &op,
 	                                    const PDXearchIndexPhysicalScanBindData &bind_data)
-	    : search_lock(bind_data.index.Cast<PDXearchIndex>().SyncAndLockForSearch(bind_data.table.GetStorage())),
+	    : search_lock(
+	          bind_data.index.Cast<PDXearchIndex>().SyncAndLockForSearch(context, bind_data.table.GetStorage())),
 	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<PDXearchIndex>()),
 	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), pdxearch_row_ids(nullptr) {
 		// Preprocess the query embedding.

@@ -277,7 +277,8 @@ public:
 	// `row_groups[row_group_idx]` mirrors; the row group's end grows with it.
 	// If the rowgroup is a Flat index and it has enough embeddings, it is promoted to an IVF index.
 	void AppendRow(const idx_t row_group_idx, const row_t row_id, const float *const transformed_embedding,
-	               optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager) {
+	               optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager,
+	               PDX::ParallelExecutor *const executor) {
 		auto &row_group = *row_groups[row_group_idx];
 		D_ASSERT(row_id >= row_group.row_start);
 		// Rare: a rebuild of this row group (e.g., a checkpoint merge) ran earlier in the same
@@ -294,7 +295,7 @@ public:
 		row_group.is_dirty = true;
 		auto flat_index = dynamic_cast<PDX::FlatIndex *>(row_group.index.get());
 		if (flat_index && flat_index->GetClusterSize(0) >= MIN_EMBEDDINGS_FOR_CLUSTERING) {
-			PromoteToIVF(row_group, *flat_index);
+			PromoteToIVF(row_group, *flat_index, executor);
 		}
 	}
 
@@ -559,12 +560,14 @@ private:
 		return std::move(ivf_index);
 	}
 
-	void PromoteToIVF(PDXRowGroup &row_group, const PDX::FlatIndex &flat_index) {
+	void PromoteToIVF(PDXRowGroup &row_group, const PDX::FlatIndex &flat_index, PDX::ParallelExecutor *const executor) {
 		const auto row_ids = flat_index.GetRowIds();
 		const auto embeddings = flat_index.GetEmbeddings();
 		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(
-		    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), /*executor=*/nullptr), *pruner);
+		    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), executor), *pruner);
 		ivf_index->BuildIndex(row_ids.data(), embeddings.get(), row_ids.size());
+		// The executor ends with the build: later appends and deletes run serially.
+		ivf_index->SetExecutor(nullptr);
 		row_group.index = std::move(ivf_index);
 	}
 

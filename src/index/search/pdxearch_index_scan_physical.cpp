@@ -26,7 +26,8 @@ public:
 	PDXearchScanGlobalSourceState(ClientContext &context, const PhysicalPDXearchIndexScan &op,
 	                              const PDXearchIndexScanBindData &bind_data,
 	                              const vector<ColumnIndex> &operator_column_ids)
-	    : search_lock(bind_data.index.Cast<PDXearchIndex>().SyncAndLockForSearch(bind_data.table.GetStorage())),
+	    : search_lock(
+	          bind_data.index.Cast<PDXearchIndex>().SyncAndLockForSearch(context, bind_data.table.GetStorage())),
 	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<PDXearchIndex>()),
 	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), search_started(false),
 	      search_completed(false), pdxearch_row_ids(nullptr), pdxearch_row_ids_idx(0) {
