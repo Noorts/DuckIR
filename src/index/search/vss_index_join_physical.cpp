@@ -126,6 +126,7 @@ public:
 	vector<std::unique_ptr<PDX::IPDXIndex>> on_the_fly_indexes;
 	vector<row_t> on_the_fly_indexes_row_ids;
 	idx_t on_the_fly_indexes_clusters_to_probe {0};
+	bool search_flat_index_in_bulk {false};
 	// The join's own reservation for on-the-fly indexes construction.
 	BufferManager &buffer_manager;
 	idx_t reserved_memory_bytes {0};
@@ -424,6 +425,7 @@ SinkFinalizeType PhysicalVSSIndexJoin::Finalize(Pipeline &pipeline, Event &event
 	            static_cast<double>(num_clusters_of_row_groups_with_passing_rows)) {
 		if (BuildOnTheFlyIndexes(search, passing_row_ids_per_row_group.size(), /*build_flat=*/true,
 		                         /*executor=*/nullptr)) {
+			search.search_flat_index_in_bulk = true;
 			return search.on_the_fly_indexes.empty() ? SinkFinalizeType::NO_OUTPUT_POSSIBLE : SinkFinalizeType::READY;
 		}
 	}
@@ -488,6 +490,12 @@ public:
 	UnifiedVectorFormat query_format;
 	idx_t next_input_row {0};
 
+	// The input chunk's queries searched in bulk, and each input row's nearest rows (none for a NULL query).
+	unique_ptr<float[]> chunk_raw_queries;
+	unique_ptr<float[]> chunk_queries;
+	std::vector<idx_t> chunk_query_rows;
+	std::vector<std::vector<PDX::KNNCandidate>> chunk_nearest;
+
 	// The row ids of the current query's nearest rows, and those rows as fetched.
 	Vector row_ids;
 	DataChunk fetched;
@@ -500,7 +508,7 @@ unique_ptr<OperatorState> PhysicalVSSIndexJoin::GetOperatorState(ExecutionContex
 
 // Copies the query vector of an input row into raw_query. False when the query is NULL.
 static bool TryReadQuery(const PhysicalVSSIndexJoin &op, DataChunk &input, const idx_t row,
-                         VSSIndexJoinOperatorState &state) {
+                         VSSIndexJoinOperatorState &state, float *const raw_query) {
 	auto &query_vector = input.data[op.query_column];
 	const auto query_idx = state.query_format.sel->get_index(row);
 	if (!state.query_format.validity.RowIsValid(query_idx)) {
@@ -514,7 +522,7 @@ static bool TryReadQuery(const PhysicalVSSIndexJoin &op, DataChunk &input, const
 			throw InvalidInputException("BLOB dimension count (%llu) does not match array size (%llu)",
 			                            BlobDimensionCount(blob.GetSize()), num_dimensions);
 		}
-		DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), state.raw_query.get());
+		DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), raw_query);
 		return true;
 	}
 	auto &query_elements = ArrayVector::GetEntry(query_vector);
@@ -525,7 +533,7 @@ static bool TryReadQuery(const PhysicalVSSIndexJoin &op, DataChunk &input, const
 	// Maybe an optimistic memcpy and then a validity check?
 	for (idx_t i = 0; i < num_dimensions; i++) {
 		// A NULL element is searched as 0: the distance function raises its error for the rows we return.
-		state.raw_query[i] = query_validity.RowIsValid(offset + i) ? query_data[offset + i] : 0;
+		raw_query[i] = query_validity.RowIsValid(offset + i) ? query_data[offset + i] : 0;
 	}
 	return true;
 }
@@ -669,6 +677,36 @@ static idx_t SearchQuery(const VSSIndexJoinSearch &search, VSSIndexJoinOperatorS
 	return nearest.size();
 }
 
+// Searches all queries of the input chunk in the brute-force Flat with one BulkSearch, serially: DuckDB already runs
+// the chunks on all threads. Keeps each input row's nearest rows in chunk_nearest.
+static void SearchChunkInBulk(const PhysicalVSSIndexJoin &op, const VSSIndexJoinSearch &search, DataChunk &input,
+                              VSSIndexJoinOperatorState &state) {
+	const idx_t num_dimensions = state.num_dimensions;
+	if (!state.chunk_queries) {
+		state.chunk_raw_queries = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
+		state.chunk_queries = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
+	}
+	state.chunk_query_rows.clear();
+	for (idx_t row = 0; row < input.size(); row++) {
+		const auto raw_query = state.chunk_raw_queries.get() + state.chunk_query_rows.size() * num_dimensions;
+		if (TryReadQuery(op, input, row, state, raw_query)) {
+			state.chunk_query_rows.push_back(row);
+		}
+	}
+	state.chunk_nearest.assign(input.size(), {});
+	const idx_t num_queries = state.chunk_query_rows.size();
+	if (num_queries == 0) {
+		return;
+	}
+	search.preprocessor.PreprocessEmbeddings(state.chunk_raw_queries.get(), state.chunk_queries.get(), num_queries,
+	                                         search.index.IsNormalized());
+	auto nearest = search.on_the_fly_indexes[0]->BulkSearch(state.chunk_queries.get(), num_queries, search.limit,
+	                                                        /*is_query_transformed=*/true);
+	for (idx_t i = 0; i < num_queries; i++) {
+		state.chunk_nearest[state.chunk_query_rows[i]] = std::move(nearest[i]);
+	}
+}
+
 // Called once per input chunk (up to 2048 query vectors)
 OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                  GlobalOperatorState &gstate, OperatorState &state_p) const {
@@ -683,19 +721,36 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 		input.data[query_column].ToUnifiedFormat(input.size(), state.query_format);
 		state.next_input_row = 0;
 		state.input_started = true;
+		// Why we need to guard this?
+		// Because PDX doesn't implement bulk search for every index yet, only Flat.
+		if (search.search_flat_index_in_bulk) {
+			SearchChunkInBulk(*this, search, input, state);
+		}
 	}
 
 	// One query per call: the nearest rows of the next input row's query (at most K, which fits in one chunk), with the
 	// input row's columns. Fetch skips the rows this transaction cannot see, so a query can have
 	// fewer rows; when none are left, the next input row is searched.
-	// TODO: Search the queries of a chunk together once PDX has a bulk search.
+	// TODO: Bulk search for IVF
 	auto &transaction = DuckTransaction::Get(context.client, table.catalog);
 	while (state.next_input_row < input.size()) {
 		const auto row = state.next_input_row++;
-		if (!TryReadQuery(*this, input, row, state)) {
-			continue;
+		idx_t num_nearest;
+		// The bulk search already happened, and the nearest rows are in state.chunk_nearest[row].
+		// Here we only need to copy the row ids of the neighbors to state.row_ids, and then fetch them.
+		if (search.search_flat_index_in_bulk) {
+			const auto &nearest = state.chunk_nearest[row];
+			const auto row_ids = FlatVector::GetData<row_t>(state.row_ids);
+			for (size_t i = 0; i < nearest.size(); i++) {
+				row_ids[i] = search.on_the_fly_indexes_row_ids[nearest[i].index];
+			}
+			num_nearest = nearest.size();
+		} else {
+			if (!TryReadQuery(*this, input, row, state, state.raw_query.get())) {
+				continue;
+			}
+			num_nearest = SearchQuery(search, state);
 		}
-		const auto num_nearest = SearchQuery(search, state);
 		if (num_nearest == 0) {
 			continue;
 		}
