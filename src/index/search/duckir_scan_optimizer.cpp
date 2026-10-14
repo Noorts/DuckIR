@@ -384,12 +384,12 @@ public:
 	// call, picked by `prefix`, on a column reference; `call` receives it.
 	static bool TryUnwrapCompression(const Expression &expression, const string &prefix,
 	                                 optional_ptr<const BoundFunctionExpression> &call) {
-		if (expression.type != ExpressionType::BOUND_FUNCTION) {
+		if (expression.GetExpressionType() != ExpressionType::BOUND_FUNCTION) {
 			return false;
 		}
 		auto &function = expression.Cast<BoundFunctionExpression>();
-		if (!StringUtil::StartsWith(function.function.name, prefix) || function.children.empty() ||
-		    function.children[0]->type != ExpressionType::BOUND_COLUMN_REF) {
+		if (!function.Function().GetName().StartsWith(prefix) || function.GetChildren().empty() ||
+		    function.GetChildren()[0]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 			return false;
 		}
 		call = &function;
@@ -415,8 +415,8 @@ public:
 				return false;
 			}
 			auto &expression = *projection.expressions[binding.column_index];
-			if (expression.type == ExpressionType::BOUND_COLUMN_REF) {
-				binding = expression.Cast<BoundColumnRefExpression>().binding;
+			if (expression.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+				binding = expression.Cast<BoundColumnRefExpression>().Binding();
 				continue;
 			}
 			optional_ptr<const BoundFunctionExpression> call;
@@ -426,17 +426,17 @@ public:
 			           TryUnwrapCompression(expression, "__internal_compress_", call)) {
 				// It must undo the decompress: the key's own type and, for integral keys, the same `min`.
 				auto &decompress = pending_decompressions.back().get();
-				if (decompress.return_type != call->children[0]->return_type ||
-				    decompress.children.size() != call->children.size()) {
+				if (decompress.GetReturnType() != call->GetChildren()[0]->GetReturnType() ||
+				    decompress.GetChildren().size() != call->GetChildren().size()) {
 					return false;
 				}
-				if (call->children.size() == 2) {
-					auto &decompress_min = *decompress.children[1];
-					auto &compress_min = *call->children[1];
-					if (decompress_min.type != ExpressionType::VALUE_CONSTANT ||
-					    compress_min.type != ExpressionType::VALUE_CONSTANT ||
-					    !Value::NotDistinctFrom(decompress_min.Cast<BoundConstantExpression>().value,
-					                            compress_min.Cast<BoundConstantExpression>().value)) {
+				if (call->GetChildren().size() == 2) {
+					auto &decompress_min = *decompress.GetChildren()[1];
+					auto &compress_min = *call->GetChildren()[1];
+					if (decompress_min.GetExpressionType() != ExpressionType::VALUE_CONSTANT ||
+					    compress_min.GetExpressionType() != ExpressionType::VALUE_CONSTANT ||
+					    !Value::NotDistinctFrom(decompress_min.Cast<BoundConstantExpression>().GetValue(),
+					                            compress_min.Cast<BoundConstantExpression>().GetValue())) {
 						return false;
 					}
 				}
@@ -444,7 +444,7 @@ public:
 			} else {
 				return false;
 			}
-			binding = call->children[0]->Cast<BoundColumnRefExpression>().binding;
+			binding = call->GetChildren()[0]->Cast<BoundColumnRefExpression>().Binding();
 		}
 		return pending_decompressions.empty();
 	}
@@ -461,10 +461,10 @@ public:
 		bool all_traced = true;
 		for (auto &expression : projection.expressions) {
 			ExpressionIterator::EnumerateExpression(expression, [&](Expression &child) {
-				if (child.type != ExpressionType::BOUND_COLUMN_REF) {
+				if (child.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 					return;
 				}
-				const auto binding = child.Cast<BoundColumnRefExpression>().binding;
+				const auto binding = child.Cast<BoundColumnRefExpression>().Binding();
 				if (std::find(bindings.begin(), bindings.end(), binding) != bindings.end()) {
 					return;
 				}
@@ -505,9 +505,9 @@ public:
 		const auto reads_embedding = [&](unique_ptr<Expression> &expression) {
 			bool reads = false;
 			ExpressionIterator::EnumerateExpression(expression, [&](Expression &child) {
-				if (child.type == ExpressionType::BOUND_COLUMN_REF &&
+				if (child.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF &&
 				    std::find(embedding_bindings.begin(), embedding_bindings.end(),
-				              child.Cast<BoundColumnRefExpression>().binding) != embedding_bindings.end()) {
+				              child.Cast<BoundColumnRefExpression>().Binding()) != embedding_bindings.end()) {
 					reads = true;
 				}
 			});
@@ -529,7 +529,7 @@ public:
 			if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 				// A join's predicate is its condition, whose left side reads the chain below it.
 				for (auto &condition : op.Cast<LogicalComparisonJoin>().conditions) {
-					if (reads_embedding(condition.left)) {
+					if (reads_embedding(condition.LeftReference())) {
 						return false;
 					}
 				}
@@ -540,7 +540,8 @@ public:
 			vector<ColumnBinding> forwarded_bindings;
 			for (idx_t i = 0; i < projection.expressions.size(); i++) {
 				auto &expression = projection.expressions[i];
-				if (expression->type == ExpressionType::BOUND_COLUMN_REF && reads_embedding(expression)) {
+				if (expression->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF &&
+				    reads_embedding(expression)) {
 					forwards.push_back(expression->Cast<BoundColumnRefExpression>());
 					forwarded_bindings.emplace_back(projection.table_index, i);
 				} else if (reads_embedding(expression)) {
@@ -567,7 +568,7 @@ public:
 		    CanReplaceEmbeddingByRowId(get, chain, embedding_column_position.GetIndex(), forwards)) {
 			column_ids[embedding_column_position.GetIndex()] = ColumnIndex(COLUMN_IDENTIFIER_ROW_ID);
 			for (auto &forward : forwards) {
-				forward.get().return_type = LogicalType::ROW_TYPE;
+				forward.get().SetReturnType(LogicalType::ROW_TYPE);
 			}
 			return embedding_binding;
 		}
@@ -639,11 +640,11 @@ public:
 			return false;
 		}
 
-		if (order.expression->type != ExpressionType::BOUND_COLUMN_REF) {
+		if (order.expression->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 			// The expression has to reference the child operator (a projection with the distance function)
 			return false;
 		}
-		binding = order.expression->Cast<BoundColumnRefExpression>().binding;
+		binding = order.expression->Cast<BoundColumnRefExpression>().Binding();
 		return true;
 	}
 
@@ -658,9 +659,11 @@ public:
 		}
 		reference<LogicalProjection> distance_projection = child.Cast<LogicalProjection>();
 		while (binding.column_index < distance_projection.get().expressions.size() &&
-		       distance_projection.get().expressions[binding.column_index]->type == ExpressionType::BOUND_COLUMN_REF) {
+		       distance_projection.get().expressions[binding.column_index]->GetExpressionType() ==
+		           ExpressionType::BOUND_COLUMN_REF) {
 			auto &forwarding_projection = distance_projection.get();
-			binding = forwarding_projection.expressions[binding.column_index]->Cast<BoundColumnRefExpression>().binding;
+			binding =
+			    forwarding_projection.expressions[binding.column_index]->Cast<BoundColumnRefExpression>().Binding();
 			if (forwarding_projection.children.size() != 1 ||
 			    forwarding_projection.children.front()->type != LogicalOperatorType::LOGICAL_PROJECTION) {
 				return nullptr;
@@ -697,7 +700,7 @@ public:
 
 		auto &get = (*get_ptr_ptr)->Cast<LogicalGet>();
 		// Check if the get is a table scan
-		if (get.function.name != "seq_scan") {
+		if (get.function.GetName() != "seq_scan") {
 			return nullptr;
 		}
 
@@ -723,7 +726,7 @@ public:
 		const auto only_forwards = [](const LogicalOperator &op) {
 			return op.type == LogicalOperatorType::LOGICAL_PROJECTION && op.children.size() == 1 &&
 			       std::all_of(op.expressions.begin(), op.expressions.end(), [](const unique_ptr<Expression> &expr) {
-				       return expr->type == ExpressionType::BOUND_COLUMN_REF;
+				       return expr->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF;
 			       });
 		};
 		auto *cross_product_ptr_ptr = &top;
@@ -786,12 +789,12 @@ public:
 			// Needed to support a renamed embedding column.
 			// (and every case with a projection between the distance and the scan).
 			const auto is_index_expression = [&](const Expression &argument) {
-				if (argument.type != ExpressionType::BOUND_COLUMN_REF) {
+				if (argument.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 					return index_expr->Equals(argument);
 				}
-				auto binding = argument.Cast<BoundColumnRefExpression>().binding;
+				auto binding = argument.Cast<BoundColumnRefExpression>().Binding();
 				return TryTraceToTableScan(chain, binding) &&
-				       index_expr->Equals(BoundColumnRefExpression(argument.return_type, binding));
+				       index_expr->Equals(BoundColumnRefExpression(argument.GetReturnType(), binding));
 			};
 
 			if (!is_query_argument(query_expr_ref.get()) || !is_index_expression(index_expr_ref)) {
@@ -804,8 +807,8 @@ public:
 			}
 			match.index = cast_index;
 			match.query_argument = query_expr_ref.get();
-			if (index_expr_ref.get().type == ExpressionType::BOUND_COLUMN_REF) {
-				match.embedding_binding = index_expr_ref.get().Cast<BoundColumnRefExpression>().binding;
+			if (index_expr_ref.get().GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+				match.embedding_binding = index_expr_ref.get().Cast<BoundColumnRefExpression>().Binding();
 				auto traced_binding = match.embedding_binding;
 				TryTraceToTableScan(chain, traced_binding);
 				match.embedding_column_position = traced_binding.column_index;
@@ -996,7 +999,7 @@ public:
 		// DuckDB's optimizers have folded the query vector into a constant.
 		IndexSearchMatch index_search_match;
 		const auto is_constant = [](const Expression &argument) {
-			return argument.type == ExpressionType::VALUE_CONSTANT;
+			return argument.GetExpressionType() == ExpressionType::VALUE_CONSTANT;
 		};
 		if (!TryMatchIndexSearch(context, top_n.orders, *top_n.children.front(), is_constant, index_search_match)) {
 			return false;
@@ -1015,7 +1018,7 @@ public:
 		auto &duck_table = get.GetTable()->Cast<DuckTableEntry>();
 
 		auto query_embedding =
-		    TryDecodeConstantQuery(*match.index, match.query_argument->Cast<BoundConstantExpression>().value);
+		    TryDecodeConstantQuery(*match.index, match.query_argument->Cast<BoundConstantExpression>().GetValue());
 		if (!query_embedding) {
 			return false;
 		}
@@ -1110,40 +1113,41 @@ public:
 				return nullptr;
 			}
 			auto &function = aggregate.expressions[0]->Cast<BoundAggregateExpression>();
-			if (function.IsDistinct() || function.filter ||
-			    (function.order_bys && !function.order_bys->orders.empty())) {
+			if (function.IsDistinct() || function.GetFilter() ||
+			    (function.GetOrderBys() && !function.GetOrderBys()->orders.empty())) {
 				return nullptr;
 			}
 			// arg_min(payload, key[, K]) or min(key[, K]). The descending order becomes arg_max or max.
 			idx_t key_position;
-			if (function.function.name == "arg_min" || function.function.name == "arg_min_nulls_last") {
+			if (function.Function().GetName() == "arg_min" || function.Function().GetName() == "arg_min_nulls_last") {
 				key_position = 1;
-			} else if (function.function.name == "min") {
+			} else if (function.Function().GetName() == "min") {
 				key_position = 0;
 			} else {
 				return nullptr;
 			}
-			if (function.children.size() != key_position + 1 && function.children.size() != key_position + 2) {
+			if (function.GetChildren().size() != key_position + 1 &&
+			    function.GetChildren().size() != key_position + 2) {
 				return nullptr;
 			}
-			auto &key = *function.children[key_position];
-			if (key.type != ExpressionType::BOUND_COLUMN_REF) {
+			auto &key = *function.GetChildren()[key_position];
+			if (key.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 				return nullptr;
 			}
 			limit = 1;
-			if (function.children.size() == key_position + 2) {
-				auto &k = *function.children[key_position + 1];
-				if (k.type != ExpressionType::VALUE_CONSTANT) {
+			if (function.GetChildren().size() == key_position + 2) {
+				auto &k = *function.GetChildren()[key_position + 1];
+				if (k.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 					return nullptr;
 				}
-				auto &k_value = k.Cast<BoundConstantExpression>().value;
+				auto &k_value = k.Cast<BoundConstantExpression>().GetValue();
 				if (k_value.IsNull() || k_value.type().id() != LogicalTypeId::BIGINT ||
 				    k_value.GetValue<int64_t>() <= 0) {
 					return nullptr;
 				}
 				limit = static_cast<idx_t>(k_value.GetValue<int64_t>());
 			}
-			key_binding = key.Cast<BoundColumnRefExpression>().binding;
+			key_binding = key.Cast<BoundColumnRefExpression>().Binding();
 			for (auto &group : aggregate.groups) {
 				groups.push_back(*group);
 			}
@@ -1167,17 +1171,18 @@ public:
 			return nullptr;
 		}
 		auto &window = child.get().Cast<LogicalWindow>();
-		if (window.expressions.size() != 1 || window.expressions[0]->type != ExpressionType::WINDOW_ROW_NUMBER) {
+		if (window.expressions.size() != 1 ||
+		    window.expressions[0]->GetExpressionType() != ExpressionType::WINDOW_ROW_NUMBER) {
 			return nullptr;
 		}
 		auto &row_number = window.expressions[0]->Cast<BoundWindowExpression>();
-		if (row_number.orders.size() != 1 || !row_number.arg_orders.empty() || row_number.filter_expr ||
-		    row_number.distinct) {
+		if (row_number.OrderBy().size() != 1 || !row_number.ArgOrders().empty() || row_number.Filter() ||
+		    row_number.Distinct()) {
 			return nullptr;
 		}
-		auto &order = row_number.orders[0];
+		auto &order = row_number.OrderBy()[0];
 		if (order.type != OrderType::ASCENDING || order.null_order != OrderByNullType::NULLS_LAST ||
-		    order.expression->type != ExpressionType::BOUND_COLUMN_REF) {
+		    order.expression->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 			return nullptr;
 		}
 		// K is the smallest bound on the row number (`rownum <= K`, `rownum < K + 1` or `rownum = K`). The K nearest
@@ -1218,8 +1223,8 @@ public:
 			return nullptr;
 		}
 		limit = smallest_bound.GetIndex();
-		key_binding = order.expression->Cast<BoundColumnRefExpression>().binding;
-		for (auto &partition : row_number.partitions) {
+		key_binding = order.expression->Cast<BoundColumnRefExpression>().Binding();
+		for (auto &partition : row_number.Partitions()) {
 			groups.push_back(*partition);
 		}
 		return window.children[0].get();
@@ -1242,10 +1247,10 @@ public:
 		}
 		path.insert(path.end(), forwarding_projections.begin(), forwarding_projections.end());
 		for (auto &group : groups) {
-			if (group.get().type != ExpressionType::BOUND_COLUMN_REF) {
+			if (group.get().GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 				return false;
 			}
-			auto binding = group.get().Cast<BoundColumnRefExpression>().binding;
+			auto binding = group.get().Cast<BoundColumnRefExpression>().Binding();
 			if (!TryTraceToTableScan(path, binding) || binding.table_index != query_rows_table_index) {
 				return false;
 			}
@@ -1313,10 +1318,10 @@ public:
 		distance_chain.insert(distance_chain.end(), chain.begin(), chain.end());
 		IndexMatch match;
 		const auto is_query_column = [&](const Expression &argument) {
-			if (argument.type != ExpressionType::BOUND_COLUMN_REF) {
+			if (argument.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 				return false;
 			}
-			auto binding = argument.Cast<BoundColumnRefExpression>().binding;
+			auto binding = argument.Cast<BoundColumnRefExpression>().Binding();
 			return TryTraceToTableScan(forwarding_projections, binding) &&
 			       binding.table_index == query_rows_table_index;
 		};
@@ -1325,7 +1330,7 @@ public:
 			return false;
 		}
 		// The query vector's and the embedding's bindings among the cross product's columns.
-		auto query_binding = match.query_argument->Cast<BoundColumnRefExpression>().binding;
+		auto query_binding = match.query_argument->Cast<BoundColumnRefExpression>().Binding();
 		TryTraceToTableScan(forwarding_projections, query_binding);
 		if (match.embedding_column_position.IsValid()) {
 			TryTraceToTableScan(forwarding_projections, match.embedding_binding);
@@ -1379,8 +1384,8 @@ public:
 		column_binding_set_t read_bindings;
 		for (auto &expression : projection.expressions) {
 			ExpressionIterator::EnumerateExpression(expression, [&](Expression &child) {
-				if (child.type == ExpressionType::BOUND_COLUMN_REF) {
-					read_bindings.insert(child.Cast<BoundColumnRefExpression>().binding);
+				if (child.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+					read_bindings.insert(child.Cast<BoundColumnRefExpression>().Binding());
 				}
 			});
 		}

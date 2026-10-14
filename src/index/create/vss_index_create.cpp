@@ -35,7 +35,7 @@ public:
 	    : global_index(make_uniq<VSSIndex>(op.info->index_name, op.info->constraint_type, op.storage_ids,
 	                                       TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
 	                                       op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
-	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->return_type)),
+	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->GetReturnType())),
 	      embedding_preprocessor(
 	          make_uniq<EmbeddingPreprocessor>(num_dimensions, global_index->Cast<VSSIndex>().GetRotationMatrix())),
 	      is_normalized(global_index->Cast<VSSIndex>().IsNormalized()) {

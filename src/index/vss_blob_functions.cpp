@@ -168,7 +168,7 @@ struct BlobDistanceBindData : public FunctionData {
 // Bind for (BLOB, ARRAY) - blob is arg 0, array is arg 1
 static unique_ptr<FunctionData> BlobArrayDistanceBind(ClientContext &context, ScalarFunction &bound_function,
                                                       vector<unique_ptr<Expression>> &arguments) {
-	auto &array_type = arguments[1]->return_type;
+	auto &array_type = arguments[1]->GetReturnType();
 	if (array_type.id() != LogicalTypeId::ARRAY) {
 		throw BinderException("%s: second argument must be an ARRAY type", bound_function.name);
 	}
@@ -180,7 +180,7 @@ static unique_ptr<FunctionData> BlobArrayDistanceBind(ClientContext &context, Sc
 // Bind for (ARRAY, BLOB) - array is arg 0, blob is arg 1
 static unique_ptr<FunctionData> ArrayBlobDistanceBind(ClientContext &context, ScalarFunction &bound_function,
                                                       vector<unique_ptr<Expression>> &arguments) {
-	auto &array_type = arguments[0]->return_type;
+	auto &array_type = arguments[0]->GetReturnType();
 	if (array_type.id() != LogicalTypeId::ARRAY) {
 		throw BinderException("%s: first argument must be an ARRAY type", bound_function.name);
 	}
@@ -193,7 +193,7 @@ static unique_ptr<FunctionData> ArrayBlobDistanceBind(ClientContext &context, Sc
 template <class OP>
 static void BlobArrayDistanceExecute(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_state = state.Cast<ExecuteFunctionState>();
-	auto &bind_data = func_state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<BlobDistanceBindData>();
+	auto &bind_data = func_state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<BlobDistanceBindData>();
 	auto array_size = bind_data.array_size;
 
 	auto count = args.size();
@@ -243,7 +243,7 @@ static void BlobArrayDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 template <class OP>
 static void ArrayBlobDistanceExecute(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_state = state.Cast<ExecuteFunctionState>();
-	auto &bind_data = func_state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<BlobDistanceBindData>();
+	auto &bind_data = func_state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<BlobDistanceBindData>();
 	auto array_size = bind_data.array_size;
 
 	auto count = args.size();

@@ -72,7 +72,7 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 	if (create_index.expressions.size() != 1) {
 		throw BinderException("DuckIR VSS indexes can only be created over a single column of keys.");
 	}
-	const auto &arr_type = create_index.expressions[0]->return_type;
+	const auto &arr_type = create_index.expressions[0]->GetReturnType();
 	if (arr_type.id() != LogicalTypeId::ARRAY) {
 		throw BinderException("DuckIR VSS index keys must be of type FLOAT[N]");
 	}
@@ -93,7 +93,7 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 	vector<LogicalType> new_column_types;
 	vector<unique_ptr<Expression>> select_list;
 	for (auto &expression : create_index.expressions) {
-		new_column_types.push_back(expression->return_type);
+		new_column_types.push_back(expression->GetReturnType());
 		select_list.push_back(std::move(expression));
 	}
 	new_column_types.emplace_back(LogicalType::ROW_TYPE);
@@ -115,7 +115,7 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 		auto is_not_null_expr =
 		    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
 		auto bound_ref = make_uniq<BoundReferenceExpression>(new_column_types[i], i);
-		is_not_null_expr->children.push_back(std::move(bound_ref));
+		is_not_null_expr->GetChildrenMutable().push_back(std::move(bound_ref));
 		filter_select_list.push_back(std::move(is_not_null_expr));
 	}
 

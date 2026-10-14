@@ -912,17 +912,17 @@ bool VSSIndex::TryMatchDistanceFunction(const unique_ptr<Expression> &expr,
 
 static void TryBindIndexExpressionInternal(Expression &expr, idx_t table_idx, const vector<column_t> &index_columns,
                                            const vector<ColumnIndex> &table_columns, bool &success, bool &found) {
-	if (expr.type == ExpressionType::BOUND_COLUMN_REF) {
+	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 		found = true;
 		auto &ref = expr.Cast<BoundColumnRefExpression>();
 
 		// Rewrite the column reference to fit in the current set of bound column ids
-		ref.binding.table_index = table_idx;
+		ref.BindingMutable().table_index = table_idx;
 
-		const auto referenced_column = index_columns[ref.binding.column_index];
+		const auto referenced_column = index_columns[ref.Binding().column_index];
 		for (idx_t i = 0; i < table_columns.size(); i++) {
 			if (table_columns[i].GetPrimaryIndex() == referenced_column) {
-				ref.binding.column_index = i;
+				ref.BindingMutable().column_index = i;
 				return;
 			}
 		}
