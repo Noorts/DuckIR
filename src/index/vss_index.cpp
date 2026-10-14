@@ -285,8 +285,8 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 			continue;
 		}
 		auto &embedding_column = fetched.data[0];
-		embedding_column.Flatten(fetched_count);
-		fetched.data[1].Flatten(fetched_count);
+		embedding_column.Flatten();
+		fetched.data[1].Flatten();
 		const auto &validity = FlatVector::Validity(embedding_column);
 		const auto fetched_embeddings = FlatVector::GetData<float>(ArrayVector::GetEntry(embedding_column));
 		const auto fetched_row_ids = FlatVector::GetData<row_t>(fetched.data[1]);
@@ -324,7 +324,7 @@ idx_t VSSIndex::FetchCommittedRowIds(DataTable &table, const row_t start, const 
 		if (chunk.size() == 0) {
 			break;
 		}
-		chunk.data[0].Flatten(chunk.size());
+		chunk.data[0].Flatten();
 		memcpy(row_ids + count, FlatVector::GetData<row_t>(chunk.data[0]), chunk.size() * sizeof(row_t));
 		count += chunk.size();
 	}
@@ -540,7 +540,7 @@ ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
 	if (count == 0) {
 		return ErrorData();
 	}
-	row_ids.Flatten(count);
+	row_ids.Flatten();
 	const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
 	// Determine consecutive ranges of row ids.
 	// For example: `1, 2, 3, 5, 6 --> [1, 3] + [5, 6]`
@@ -564,7 +564,7 @@ void VSSIndex::Delete(IndexLock &lock, DataChunk &entries, Vector &row_ids) {
 	auto _lock = rwlock.GetExclusiveLock();
 
 	const idx_t count = entries.size();
-	row_ids.Flatten(count);
+	row_ids.Flatten();
 	const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
 	for (idx_t i = 0; i < count; i++) {
 		// PDX Delete is idempotent: if the row was never indexed, it is a no-op

@@ -195,7 +195,7 @@ SinkResultType PhysicalVSSIndexFilteredScan::Sink(ExecutionContext &context, Dat
 	D_ASSERT(input_chunk.ColumnCount() == 1);
 	D_ASSERT(input_chunk.data[0].GetType() == LogicalType::ROW_TYPE);
 
-	input_chunk.data[0].Flatten(input_chunk.size());
+	input_chunk.data[0].Flatten();
 	const auto input_chunk_row_ids = FlatVector::GetData<row_t>(input_chunk.data[0]);
 	// A table scan morsel is one whole DuckDB row group, and each thread receives its morsels in increasing order, so
 	// a row group reaches this sink as one run of rows on one thread (the debug setting verify_parallelism hands out

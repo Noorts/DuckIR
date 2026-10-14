@@ -190,7 +190,7 @@ SinkResultType PhysicalVSSIndexJoin::Sink(ExecutionContext &context, DataChunk &
 	D_ASSERT(chunk.ColumnCount() == 1);
 	D_ASSERT(chunk.data[0].GetType() == LogicalType::ROW_TYPE);
 
-	chunk.data[0].Flatten(chunk.size());
+	chunk.data[0].Flatten();
 	const auto row_ids = FlatVector::GetData<row_t>(chunk.data[0]);
 	// No search starts here (the queries come later), so the rows only go to their row group's list
 	for (idx_t i = 0; i < chunk.size(); i++) {
@@ -719,7 +719,7 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 	}
 
 	if (!state.input_started) {
-		input.data[query_column].ToUnifiedFormat(input.size(), state.query_format);
+		input.data[query_column].ToUnifiedFormat(state.query_format);
 		state.next_input_row = 0;
 		state.input_started = true;
 		// Why we need to guard this?

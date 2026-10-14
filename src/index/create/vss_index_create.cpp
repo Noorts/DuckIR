@@ -134,8 +134,8 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 
 	// Chunks arrive with a selection vector when the scan skipped deleted rows or the filter dropped NULL embeddings.
 	const idx_t num_embeddings = input_chunk.size();
-	embedding_column.Flatten(num_embeddings);
-	row_id_column.Flatten(num_embeddings);
+	embedding_column.Flatten();
+	row_id_column.Flatten();
 	const auto row_id_data = FlatVector::GetData<row_t>(row_id_column);
 
 	// A chunk never spans two DuckDB row groups, so the first row id tells which one this chunk belongs to.
