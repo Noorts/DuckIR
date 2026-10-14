@@ -910,7 +910,8 @@ bool VSSIndex::TryMatchDistanceFunction(const unique_ptr<Expression> &expr,
 	return function_matcher->Match(*expr, bindings);
 }
 
-static void TryBindIndexExpressionInternal(Expression &expr, idx_t table_idx, const vector<column_t> &index_columns,
+static void TryBindIndexExpressionInternal(Expression &expr, TableIndex table_idx,
+                                           const vector<column_t> &index_columns,
                                            const vector<ColumnIndex> &table_columns, bool &success, bool &found) {
 	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 		found = true;
@@ -922,7 +923,7 @@ static void TryBindIndexExpressionInternal(Expression &expr, idx_t table_idx, co
 		const auto referenced_column = index_columns[ref.Binding().column_index];
 		for (idx_t i = 0; i < table_columns.size(); i++) {
 			if (table_columns[i].GetPrimaryIndex() == referenced_column) {
-				ref.BindingMutable().column_index = i;
+				ref.BindingMutable().column_index = ProjectionIndex(i);
 				return;
 			}
 		}

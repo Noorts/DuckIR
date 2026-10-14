@@ -9,6 +9,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
@@ -457,7 +458,7 @@ public:
 	static bool TryCollectOutputColumns(LogicalProjection &projection, const vector<reference<LogicalOperator>> &chain,
 	                                    const LogicalGet &get, vector<ColumnBinding> &bindings,
 	                                    vector<ColumnIndex> &column_ids,
-	                                    const optional_idx passed_through_table_index = optional_idx()) {
+	                                    const TableIndex passed_through_table_index = TableIndex()) {
 		bool all_traced = true;
 		for (auto &expression : projection.expressions) {
 			ExpressionIterator::EnumerateExpression(expression, [&](Expression &child) {
@@ -468,8 +469,7 @@ public:
 				if (std::find(bindings.begin(), bindings.end(), binding) != bindings.end()) {
 					return;
 				}
-				if (passed_through_table_index.IsValid() &&
-				    binding.table_index == passed_through_table_index.GetIndex()) {
+				if (passed_through_table_index.IsValid() && binding.table_index == passed_through_table_index) {
 					return;
 				}
 				auto traced_binding = binding;
@@ -496,12 +496,19 @@ public:
 				return false;
 			}
 		}
-		if (get.table_filters.filters.find(column_ids[embedding_column_position].GetPrimaryIndex()) !=
-		    get.table_filters.filters.end()) {
+		const ProjectionIndex embedding_projection_index(embedding_column_position);
+		if (get.table_filters.HasFilter(embedding_projection_index)) {
 			return false;
 		}
+		for (auto &filter : get.table_filters.GetMultiColumnFilters()) {
+			auto &filter_columns = filter->Cast<ExpressionFilter>().column_indexes;
+			if (std::find(filter_columns.begin(), filter_columns.end(), embedding_projection_index) !=
+			    filter_columns.end()) {
+				return false;
+			}
+		}
 		// The bindings that carry the embedding, from the table scan up the chain.
-		vector<ColumnBinding> embedding_bindings {ColumnBinding(get.table_index, embedding_column_position)};
+		vector<ColumnBinding> embedding_bindings {ColumnBinding(get.table_index, embedding_projection_index)};
 		const auto reads_embedding = [&](unique_ptr<Expression> &expression) {
 			bool reads = false;
 			ExpressionIterator::EnumerateExpression(expression, [&](Expression &child) {
@@ -543,7 +550,7 @@ public:
 				if (expression->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF &&
 				    reads_embedding(expression)) {
 					forwards.push_back(expression->Cast<BoundColumnRefExpression>());
-					forwarded_bindings.emplace_back(projection.table_index, i);
+					forwarded_bindings.emplace_back(projection.table_index, ProjectionIndex(i));
 				} else if (reads_embedding(expression)) {
 					return false;
 				}
@@ -587,16 +594,17 @@ public:
 		}
 		if (!get.projection_ids.empty() && std::find(get.projection_ids.begin(), get.projection_ids.end(),
 		                                             rowid_position) == get.projection_ids.end()) {
-			get.projection_ids.push_back(rowid_position);
+			get.projection_ids.push_back(ProjectionIndex(rowid_position));
 		}
-		ColumnBinding rowid_binding(get.table_index, rowid_position);
+		ColumnBinding rowid_binding(get.table_index, ProjectionIndex(rowid_position));
 		for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
 			// To support subquery or view with a residual filter.
 			if (it->get().type == LogicalOperatorType::LOGICAL_PROJECTION) {
 				auto &projection = it->get().Cast<LogicalProjection>();
 				projection.expressions.push_back(
 				    make_uniq<BoundColumnRefExpression>(LogicalType::ROW_TYPE, rowid_binding));
-				rowid_binding = ColumnBinding(projection.table_index, projection.expressions.size() - 1);
+				rowid_binding =
+				    ColumnBinding(projection.table_index, ProjectionIndex(projection.expressions.size() - 1));
 				continue;
 			}
 			// A FILTER and a join forward the bindings of children[0], trimmed by a projection map when it is set.
@@ -613,7 +621,7 @@ public:
 			D_ASSERT(child_position != child_bindings.end());
 			const auto position = static_cast<idx_t>(child_position - child_bindings.begin());
 			if (std::find(projection_map.begin(), projection_map.end(), position) == projection_map.end()) {
-				projection_map.push_back(position);
+				projection_map.push_back(ProjectionIndex(position));
 			}
 		}
 		return rowid_binding;
@@ -811,7 +819,7 @@ public:
 				match.embedding_binding = index_expr_ref.get().Cast<BoundColumnRefExpression>().Binding();
 				auto traced_binding = match.embedding_binding;
 				TryTraceToTableScan(chain, traced_binding);
-				match.embedding_column_position = traced_binding.column_index;
+				match.embedding_column_position = traced_binding.column_index.GetIndex();
 			}
 			return true;
 		}
@@ -888,11 +896,30 @@ public:
 			// that forward its columns, which the search replaces. The table scan becomes the child.
 
 			// Set the table scan's column_ids to include only those needed for the filters and the projected rowid
-			// column.
+			// column. The filters refer to their columns by position in column_ids, so they are renumbered.
+			const auto old_column_ids = get.GetColumnIds();
 			get.ClearColumnIds();
-			for (auto &filter_entry : get.table_filters.filters) {
-				get.AddColumnId(filter_entry.first);
+			unordered_map<ProjectionIndex, ProjectionIndex> new_positions;
+			const auto keep_column = [&](const ProjectionIndex old_position) {
+				auto entry = new_positions.find(old_position);
+				if (entry == new_positions.end()) {
+					entry = new_positions.emplace(old_position, ProjectionIndex(get.GetColumnIds().size())).first;
+					get.GetMutableColumnIds().push_back(old_column_ids[old_position]);
+				}
+				return entry->second;
+			};
+			TableFilterSet table_filters;
+			for (auto &filter_entry : get.table_filters) {
+				table_filters.PushFilter(keep_column(filter_entry.GetIndex()), filter_entry.TakeFilter());
 			}
+			for (auto &filter : get.table_filters.GetMultiColumnFilters()) {
+				auto renumbered_filter = filter->Cast<ExpressionFilter>().Copy();
+				for (auto &column_index : renumbered_filter->column_indexes) {
+					column_index = keep_column(column_index);
+				}
+				table_filters.PushMultiColumnFilter(std::move(renumbered_filter));
+			}
+			get.table_filters = std::move(table_filters);
 			// Add the rowid column (if it has not already been added because it is relied on by pushed-down filters).
 			idx_t rowid_pos = DConstants::INVALID_INDEX;
 			for (idx_t i = 0; i < get.GetColumnIds().size(); i++) {
@@ -908,12 +935,12 @@ public:
 
 			// Set the projection to only include the rowid column.
 			get.projection_ids.clear();
-			get.projection_ids.push_back(rowid_pos);
+			get.projection_ids.push_back(ProjectionIndex(rowid_pos));
 
 			// Re-resolve the get operator types after changing projection
 			get.ResolveOperatorTypes();
 
-			rowid_binding = ColumnBinding(get.table_index, rowid_pos);
+			rowid_binding = ColumnBinding(get.table_index, ProjectionIndex(rowid_pos));
 			return std::move(get_ptr);
 		}
 		// Scenario 3: Filtered search where FILTER operators or joins between the projection and the table scan hold
@@ -931,7 +958,7 @@ public:
 		    make_uniq<LogicalProjection>(input.optimizer.binder.GenerateTableIndex(), std::move(rowid_expressions));
 		rowid_projection->children.push_back(std::move(chain_top));
 
-		rowid_binding = ColumnBinding(rowid_projection->table_index, 0);
+		rowid_binding = ColumnBinding(rowid_projection->table_index, ProjectionIndex(0));
 		return std::move(rowid_projection);
 	}
 
@@ -1028,7 +1055,7 @@ public:
 
 		DetachDynamicFilters(get, chain);
 
-		bool has_pushed_down_filters = !get.table_filters.filters.empty();
+		bool has_pushed_down_filters = get.table_filters.HasFilters() || get.table_filters.HasMultiColumnFilters();
 
 		if (!chain_filters_rows && !has_pushed_down_filters) {
 			// Scenario 1: Non-filtered search.
@@ -1188,7 +1215,7 @@ public:
 		// K is the smallest bound on the row number (`rownum <= K`, `rownum < K + 1` or `rownum = K`). The K nearest
 		// rows of each query get the row numbers 1 to K they get among all rows, so the FILTER's other conditions
 		// (e.g. the OFFSET's `rownum > o`) stay as they are.
-		const ColumnBinding row_number_binding(window.window_index, 0);
+		const ColumnBinding row_number_binding(window.window_index, ProjectionIndex(0));
 		optional_idx smallest_bound;
 		for (auto &condition : op.expressions) {
 			if (!BoundComparisonExpression::IsComparison(*condition)) {
@@ -1239,7 +1266,7 @@ public:
 	static bool GroupsAreQueryRowColumns(const vector<reference<Expression>> &groups, LogicalOperator &top_k_child,
 	                                     const LogicalProjection &distance_projection,
 	                                     const vector<reference<LogicalOperator>> &forwarding_projections,
-	                                     const idx_t query_rows_table_index) {
+	                                     const TableIndex query_rows_table_index) {
 		vector<reference<LogicalOperator>> path;
 		for (reference<LogicalOperator> op = top_k_child;; op = *op.get().children[0]) {
 			path.push_back(op);
@@ -1353,7 +1380,8 @@ public:
 		}
 
 		DetachDynamicFilters(get, chain);
-		const bool is_filtered = chain_filters_rows || !get.table_filters.filters.empty();
+		const bool is_filtered =
+		    chain_filters_rows || get.table_filters.HasFilters() || get.table_filters.HasMultiColumnFilters();
 
 		auto index_join = make_uniq<LogicalVSSIndexJoin>(duck_table, *match.index, limit, query_binding,
 		                                                 std::move(output_column_ids), std::move(output_bindings));
