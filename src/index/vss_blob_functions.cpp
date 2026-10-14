@@ -165,28 +165,37 @@ struct BlobDistanceBindData : public FunctionData {
 	}
 };
 
-// Bind for (BLOB, ARRAY) - blob is arg 0, array is arg 1
-static unique_ptr<FunctionData> BlobArrayDistanceBind(ClientContext &context, ScalarFunction &bound_function,
-                                                      vector<unique_ptr<Expression>> &arguments) {
-	auto &array_type = arguments[1]->GetReturnType();
+// Resolve types for (BLOB, ARRAY) - blob is arg 0, array is arg 1
+static void BlobArrayDistanceResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	auto &bound_function = input.GetBoundFunction();
+	auto &array_type = input.GetArgumentType(1);
 	if (array_type.id() != LogicalTypeId::ARRAY) {
-		throw BinderException("%s: second argument must be an ARRAY type", bound_function.name);
+		throw BinderException("%s: second argument must be an ARRAY type",
+		                      bound_function.GetName().GetIdentifierName());
 	}
 	auto array_size = ArrayType::GetSize(array_type);
-	bound_function.arguments[1] = LogicalType::ARRAY(LogicalType::FLOAT, array_size);
-	return make_uniq<BlobDistanceBindData>(array_size);
+	bound_function.GetArguments()[1] = LogicalType::ARRAY(LogicalType::FLOAT, array_size);
+}
+
+// Bind for (BLOB, ARRAY) - blob is arg 0, array is arg 1
+static unique_ptr<FunctionData> BlobArrayDistanceBind(BindScalarFunctionInput &input) {
+	return make_uniq<BlobDistanceBindData>(ArrayType::GetSize(input.GetBoundFunction().GetArguments()[1]));
+}
+
+// Resolve types for (ARRAY, BLOB) - array is arg 0, blob is arg 1
+static void ArrayBlobDistanceResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	auto &bound_function = input.GetBoundFunction();
+	auto &array_type = input.GetArgumentType(0);
+	if (array_type.id() != LogicalTypeId::ARRAY) {
+		throw BinderException("%s: first argument must be an ARRAY type", bound_function.GetName().GetIdentifierName());
+	}
+	auto array_size = ArrayType::GetSize(array_type);
+	bound_function.GetArguments()[0] = LogicalType::ARRAY(LogicalType::FLOAT, array_size);
 }
 
 // Bind for (ARRAY, BLOB) - array is arg 0, blob is arg 1
-static unique_ptr<FunctionData> ArrayBlobDistanceBind(ClientContext &context, ScalarFunction &bound_function,
-                                                      vector<unique_ptr<Expression>> &arguments) {
-	auto &array_type = arguments[0]->GetReturnType();
-	if (array_type.id() != LogicalTypeId::ARRAY) {
-		throw BinderException("%s: first argument must be an ARRAY type", bound_function.name);
-	}
-	auto array_size = ArrayType::GetSize(array_type);
-	bound_function.arguments[0] = LogicalType::ARRAY(LogicalType::FLOAT, array_size);
-	return make_uniq<BlobDistanceBindData>(array_size);
+static unique_ptr<FunctionData> ArrayBlobDistanceBind(BindScalarFunctionInput &input) {
+	return make_uniq<BlobDistanceBindData>(ArrayType::GetSize(input.GetBoundFunction().GetArguments()[0]));
 }
 
 // Execute: (BLOB, ARRAY<FLOAT>[N]) → FLOAT
@@ -210,7 +219,7 @@ static void BlobArrayDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 	auto &array_child = ArrayVector::GetEntry(array_vec);
 	auto array_child_data = FlatVector::GetData<float>(array_child);
 
-	auto res_data = FlatVector::GetData<float>(result);
+	auto res_data = FlatVector::GetDataMutable<float>(result);
 
 	auto decoded = make_unsafe_uniq_array<float>(array_size);
 
@@ -259,7 +268,7 @@ static void ArrayBlobDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 	blob_vec.ToUnifiedFormat(count, blob_format);
 	auto blob_data = UnifiedVectorFormat::GetData<string_t>(blob_format);
 
-	auto res_data = FlatVector::GetData<float>(result);
+	auto res_data = FlatVector::GetDataMutable<float>(result);
 
 	auto decoded = make_unsafe_uniq_array<float>(array_size);
 
@@ -289,17 +298,19 @@ static void ArrayBlobDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 }
 
 template <class OP>
-static void RegisterDistanceOverloads(ExtensionLoader &loader, const string &func_name) {
+static void RegisterDistanceOverloads(ExtensionLoader &loader, const Identifier &func_name) {
 	auto array_type = LogicalType::ARRAY(LogicalType::FLOAT, optional_idx());
 
 	// (BLOB, ARRAY<FLOAT>[N]) → FLOAT
 	ScalarFunction blob_array(func_name, {LogicalType::BLOB, array_type}, LogicalType::FLOAT,
 	                          BlobArrayDistanceExecute<OP>, BlobArrayDistanceBind);
+	blob_array.SetResolveTypesCallback(BlobArrayDistanceResolveTypes);
 	loader.AddFunctionOverload(blob_array);
 
 	// (ARRAY<FLOAT>[N], BLOB) → FLOAT
 	ScalarFunction array_blob(func_name, {array_type, LogicalType::BLOB}, LogicalType::FLOAT,
 	                          ArrayBlobDistanceExecute<OP>, ArrayBlobDistanceBind);
+	array_blob.SetResolveTypesCallback(ArrayBlobDistanceResolveTypes);
 	loader.AddFunctionOverload(array_blob);
 }
 
