@@ -109,7 +109,7 @@ Available options:
 - `n_probe`: Increasing `n_probe` increases the effort spent during vector search, thus increasing recall, but also increasing search latency. You can set it at search time using `duckir_vss_n_probe` (see below).
   - `[0, 2147483647]`. *Default* is `24`. This is per row group, which likely has 480 lists. Set `n_probe` to `0` to run a brute force search. 
 - `seed`
-  - `[-2147483647, 2147483647]`. *Default* is random.
+  - `[-2147483648, 2147483647]`. *Default* is random.
 
 ### Vector Search
 

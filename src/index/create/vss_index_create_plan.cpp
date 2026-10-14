@@ -62,7 +62,7 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 			}
 		} else if (StringUtil::CIEquals(k, "seed")) {
 			if (v.type() != LogicalType::INTEGER) {
-				throw BinderException("DuckIR VSS index 'seed' must be between -2147483647 and 2147483647, inclusive");
+				throw BinderException("DuckIR VSS index 'seed' must be between -2147483648 and 2147483647, inclusive");
 			}
 		} else {
 			throw BinderException("Unknown option for DuckIR VSS index: '%s'", k);
