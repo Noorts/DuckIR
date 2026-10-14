@@ -132,28 +132,23 @@ static void VSSIndexInfoExecute(ClientContext &context, TableFunctionInput &data
 		auto &table_entry = index_entry.schema.catalog.GetEntry<TableCatalogEntry>(context, index_entry.GetSchemaName(),
 		                                                                           index_entry.GetTableName());
 		auto &storage = table_entry.GetStorage();
-		VSSIndex *vss_index = nullptr;
-
 		auto &table_info = *storage.GetDataTableInfo();
 
 		table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
-		for (auto &index : table_info.GetIndexes().Indexes()) {
-			if (!index.IsBound() || VSSIndex::TYPE_NAME != index.GetIndexType()) {
+		unique_ptr<VSSIndexStats> stats;
+		for (auto entry : table_info.GetIndexes().IndexEntries()) {
+			if (entry->GetBindState() != IndexBindState::BOUND || entry->GetIndexType() != VSSIndex::TYPE_NAME ||
+			    entry->GetName() != index_entry.name) {
 				continue;
 			}
-			auto &cast_index = index.Cast<VSSIndex>();
-			if (cast_index.name == index_entry.name) {
-				vss_index = &cast_index;
-				break;
-			}
-			continue;
-		};
-
-		if (!vss_index) {
-			throw BinderException("Index %s not found", index_entry.name);
+			auto index = entry->GetReadHandle<VSSIndex>();
+			stats = index->GetStats(context);
+			break;
 		}
 
-		auto stats = vss_index->GetStats(context);
+		if (!stats) {
+			throw BinderException("Index %s not found", index_entry.name);
+		}
 		IndexInfoColumnInput col_input {index_entry, table_entry, *stats};
 
 		for (idx_t col = 0; col < sizeof(INDEX_INFO_COLUMNS) / sizeof(INDEX_INFO_COLUMNS[0]); col++) {

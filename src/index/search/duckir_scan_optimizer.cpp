@@ -769,22 +769,24 @@ public:
 		vector<reference<Expression>> bindings;
 
 		table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
-		for (auto &index : table_info.GetIndexes().Indexes()) {
-			if (!index.IsBound() || VSSIndex::TYPE_NAME != index.GetIndexType()) {
+		for (auto entry : table_info.GetIndexes().IndexEntries()) {
+			if (entry->GetBindState() != IndexBindState::BOUND || entry->GetIndexType() != VSSIndex::TYPE_NAME) {
 				continue;
 			}
-			auto &cast_index = index.Cast<VSSIndex>();
+			// Shared access while matching. A bound index object stays in place until the index is dropped, so the
+			// plan keeps the pointer after this handle releases its lock.
+			auto index = entry->GetReadHandle<VSSIndex>();
 
 			// Reset the bindings
 			bindings.clear();
 
 			// Check that the projection expression is a distance function that matches the index
-			if (!cast_index.TryMatchDistanceFunction(distance_expression, bindings)) {
+			if (!index->TryMatchDistanceFunction(distance_expression, bindings)) {
 				continue;
 			}
 			// Check that the DuckIR VSS index actually indexes the expression
 			unique_ptr<Expression> index_expr;
-			if (!cast_index.TryBindIndexExpression(get, index_expr)) {
+			if (!index->TryBindIndexExpression(get, index_expr)) {
 				continue;
 			}
 
@@ -813,7 +815,7 @@ public:
 					continue;
 				}
 			}
-			match.index = cast_index;
+			match.index = const_cast<VSSIndex *>(index.operator->());
 			match.query_argument = query_expr_ref.get();
 			if (index_expr_ref.get().GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 				match.embedding_binding = index_expr_ref.get().Cast<BoundColumnRefExpression>().Binding();
