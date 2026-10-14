@@ -23,7 +23,7 @@ VSSIndex::VSSIndex(const string &name, IndexConstraintType index_constraint_type
                    AttachedDatabase &db, const case_insensitive_map_t<Value> &index_creation_options,
                    const IndexStorageInfo &persistence_info)
     : BoundIndex(name, TYPE_NAME, index_constraint_type, column_ids, table_io_manager, unbound_expressions, db),
-      buffer_manager(BufferManager::GetBufferManager(db)) {
+      memory_allocator(Allocator::Get(db.GetDatabase())), buffer_manager(BufferManager::GetBufferManager(db)) {
 	if (index_constraint_type != IndexConstraintType::NONE) {
 		throw NotImplementedException("DuckIR VSS indexes do not support unique or primary key constraints");
 	}
@@ -93,10 +93,10 @@ VSSIndex::VSSIndex(const string &name, IndexConstraintType index_constraint_type
 		D_ASSERT(ArrayType::GetChildType(embedding_type).id() == LogicalTypeId::FLOAT);
 
 		vss_wrapper = make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, row_group_size,
-		                                       std::move(rotation_matrix));
+		                                       std::move(rotation_matrix), memory_allocator);
 	} else if (quantization == PDX::Quantization::U8) {
 		vss_wrapper = make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, row_group_size,
-		                                      std::move(rotation_matrix));
+		                                      std::move(rotation_matrix), memory_allocator);
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
@@ -132,7 +132,8 @@ VSSIndex::VSSIndex(const string &name, IndexConstraintType index_constraint_type
 	}
 
 	function_matcher = MakeFunctionMatcher(*vss_wrapper.get());
-	embedding_preprocessor = make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix());
+	embedding_preprocessor =
+	    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
 }
 
 // Indexes are destroyed before DuckDB's buffer manager (DatabaseInstance::~DatabaseInstance).

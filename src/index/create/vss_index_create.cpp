@@ -35,8 +35,9 @@ public:
 	                                       TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
 	                                       op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
 	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->return_type)),
-	      embedding_preprocessor(
-	          make_uniq<EmbeddingPreprocessor>(num_dimensions, global_index->Cast<VSSIndex>().GetRotationMatrix())),
+	      embedding_preprocessor(make_uniq<EmbeddingPreprocessor>(num_dimensions,
+	                                                              global_index->Cast<VSSIndex>().GetRotationMatrix(),
+	                                                              global_index->Cast<VSSIndex>().GetMemoryAllocator())),
 	      is_normalized(global_index->Cast<VSSIndex>().IsNormalized()) {
 		const auto &index = global_index->Cast<VSSIndex>();
 		const idx_t row_group_size = index.GetRowGroupSize();
