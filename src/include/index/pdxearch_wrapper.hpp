@@ -273,25 +273,49 @@ public:
 		return *row_groups[row_group_idx]->index;
 	}
 
-	// Maintenance, one writer at a time (the index's exclusive lock). The row belongs to the DuckDB row group that
-	// `row_groups[row_group_idx]` mirrors; the row group's end grows with it.
+	// Maintenance, one writer at a time (the index's exclusive lock). The rows belong to the DuckDB row group that
+	// `row_groups[row_group_idx]` mirrors; the row group's end grows with them. They are appended in bulk,
+	// after moving the ones to append to the front of row_ids' embeddings.
 	// If the rowgroup is a Flat index and it has enough embeddings, it is promoted to an IVF index.
-	void AppendRow(const idx_t row_group_idx, const row_t row_id, const float *const transformed_embedding,
-	               optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager,
-	               PDX::ParallelExecutor *const executor) {
+	void AppendRows(const idx_t row_group_idx, const row_t *const row_ids, float *const transformed_embeddings,
+	                const idx_t count, optional_ptr<PDXearchBlockChainReader> reader, BufferManager &buffer_manager,
+	                PDX::ParallelExecutor *const executor) {
 		auto &row_group = *row_groups[row_group_idx];
-		D_ASSERT(row_id >= row_group.row_start);
-		// Rare: a rebuild of this row group (e.g., a checkpoint merge) ran earlier in the same
-		// sync and fetched all its committed rows, including (some) staged ones. The staged range now
-		// brings them here a second time.
-		if (row_group.index->Contains(static_cast<size_t>(row_id))) {
+		const idx_t num_dimensions = GetNumDimensions();
+		std::vector<size_t> ids;
+		ids.reserve(count);
+		row_t max_row_id = row_group.row_start;
+		for (idx_t i = 0; i < count; i++) {
+			D_ASSERT(row_ids[i] >= row_group.row_start);
+			// Rare: a rebuild of this row group (e.g., a checkpoint merge) ran earlier in the same
+			// sync and fetched all its committed rows, including (some) staged ones. The staged range now
+			// brings them here a second time.
+			if (row_group.index->Contains(static_cast<size_t>(row_ids[i]))) {
+				continue;
+			}
+			if (ids.size() != i) {
+				memcpy(transformed_embeddings + ids.size() * num_dimensions,
+				       transformed_embeddings + i * num_dimensions, num_dimensions * sizeof(float));
+			}
+			ids.push_back(static_cast<size_t>(row_ids[i]));
+			max_row_id = MaxValue<row_t>(max_row_id, row_ids[i]);
+		}
+		if (ids.empty()) {
 			return;
 		}
 		if (row_group.cluster_cache) {
 			MaterializeRowGroup(row_group, *reader, buffer_manager);
 		}
-		row_group.index->Append(static_cast<size_t>(row_id), transformed_embedding);
-		row_group.row_end = MaxValue<row_t>(row_group.row_end, row_id + 1);
+		// The executor ends with the sync: later appends and deletes run serially.
+		row_group.index->SetExecutor(executor);
+		try {
+			row_group.index->BulkAppend(ids.data(), transformed_embeddings, ids.size());
+		} catch (...) {
+			row_group.index->SetExecutor(nullptr);
+			throw;
+		}
+		row_group.index->SetExecutor(nullptr);
+		row_group.row_end = MaxValue<row_t>(row_group.row_end, max_row_id + 1);
 		row_group.is_dirty = true;
 		auto flat_index = dynamic_cast<PDX::FlatIndex *>(row_group.index.get());
 		if (flat_index && flat_index->GetClusterSize(0) >= MIN_EMBEDDINGS_FOR_CLUSTERING) {
