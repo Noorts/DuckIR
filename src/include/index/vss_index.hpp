@@ -2,6 +2,7 @@
 
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/execution/index/index_pointer.hpp"
+#include "duckdb/execution/index/index_type.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
