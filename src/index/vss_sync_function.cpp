@@ -51,8 +51,9 @@ static shared_ptr<IndexEntry> FindVSSIndex(ClientContext &context, const string 
 		throw BinderException("DuckIR VSS index '%s' not found", index_name);
 	}
 
-	auto &table_entry = index_entry->schema.catalog.GetEntry<TableCatalogEntry>(context, index_entry->GetSchemaName(),
-	                                                                            index_entry->GetTableName());
+	auto &table_entry = Catalog::GetEntry<TableCatalogEntry>(
+	    context, QualifiedName(index_entry->schema.catalog.GetName(), index_entry->GetSchemaName(),
+	                           index_entry->GetTableName()));
 	table = &table_entry.GetStorage();
 	auto &table_info = *table_entry.GetStorage().GetDataTableInfo();
 	table_info.BindIndexes(context, VSSIndex::TYPE_NAME);

@@ -57,7 +57,7 @@ static void EncodeBlobFunction(DataChunk &args, ExpressionState &state, Vector &
 	UnifiedVectorFormat input_format;
 	input.ToUnifiedFormat(input_format);
 
-	auto &child_vec = ListVector::GetEntry(input);
+	auto &child_vec = ListVector::GetChild(input);
 	auto child_data = FlatVector::GetData<float>(child_vec);
 	auto list_entries = UnifiedVectorFormat::GetData<list_entry_t>(input_format);
 
@@ -89,7 +89,7 @@ static void DecodeBlobFunction(DataChunk &args, ExpressionState &state, Vector &
 
 	auto input_data = UnifiedVectorFormat::GetData<string_t>(input_format);
 
-	auto &child_vec = ListVector::GetEntry(result);
+	auto &child_vec = ListVector::GetChildMutable(result);
 	idx_t total_elements = 0;
 
 	// First pass: count total elements
@@ -216,7 +216,7 @@ static void BlobArrayDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 	UnifiedVectorFormat array_format;
 	array_vec.ToUnifiedFormat(array_format);
 
-	auto &array_child = ArrayVector::GetEntry(array_vec);
+	auto &array_child = ArrayVector::GetChild(array_vec);
 	auto array_child_data = FlatVector::GetData<float>(array_child);
 
 	auto res_data = FlatVector::GetDataMutable<float>(result);
@@ -261,7 +261,7 @@ static void ArrayBlobDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 
 	UnifiedVectorFormat array_format;
 	array_vec.ToUnifiedFormat(array_format);
-	auto &array_child = ArrayVector::GetEntry(array_vec);
+	auto &array_child = ArrayVector::GetChild(array_vec);
 	auto array_child_data = FlatVector::GetData<float>(array_child);
 
 	UnifiedVectorFormat blob_format;

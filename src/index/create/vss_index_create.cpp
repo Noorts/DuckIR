@@ -170,7 +170,7 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 	D_ASSERT(l_sink.row_group_embeddings_count + num_embeddings <= row_group.count);
 
 	g_sink.embedding_preprocessor->PreprocessEmbeddings(
-	    FlatVector::GetDataMutable<float>(ArrayVector::GetEntry(embedding_column)),
+	    FlatVector::GetDataMutable<float>(ArrayVector::GetChildMutable(embedding_column)),
 	    reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()) +
 	        (l_sink.row_group_embeddings_count * g_sink.num_dimensions),
 	    num_embeddings, g_sink.is_normalized);

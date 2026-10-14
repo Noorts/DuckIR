@@ -129,8 +129,9 @@ static void VSSIndexInfoExecute(ClientContext &context, TableFunctionInput &data
 	idx_t row = 0;
 	while (data.offset < data.entries.size() && row < STANDARD_VECTOR_SIZE) {
 		auto &index_entry = data.entries[data.offset++].get();
-		auto &table_entry = index_entry.schema.catalog.GetEntry<TableCatalogEntry>(context, index_entry.GetSchemaName(),
-		                                                                           index_entry.GetTableName());
+		auto &table_entry = Catalog::GetEntry<TableCatalogEntry>(
+		    context, QualifiedName(index_entry.schema.catalog.GetName(), index_entry.GetSchemaName(),
+		                           index_entry.GetTableName()));
 		auto &storage = table_entry.GetStorage();
 		auto &table_info = *storage.GetDataTableInfo();
 

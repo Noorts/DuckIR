@@ -526,7 +526,7 @@ static bool TryReadQuery(const PhysicalVSSIndexJoin &op, DataChunk &input, const
 		DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), raw_query);
 		return true;
 	}
-	auto &query_elements = ArrayVector::GetEntry(query_vector);
+	auto &query_elements = ArrayVector::GetChild(query_vector);
 	const auto query_data = FlatVector::GetData<float>(query_elements);
 	const auto &query_validity = FlatVector::Validity(query_elements);
 	const auto offset = query_idx * num_dimensions;

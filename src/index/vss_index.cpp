@@ -288,7 +288,7 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 		embedding_column.Flatten();
 		fetched.data[1].Flatten();
 		const auto &validity = FlatVector::Validity(embedding_column);
-		const auto fetched_embeddings = FlatVector::GetData<float>(ArrayVector::GetEntry(embedding_column));
+		const auto fetched_embeddings = FlatVector::GetData<float>(ArrayVector::GetChild(embedding_column));
 		const auto fetched_row_ids = FlatVector::GetData<row_t>(fetched.data[1]);
 		idx_t batch_count = 0;
 		for (idx_t i = 0; i < fetched_count; i++) {
