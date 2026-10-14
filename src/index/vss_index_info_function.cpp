@@ -90,7 +90,7 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
 };
 
 static unique_ptr<FunctionData> VSSIndexInfoBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
 	for (const auto &col : INDEX_INFO_COLUMNS) {
 		names.emplace_back(col.name);
 		return_types.push_back(col.type);

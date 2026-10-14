@@ -21,9 +21,10 @@
 
 namespace duckdb {
 
-VSSIndex::VSSIndex(const string &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
-                   TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
-                   AttachedDatabase &db, const case_insensitive_map_t<Value> &index_creation_options,
+VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_type,
+                   const vector<column_t> &column_ids, TableIOManager &table_io_manager,
+                   const vector<unique_ptr<Expression>> &unbound_expressions, AttachedDatabase &db,
+                   const case_insensitive_map_t<Value> &index_creation_options,
                    const IndexStorageInfo &persistence_info)
     : BoundIndex(name, TYPE_NAME, index_constraint_type, column_ids, table_io_manager, unbound_expressions, db),
       buffer_manager(BufferManager::GetBufferManager(db)) {

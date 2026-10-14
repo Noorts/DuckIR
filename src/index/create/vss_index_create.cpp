@@ -32,7 +32,7 @@ PhysicalCreateVSSIndex::PhysicalCreateVSSIndex(PhysicalPlan &physical_plan, cons
 class CreateVSSIndexGlobalSinkState : public GlobalSinkState {
 public:
 	CreateVSSIndexGlobalSinkState(const PhysicalCreateVSSIndex &op, ClientContext &context)
-	    : global_index(make_uniq<VSSIndex>(op.info->index_name, op.info->constraint_type, op.storage_ids,
+	    : global_index(make_uniq<VSSIndex>(op.info->GetIndexName(), op.info->constraint_type, op.storage_ids,
 	                                       TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
 	                                       op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
 	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->GetReturnType())),
@@ -208,10 +208,10 @@ SinkFinalizeType PhysicalCreateVSSIndex::Finalize(Pipeline &pipeline, Event &eve
 	info->column_ids = storage_ids;
 
 	// Ensure that the index does not yet exist in the catalog.
-	auto entry = schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::INDEX_ENTRY, info->index_name);
+	auto entry = schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::INDEX_ENTRY, info->GetIndexName());
 	if (entry) {
 		if (info->on_conflict != OnCreateConflict::IGNORE_ON_CONFLICT) {
-			throw CatalogException("Index with name \"%s\" already exists!", info->index_name);
+			throw CatalogException("Index with name \"%s\" already exists!", info->GetIndexName());
 		}
 		// IF NOT EXISTS on existing index. We are done.
 		return SinkFinalizeType::READY;

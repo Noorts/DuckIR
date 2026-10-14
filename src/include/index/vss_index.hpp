@@ -142,7 +142,7 @@ private:
 	StorageLock rwlock;
 
 public:
-	VSSIndex(const string &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
+	VSSIndex(const Identifier &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
 	         TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
 	         AttachedDatabase &db, const case_insensitive_map_t<Value> &options,
 	         const IndexStorageInfo &info = IndexStorageInfo());

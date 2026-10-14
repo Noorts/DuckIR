@@ -223,8 +223,8 @@ SourceResultType PhysicalVSSIndexScan::GetDataInternal(ExecutionContext &context
 
 InsertionOrderPreservingMap<string> PhysicalVSSIndexScan::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table"] = bind_data->table.name;
-	result["DuckIR VSS Index"] = bind_data->index.GetIndexName();
+	result["Table"] = bind_data->table.name.GetIdentifierName();
+	result["DuckIR VSS Index"] = bind_data->index.GetIndexName().GetIdentifierName();
 	result["Projections"] = ColumnNamesToString(bind_data->table, column_ids);
 	result["Total Clusters"] = StringUtil::Format("%zu", bind_data->index.Cast<VSSIndex>().GetTotalNumClusters());
 	result["Row Groups"] = StringUtil::Format("%zu", bind_data->index.Cast<VSSIndex>().GetNumRowGroups());

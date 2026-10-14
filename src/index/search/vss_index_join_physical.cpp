@@ -812,8 +812,8 @@ vector<const_reference<PhysicalOperator>> PhysicalVSSIndexJoin::GetSources() con
 // Defines this operator's details shown in the query plan.
 InsertionOrderPreservingMap<string> PhysicalVSSIndexJoin::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table"] = table.name;
-	result["DuckIR VSS Index"] = index.GetIndexName();
+	result["Table"] = table.name.GetIdentifierName();
+	result["DuckIR VSS Index"] = index.GetIndexName().GetIdentifierName();
 	result["Projections"] = ColumnNamesToString(table, column_ids);
 	result["K"] = StringUtil::Format("%llu", limit);
 	SetEstimatedCardinality(result, estimated_cardinality);
