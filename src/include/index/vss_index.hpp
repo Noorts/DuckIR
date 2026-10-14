@@ -139,7 +139,7 @@ private:
 	// maintenance operations. Hence, we add this rwlock.
 	//
 	// See the pull request this was introduced in for more context.
-	StorageLock rwlock;
+	mutable StorageLock rwlock;
 
 public:
 	VSSIndex(const Identifier &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
@@ -216,7 +216,7 @@ public:
 
 	void VerifyBuffers(IndexLock &state) override;
 
-	idx_t GetInMemorySize(IndexLock &state) override;
+	idx_t GetInMemorySize(IndexLock &state) const override;
 
 	unique_ptr<VSSIndexStats> GetStats(const ClientContext &context) const;
 
@@ -233,7 +233,7 @@ public:
 	 ******************************************************************/
 
 	string GetConstraintViolationMessage(VerifyExistenceType verify_type, idx_t failed_index,
-	                                     DataChunk &input) override {
+	                                     DataChunk &input) const override {
 		return "Constraint violation in DuckIR VSS index";
 	}
 

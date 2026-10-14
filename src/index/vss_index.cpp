@@ -258,7 +258,8 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 	rows_returned = 0;
 	// Fetches every committed row, whatever the calling transaction's snapshot. The mirror
 	// holds the committed state, and rows a query must not see are dropped when it fetches its results.
-	const TransactionData committed(MAX_TRANSACTION_ID, DuckTransactionManager::Get(db).GetLastCommit() + 1);
+	const TransactionData committed(MAX_TRANSACTION_ID,
+	                                VisibilityBound::Through(DuckTransactionManager::Get(db).GetLastCommit()));
 	const vector<StorageIndex> fetch_column_ids {StorageIndex(GetColumnIds()[0]), StorageIndex()};
 	DataChunk fetched;
 	fetched.Initialize(Allocator::Get(db), {logical_types[0], LogicalType::ROW_TYPE});
@@ -658,7 +659,7 @@ void VSSIndex::VerifyBuffers(IndexLock &state) {
 	allocator->VerifyBuffers();
 }
 
-idx_t VSSIndex::GetInMemorySize(IndexLock &state) {
+idx_t VSSIndex::GetInMemorySize(IndexLock &state) const {
 	auto _lock = rwlock.GetSharedLock();
 
 	// The allocator only holds the buffers that were not written to disk yet.

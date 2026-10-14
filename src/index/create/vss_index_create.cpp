@@ -224,7 +224,7 @@ SinkFinalizeType PhysicalCreateVSSIndex::Finalize(Pipeline &pipeline, Event &eve
 	index.initial_index_size = g_sink.global_index->GetInMemorySize();
 
 	// Add the index to the storage.
-	storage.AddIndex(std::move(g_sink.global_index));
+	storage.AddIndex(std::move(g_sink.global_index), index.oid);
 	return SinkFinalizeType::READY;
 }
 
