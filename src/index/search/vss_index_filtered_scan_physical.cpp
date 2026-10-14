@@ -176,7 +176,7 @@ static void BeginSearchForRowGroupOrBufferRowIds(VSSIndex &index, PhysicalFilter
 		l_sink.search_cursors.push_back(BeginSearchForStagedRowGroup(index, g_sink, row_group_idx, passing_rowids));
 		return;
 	}
-	const auto guard = g_sink.Lock();
+	const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	auto &late_passing_rowids = g_sink.late_passing_rowids[row_group_idx];
 	late_passing_rowids.insert(late_passing_rowids.end(), passing_rowids.begin(), passing_rowids.end());
 }
@@ -242,7 +242,7 @@ SinkCombineResultType PhysicalVSSIndexFilteredScan::Combine(ExecutionContext &co
 	}
 
 	// Merge this thread's search cursors into the global sink state.
-	const auto guard = g_sink.Lock();
+	const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	for (auto &search_cursor : l_sink.search_cursors) {
 		g_sink.search_cursors.push_back(std::move(search_cursor));
 	}
@@ -325,7 +325,7 @@ public:
 		// The search keeps its own copy of the filter.
 		std::vector<size_t>().swap(late_passing_rowids);
 		{
-			const auto guard = g_sink.Lock();
+			const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 			g_sink.search_cursors.push_back(std::move(search_cursor));
 		}
 		event->FinishTask();

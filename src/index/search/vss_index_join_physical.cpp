@@ -213,7 +213,7 @@ SinkCombineResultType PhysicalVSSIndexJoin::Combine(ExecutionContext &context, O
 	auto &g_sink = input.global_state.Cast<VSSIndexJoinGlobalSinkState>();
 	auto &l_sink = input.local_state.Cast<VSSIndexJoinLocalSinkState>();
 
-	const auto guard = g_sink.Lock();
+	const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	for (idx_t row_group_idx = 0; row_group_idx < l_sink.passing_row_ids_per_row_group.size(); row_group_idx++) {
 		auto &local_row_ids = l_sink.passing_row_ids_per_row_group[row_group_idx];
 		auto &global_row_ids = g_sink.search.passing_row_ids_per_row_group[row_group_idx];

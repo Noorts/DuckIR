@@ -103,9 +103,9 @@ static void FlushRowGroup(CreateVSSIndexGlobalSinkState &g_sink, CreateVSSIndexL
 	}
 	l_sink.row_group_embeddings.Destroy();
 	l_sink.has_row_group = false;
-	auto guard = g_sink.Lock();
+	annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	g_sink.running_builds--;
-	g_sink.UnblockTasks(guard);
+	g_sink.UnblockTasks();
 }
 
 unique_ptr<LocalSinkState> PhysicalCreateVSSIndex::GetLocalSinkState(ExecutionContext &context) const {
@@ -152,9 +152,9 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 	if (!l_sink.has_row_group) {
 		// Without a free build slot, DuckDB runs this chunk again once a build gives its slot back.
 		{
-			auto guard = g_sink.Lock();
+			annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 			if (g_sink.running_builds == g_sink.max_concurrent_builds) {
-				return g_sink.BlockSink(guard, input.interrupt_state);
+				return g_sink.BlockSink(input.interrupt_state);
 			}
 			g_sink.running_builds++;
 		}

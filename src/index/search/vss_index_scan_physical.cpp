@@ -159,8 +159,8 @@ public:
 
 		g_state.search_completed = true;
 
-		const auto guard = g_state.Lock();
-		g_state.UnblockTasks(guard);
+		const annotated_lock_guard<annotated_mutex> guard(g_state.lock);
+		g_state.UnblockTasks();
 	}
 };
 
@@ -188,9 +188,9 @@ SourceResultType PhysicalVSSIndexScan::GetDataInternal(ExecutionContext &context
 	}
 
 	// Block until the search is done.
-	const auto guard = g_state.Lock();
+	const annotated_lock_guard<annotated_mutex> guard(g_state.lock);
 	if (!g_state.search_completed) {
-		return g_state.BlockSource(guard, input.interrupt_state);
+		return g_state.BlockSource(input.interrupt_state);
 	}
 
 	// Search is done, now fetch and emit results. Note that if K > STANDARD_VECTOR_SIZE, then GetData will be called
