@@ -1191,25 +1191,27 @@ public:
 		const ColumnBinding row_number_binding(window.window_index, 0);
 		optional_idx smallest_bound;
 		for (auto &condition : op.expressions) {
-			if (condition->GetExpressionClass() != ExpressionClass::BOUND_COMPARISON) {
+			if (!BoundComparisonExpression::IsComparison(*condition)) {
 				continue;
 			}
-			auto &comparison = condition->Cast<BoundComparisonExpression>();
-			if (comparison.left->type != ExpressionType::BOUND_COLUMN_REF ||
-			    comparison.right->type != ExpressionType::VALUE_CONSTANT) {
+			auto &comparison = condition->Cast<BoundFunctionExpression>();
+			auto &left = BoundComparisonExpression::Left(comparison);
+			auto &right = BoundComparisonExpression::Right(comparison);
+			if (left.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF ||
+			    right.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 				continue;
 			}
-			auto binding = comparison.left->Cast<BoundColumnRefExpression>().binding;
-			auto &bound_value = comparison.right->Cast<BoundConstantExpression>().value;
+			auto binding = left.Cast<BoundColumnRefExpression>().Binding();
+			auto &bound_value = right.Cast<BoundConstantExpression>().GetValue();
 			if (!TryTraceToTableScan(path, binding) || binding != row_number_binding || bound_value.IsNull() ||
 			    bound_value.type().id() != LogicalTypeId::BIGINT) {
 				continue;
 			}
 			auto bound = bound_value.GetValue<int64_t>();
-			if (comparison.type == ExpressionType::COMPARE_LESSTHAN) {
+			if (comparison.GetExpressionType() == ExpressionType::COMPARE_LESSTHAN) {
 				bound -= 1;
-			} else if (comparison.type != ExpressionType::COMPARE_LESSTHANOREQUALTO &&
-			           comparison.type != ExpressionType::COMPARE_EQUAL) {
+			} else if (comparison.GetExpressionType() != ExpressionType::COMPARE_LESSTHANOREQUALTO &&
+			           comparison.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
 				continue;
 			}
 			if (bound <= 0) {
