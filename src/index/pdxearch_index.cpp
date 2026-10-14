@@ -215,14 +215,17 @@ PDXearchRowRange PDXearchIndex::GetRowGroupRange(const idx_t row_group_idx) cons
 	return {row_group.row_start, row_group.row_end};
 }
 
-void PDXearchIndex::AppendRow(const idx_t row_group_idx, const row_t row_id, const float *const transformed_embedding,
-                              PDX::ParallelExecutor *const executor) {
+void PDXearchIndex::AppendRows(const idx_t row_group_idx, const row_t *const row_ids,
+                               float *const transformed_embeddings, const idx_t count,
+                               PDX::ParallelExecutor *const executor) {
 	if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
 		static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())
-		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get(), buffer_manager, executor);
+		    ->AppendRows(row_group_idx, row_ids, transformed_embeddings, count, storage_reader.get(), buffer_manager,
+		                 executor);
 	} else {
 		static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())
-		    ->AppendRow(row_group_idx, row_id, transformed_embedding, storage_reader.get(), buffer_manager, executor);
+		    ->AppendRows(row_group_idx, row_ids, transformed_embeddings, count, storage_reader.get(), buffer_manager,
+		                 executor);
 	}
 }
 
@@ -442,9 +445,7 @@ void PDXearchIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 				UpdateReservedMemory(
 				    static_cast<int64_t>(EstimateBuildHeapBytes(static_cast<idx_t>(range.end - range.start))));
 			}
-			for (idx_t i = 0; i < count; i++) {
-				AppendRow(row_group_idx.GetIndex(), row_ids[i], embeddings + i * num_dimensions, &executor);
-			}
+			AppendRows(row_group_idx.GetIndex(), row_ids.get(), embeddings, count, &executor);
 		} else {
 			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
 		}

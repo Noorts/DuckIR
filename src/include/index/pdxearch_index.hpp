@@ -67,8 +67,8 @@ private:
 	// evicted.
 	void UpdateReservedMemory(int64_t delta);
 
-	void AppendRow(idx_t row_group_idx, row_t row_id, const float *transformed_embedding,
-	               PDX::ParallelExecutor *executor);
+	void AppendRows(idx_t row_group_idx, const row_t *row_ids, float *transformed_embeddings, idx_t count,
+	                PDX::ParallelExecutor *executor);
 	void DeleteRow(row_t row_id);
 
 	// Returns the committed rows of [start, end) whose embedding is not NULL,
