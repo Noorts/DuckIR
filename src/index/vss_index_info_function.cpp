@@ -152,12 +152,12 @@ static void VSSIndexInfoExecute(ClientContext &context, TableFunctionInput &data
 		IndexInfoColumnInput col_input {index_entry, table_entry, *stats};
 
 		for (idx_t col = 0; col < sizeof(INDEX_INFO_COLUMNS) / sizeof(INDEX_INFO_COLUMNS[0]); col++) {
-			output.data[col].SetValue(row, INDEX_INFO_COLUMNS[col].get_value(col_input));
+			output.data[col].Append(INDEX_INFO_COLUMNS[col].get_value(col_input));
 		}
 
 		row++;
 	}
-	output.SetCardinality(row);
+	output.CheckCardinality(row);
 }
 
 void VSSModule::RegisterIndexInfo(ExtensionLoader &loader) {

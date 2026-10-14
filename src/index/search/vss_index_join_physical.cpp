@@ -771,7 +771,7 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 		for (idx_t col = 0; col < state.fetched.ColumnCount(); col++) {
 			chunk.data[num_query_columns + col].Reference(state.fetched.data[col]);
 		}
-		chunk.SetCardinality(state.fetched.size());
+		chunk.CheckCardinality(state.fetched.size());
 		break;
 	}
 

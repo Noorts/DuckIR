@@ -78,9 +78,9 @@ static void VSSSyncIndexExecute(ClientContext &context, TableFunctionInput &data
 	const bool had_unindexed_rows = index->HasUnindexedRows();
 	index->SyncWithTable(context, *table);
 
-	output.SetValue(0, 0, Value(bind_data.index_name));
-	output.SetValue(1, 0, Value::BOOLEAN(had_unindexed_rows));
-	output.SetCardinality(1);
+	output.data[0].Append(Value(bind_data.index_name));
+	output.data[1].Append(Value::BOOLEAN(had_unindexed_rows));
+	output.CheckCardinality(1);
 	state.done = true;
 }
 
