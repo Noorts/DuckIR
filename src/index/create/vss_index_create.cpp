@@ -97,7 +97,7 @@ static void FlushRowGroup(CreateVSSIndexGlobalSinkState &g_sink, CreateVSSIndexL
 	if (l_sink.row_group_embeddings_count > 0) {
 		DuckDBParallelExecutor executor(context, g_sink.default_threads_per_build);
 		g_sink.global_index->Cast<VSSIndex>().SetUpIndexForRowGroup(
-		    l_sink.row_group_row_ids.data(), reinterpret_cast<float *>(l_sink.row_group_embeddings.Ptr()),
+		    l_sink.row_group_row_ids.data(), reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()),
 		    l_sink.row_group_embeddings_count, l_sink.row_group.row_start, l_sink.row_group.count, &executor);
 		l_sink.row_group_embeddings_count = 0;
 	}
@@ -170,8 +170,8 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 	D_ASSERT(l_sink.row_group_embeddings_count + num_embeddings <= row_group.count);
 
 	g_sink.embedding_preprocessor->PreprocessEmbeddings(
-	    FlatVector::GetData<float>(ArrayVector::GetEntry(embedding_column)),
-	    reinterpret_cast<float *>(l_sink.row_group_embeddings.Ptr()) +
+	    FlatVector::GetDataMutable<float>(ArrayVector::GetEntry(embedding_column)),
+	    reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()) +
 	        (l_sink.row_group_embeddings_count * g_sink.num_dimensions),
 	    num_embeddings, g_sink.is_normalized);
 

@@ -670,7 +670,7 @@ static idx_t SearchQuery(const VSSIndexJoinSearch &search, VSSIndexJoinOperatorS
 	}
 
 	const auto nearest = PDX::BuildResultSetFromHeap(search.limit, state.heap.heap);
-	const auto row_ids = FlatVector::GetData<row_t>(state.row_ids);
+	const auto row_ids = FlatVector::GetDataMutable<row_t>(state.row_ids);
 	for (size_t i = 0; i < nearest.size(); i++) {
 		row_ids[i] =
 		    search.on_the_fly_indexes.empty() ? nearest[i].index : search.on_the_fly_indexes_row_ids[nearest[i].index];
@@ -741,7 +741,7 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 		// Here we only need to copy the row ids of the neighbors to state.row_ids, and then fetch them.
 		if (search.search_flat_index_in_bulk) {
 			const auto &nearest = state.chunk_nearest[row];
-			const auto row_ids = FlatVector::GetData<row_t>(state.row_ids);
+			const auto row_ids = FlatVector::GetDataMutable<row_t>(state.row_ids);
 			for (size_t i = 0; i < nearest.size(); i++) {
 				row_ids[i] = search.on_the_fly_indexes_row_ids[nearest[i].index];
 			}
@@ -765,7 +765,8 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 		// The input row's columns, then the fetched table columns.
 		const auto num_query_columns = input.ColumnCount();
 		for (idx_t col = 0; col < num_query_columns; col++) {
-			ConstantVector::Reference(chunk.data[col], input.data[col], row, input.size());
+			ConstantVector::Reference(chunk.data[col], count_t(state.fetched.size()), input.data[col], row,
+			                          input.size());
 		}
 		for (idx_t col = 0; col < state.fetched.ColumnCount(); col++) {
 			chunk.data[num_query_columns + col].Reference(state.fetched.data[col]);

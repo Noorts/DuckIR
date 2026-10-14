@@ -72,7 +72,7 @@ static void EncodeBlobFunction(DataChunk &args, ExpressionState &state, Vector &
 		auto blob = StringVector::EmptyString(result, blob_size);
 		EncodeFloatArrayToBlob(child_data + entry.offset, entry.length, data_ptr_cast(blob.GetDataWriteable()));
 		blob.Finalize();
-		FlatVector::GetData<string_t>(result)[i] = blob;
+		FlatVector::GetDataMutable<string_t>(result)[i] = blob;
 	}
 
 	if (count == 1) {
@@ -101,8 +101,8 @@ static void DecodeBlobFunction(DataChunk &args, ExpressionState &state, Vector &
 	}
 
 	ListVector::Reserve(result, total_elements);
-	auto child_data = FlatVector::GetData<float>(child_vec);
-	auto list_entries = FlatVector::GetData<list_entry_t>(result);
+	auto child_data = FlatVector::GetDataMutable<float>(child_vec);
+	auto list_entries = FlatVector::GetDataMutable<list_entry_t>(result);
 
 	idx_t offset = 0;
 	for (idx_t i = 0; i < count; i++) {

@@ -263,7 +263,7 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 	DataChunk fetched;
 	fetched.Initialize(Allocator::Get(db), {logical_types[0], LogicalType::ROW_TYPE});
 	Vector fetch_row_ids(LogicalType::ROW_TYPE, STANDARD_VECTOR_SIZE);
-	const auto fetch_row_ids_data = FlatVector::GetData<row_t>(fetch_row_ids);
+	const auto fetch_row_ids_data = FlatVector::GetDataMutable<row_t>(fetch_row_ids);
 	ColumnFetchState fetch_state;
 	const auto num_dimensions = GetNumDimensions();
 	auto raw_embeddings = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
@@ -384,7 +384,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			continue;
 		}
 		auto embeddings_buffer = allocate_embeddings(bounds.count);
-		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.Ptr());
+		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
 		const idx_t count = FetchRows(table, bounds.row_start, bounds.row_start + static_cast<row_t>(bounds.count),
 		                              row_ids.get(), embeddings, rows_returned, &executor);
 		if (count > 0) {
@@ -416,7 +416,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			num_unindexed_rows += static_cast<idx_t>(MinValue<row_t>(range.end, bounds_end) - range.start);
 		}
 		auto embeddings_buffer = allocate_embeddings(num_unindexed_rows);
-		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.Ptr());
+		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
 		idx_t count = 0;
 		while (range_idx < unindexed_row_ranges.size() && unindexed_row_ranges[range_idx].start < bounds_end) {
 			auto &range = unindexed_row_ranges[range_idx];

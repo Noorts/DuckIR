@@ -475,7 +475,7 @@ SourceResultType PhysicalVSSIndexFilteredScan::GetDataInternal(ExecutionContext 
 
 	// Create vector of row ids that are part of the current output chunk.
 	Vector row_ids_vector(LogicalType::ROW_TYPE, num_results_to_emit);
-	auto row_ids_data = FlatVector::GetData<row_t>(row_ids_vector);
+	auto row_ids_data = FlatVector::GetDataMutable<row_t>(row_ids_vector);
 	for (idx_t i = 0; i < num_results_to_emit; i++) {
 		row_ids_data[i] = g_sink.vss_row_ids->at(g_sink.vss_row_ids_idx + i);
 	}

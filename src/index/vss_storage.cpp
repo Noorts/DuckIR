@@ -343,7 +343,7 @@ data_ptr_t VSSBlockChainReader::PinSegment(const IndexPointer segment, BufferHan
 		counters.blocks_read++;
 	}
 	handle = block_manager.buffer_manager.Pin(block_handle);
-	return handle.Ptr() + block_pointer.offset + ALLOCATOR_BITMASK_SIZE + segment.GetOffset() * segment_size;
+	return handle.GetDataMutable() + block_pointer.offset + ALLOCATOR_BITMASK_SIZE + segment.GetOffset() * segment_size;
 }
 
 // Called by the istream when the get area is exhausted: pins the next segment's block and makes its payload the get
