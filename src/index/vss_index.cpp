@@ -991,7 +991,7 @@ const case_insensitive_map_t<PDX::DistanceMetric> VSSIndex::DISTANCE_METRIC_MAP 
 };
 
 unique_ptr<ExpressionMatcher> VSSIndex::MakeFunctionMatcher(const VSSWrapper &vss_wrapper) {
-	unordered_set<string> distance_functions;
+	identifier_set_t distance_functions;
 
 	switch (vss_wrapper.GetDistanceMetric()) {
 	case PDX::DistanceMetric::L2SQ:

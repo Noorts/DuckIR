@@ -157,7 +157,7 @@ void VSSTemporaryChain::CopyTo(BufferManager &buffer_manager, std::ostream &out)
 		auto block = blocks[i];
 		const auto handle = buffer_manager.Pin(block);
 		const auto num_bytes_in_block = MinValue<idx_t>(block_size, num_bytes - i * block_size);
-		out.write(char_ptr_cast(handle.Ptr()), static_cast<std::streamsize>(num_bytes_in_block));
+		out.write(const_char_ptr_cast(handle.Ptr()), static_cast<std::streamsize>(num_bytes_in_block));
 	}
 }
 
@@ -178,7 +178,7 @@ void VSSTemporaryChainWriter::StartBlock() {
 	current_block = buffer_manager.Allocate(MemoryTag::EXTENSION, block_size, /*can_destroy=*/false);
 	current_block.GetBlockHandle()->GetMemory().SetEvictionQueueIndex(TEMPORARY_CHAIN_EVICTION_QUEUE);
 	chain.blocks.push_back(current_block.GetBlockHandle());
-	const auto data = char_ptr_cast(current_block.Ptr());
+	const auto data = char_ptr_cast(current_block.GetDataMutable());
 	setp(data, data + block_size);
 }
 
@@ -226,7 +226,7 @@ VSSTemporaryChainReader::int_type VSSTemporaryChainReader::underflow() {
 	pinned_block = buffer_manager.Pin(block);
 	const auto num_bytes = MinValue<idx_t>(block_size, chain.num_bytes - next_block * block_size);
 	next_block++;
-	const auto data = char_ptr_cast(pinned_block.Ptr());
+	const auto data = char_ptr_cast(pinned_block.GetDataMutable());
 	setg(data, data, data + num_bytes);
 	return traits_type::to_int_type(*gptr());
 }
@@ -302,7 +302,7 @@ const char *VSSClusterCache::Acquire(const uint32_t cluster_id) {
 			}
 			auto new_block = buffer_manager.Allocate(MemoryTag::EXTENSION, range.second, /*can_destroy=*/true);
 			SetEvictionQueue(cluster, new_block);
-			const auto dst = char_ptr_cast(new_block.Ptr());
+			const auto dst = char_ptr_cast(new_block.GetDataMutable());
 			if (temporary_chain) {
 				temporary_chain->ReadRange(buffer_manager, cluster_data_start + range.first, range.second, dst);
 			} else {
