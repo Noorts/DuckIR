@@ -36,12 +36,11 @@ public:
 		                                           index.IsNormalized());
 
 		// Determine number of clusters to probe per row group. The cluster count varies per row group, but a single
-		// upper bound is used here. We use the count for a full row group: for full row groups it matches exactly, and
-		// for smaller row groups the per-row-group searcher clamps internally.
+		// upper bound is used here. We use the largest row group's count: for smaller row groups the per-row-group
+		// searcher clamps internally.
 		const auto n_probe = index.GetEffectiveNProbe(context);
-		const auto num_clusters_for_full_row_group = VSSIndex::GetNumClustersForFullRowGroup();
-		num_clusters_to_probe_per_row_group =
-		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
+		const auto max_num_clusters = index.GetMaxNumClusters();
+		num_clusters_to_probe_per_row_group = (n_probe == 0 || n_probe > max_num_clusters) ? max_num_clusters : n_probe;
 
 		// Set up column IDs for fetching data from storage.
 		column_ids.reserve(operator_column_ids.size());
