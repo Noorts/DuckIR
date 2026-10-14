@@ -2,7 +2,7 @@
 # description: Test the case in which all embeddings are the same. This will validate that nothing crashes and we give answers even if all embeddings are in the same cluster
 # group: [search]
 
-require pdxearch
+require duckir
 
 # Variables
 test-env INDEX_SEED 0
@@ -40,10 +40,10 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', seed = ${INDEX_SEED});
 
 statement ok
-SET pdxearch_n_probe = 0;
+SET duckir_vss_n_probe = 0;
 
 # Verify the optimizer uses the index scan.
 query II
@@ -51,7 +51,7 @@ EXPLAIN SELECT * FROM t1
 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}])
 LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE t_idx_res AS

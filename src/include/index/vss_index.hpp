@@ -11,17 +11,17 @@
 #include <atomic>
 
 #include "pdx/common.hpp"
-#include "index/pdxearch_storage.hpp"
-#include "index/pdxearch_wrapper.hpp"
+#include "index/vss_storage.hpp"
+#include "index/vss_wrapper.hpp"
 
 namespace duckdb {
 
-struct PDXearchRowRange {
+struct VSSRowRange {
 	row_t start; // [start, end)
 	row_t end;
 };
 
-struct PDXearchIndexStats {
+struct VSSIndexStats {
 	string metric;
 	string quantization;
 	int64_t num_dimensions;
@@ -35,24 +35,24 @@ struct PDXearchIndexStats {
 	int64_t blocks_read;
 };
 
-class PDXearchIndex : public BoundIndex {
+class VSSIndex : public BoundIndex {
 public:
-	static constexpr const char *TYPE_NAME = "PDXEARCH";
+	static constexpr const char *TYPE_NAME = "DUCKIR_VSS";
 
 	static const case_insensitive_map_t<PDX::DistanceMetric> DISTANCE_METRIC_MAP;
 	static const case_insensitive_map_t<PDX::Quantization> QUANTIZATION_MAP;
 
 private:
 	// Null only when the index was not loaded from storage and paging is off.
-	unique_ptr<PDXearchBlockChainReader> storage_reader;
+	unique_ptr<VSSBlockChainReader> storage_reader;
 	bool cluster_paging = true;
 	bool record_paging_counters = false;
 	bool cache_tiers = false;
-	unique_ptr<PDXearchWrapper> pdxearch_wrapper;
+	unique_ptr<VSSWrapper> vss_wrapper;
 	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 
 	// Row ids committed to the table whose embeddings are not in the index yet
-	std::vector<PDXearchRowRange> unindexed_row_ranges;
+	std::vector<VSSRowRange> unindexed_row_ranges;
 	std::atomic<bool> has_unindexed_rows {false};
 	// Set when the index is loaded from storage: its first sync reconciles it with the table (ReconcileWithTable).
 	bool needs_reconciliation = false;
@@ -91,13 +91,13 @@ private:
 	// Find row groups whose mirrors are stale:
 	// - DuckDB merged two or more row groups into one
 	// - DuckDB dropped a rowgroup (e.g., VACUUM, CHECKPOINT merging)
-	vector<PDXearchRowGroupBounds> FindStaleRowGroups(DataTable &table) const;
+	vector<VSSRowGroupBounds> FindStaleRowGroups(DataTable &table) const;
 
 	void RemoveRowGroupsOverlapping(row_t start, row_t end);
 
 	// Adds the rows of one commit to unindexed_row_ranges, which needs to stay sorted and disjoint.
 	// A range that overlaps staged ones (DuckDB replaying a commit from the WAL) is merged with them.
-	void StageUnindexedRange(PDXearchRowRange range);
+	void StageUnindexedRange(VSSRowRange range);
 
 	void RemoveUnindexedRow(row_t row_id);
 
@@ -108,24 +108,23 @@ private:
 
 	// The index's storage: the directory chain points to the rotation chain and to each row group's chain.
 	unique_ptr<FixedSizeAllocator> allocator;
-	PDXearchBlockChain directory_chain;
-	PDXearchBlockChain rotation_chain;
+	VSSBlockChain directory_chain;
+	VSSBlockChain rotation_chain;
 
 	// Writes the allocator's dirty buffers to disk, which releases their memory.
 	void WritePartialBlocks(QueryContext context);
 	// Frees the current directory chain and writes `directory` into a new one.
-	void WriteDirectory(const PDXearchDirectory &directory);
+	void WriteDirectory(const VSSDirectory &directory);
 	IndexStorageInfo MakeStorageInfo() const;
 	void PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks);
 	void WriteTemporaryChains();
-	void AddRowGroupEntries(PDXearchDirectory &directory) const;
+	void AddRowGroupEntries(VSSDirectory &directory) const;
 	void ResetPersistedChains();
 	// Reads the directory and the rotation of a persisted index. The returned reader
 	// then reads the row groups' chains.
-	unique_ptr<PDXearchBlockChainReader> OpenStorage(const IndexStorageInfo &info, uint32_t num_dimensions,
-	                                                 PDXearchDirectory &directory,
-	                                                 unique_ptr<float[]> &rotation_matrix);
-	void LoadRowGroups(PDXearchBlockChainReader &reader, const PDXearchDirectory &directory, bool page_clusters);
+	unique_ptr<VSSBlockChainReader> OpenStorage(const IndexStorageInfo &info, uint32_t num_dimensions,
+	                                            VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix);
+	void LoadRowGroups(VSSBlockChainReader &reader, const VSSDirectory &directory, bool page_clusters);
 	static IndexStorageInfo CopyStorageInfo(const IndexStorageInfo &info);
 
 	unique_ptr<ExpressionMatcher> function_matcher;
@@ -142,11 +141,11 @@ private:
 	StorageLock rwlock;
 
 public:
-	PDXearchIndex(const string &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
-	              TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
-	              AttachedDatabase &db, const case_insensitive_map_t<Value> &options,
-	              const IndexStorageInfo &info = IndexStorageInfo());
-	~PDXearchIndex() override;
+	VSSIndex(const string &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
+	         TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
+	         AttachedDatabase &db, const case_insensitive_map_t<Value> &options,
+	         const IndexStorageInfo &info = IndexStorageInfo());
+	~VSSIndex() override;
 
 	static PhysicalOperator &CreatePlan(PlanIndexInput &input);
 
@@ -169,15 +168,15 @@ public:
 	idx_t GetRowGroupSize() const;
 
 	// The DuckDB row group that holds row_id. False if the row is not in the table (yet).
-	bool TryGetPhysicalRowGroup(DataTable &table, row_t row_id, PDXearchRowGroupBounds &result) const;
+	bool TryGetPhysicalRowGroup(DataTable &table, row_t row_id, VSSRowGroupBounds &result) const;
 
-	vector<PDXearchRowGroupBounds> GetPhysicalRowGroups(DataTable &table) const;
+	vector<VSSRowGroupBounds> GetPhysicalRowGroups(DataTable &table) const;
 
 	// Position of the index's row group that holds row_id (the row_group_idx of the methods below).
 	optional_idx LookupRowGroup(row_t row_id) const;
 
 	// The row ids the index's row group at row_group_idx covers.
-	PDXearchRowRange GetRowGroupRange(idx_t row_group_idx) const;
+	VSSRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
 	void SetUpIndexForRowGroup(const row_t *row_ids, const float *embeddings, idx_t num_embeddings, row_t row_start,
 	                           idx_t count, PDX::ParallelExecutor *executor);
@@ -218,7 +217,7 @@ public:
 
 	idx_t GetInMemorySize(IndexLock &state) override;
 
-	unique_ptr<PDXearchIndexStats> GetStats(const ClientContext &context) const;
+	unique_ptr<VSSIndexStats> GetStats(const ClientContext &context) const;
 
 	/******************************************************************
 	 * Index persistence
@@ -234,14 +233,14 @@ public:
 
 	string GetConstraintViolationMessage(VerifyExistenceType verify_type, idx_t failed_index,
 	                                     DataChunk &input) override {
-		return "Constraint violation in PDXearch index";
+		return "Constraint violation in DuckIR VSS index";
 	}
 
 	bool TryMatchDistanceFunction(const unique_ptr<Expression> &expr, vector<reference<Expression>> &bindings) const;
 
 	bool TryBindIndexExpression(LogicalGet &get, unique_ptr<Expression> &result) const;
 
-	unique_ptr<ExpressionMatcher> MakeFunctionMatcher(const PDXearchWrapper &pdxearch_wrapper);
+	unique_ptr<ExpressionMatcher> MakeFunctionMatcher(const VSSWrapper &vss_wrapper);
 
 	/******************************************************************
 	 * Getters
@@ -249,52 +248,52 @@ public:
 
 	// Total cluster count summed across all (initialized) row groups. Used for EXPLAIN output.
 	idx_t GetTotalNumClusters() const {
-		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-			return static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->GetTotalNumClusters();
+		if (vss_wrapper->GetQuantization() == PDX::U8) {
+			return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->GetTotalNumClusters();
 		}
-		return static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->GetTotalNumClusters();
+		return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetTotalNumClusters();
 	}
 
 	// Upper bound on the per-row-group cluster count, computed from a full row group. Useful for sizing scan-wide
 	// quantities that must apply uniformly across row groups (the searcher clamps to each row group's actual count).
 	static constexpr idx_t GetNumClustersForFullRowGroup() {
-		return PDXearchWrapperF32::ComputeNumClustersForRowGroup(DEFAULT_ROW_GROUP_SIZE);
+		return VSSWrapperF32::ComputeNumClustersForRowGroup(DEFAULT_ROW_GROUP_SIZE);
 	}
 
 	idx_t GetNumRowGroups() const {
-		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-			return static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->GetNumRowGroups();
+		if (vss_wrapper->GetQuantization() == PDX::U8) {
+			return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->GetNumRowGroups();
 		}
-		return static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->GetNumRowGroups();
+		return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetNumRowGroups();
 	}
 
 	const PDX::IPDXIndex &GetRowGroupIndex(const idx_t row_group_idx) const {
-		if (pdxearch_wrapper->GetQuantization() == PDX::U8) {
-			return static_cast<PDXearchWrapperU8 *>(pdxearch_wrapper.get())->GetRowGroupIndex(row_group_idx);
+		if (vss_wrapper->GetQuantization() == PDX::U8) {
+			return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->GetRowGroupIndex(row_group_idx);
 		}
-		return static_cast<PDXearchWrapperF32 *>(pdxearch_wrapper.get())->GetRowGroupIndex(row_group_idx);
+		return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetRowGroupIndex(row_group_idx);
 	}
 
 	string GetQuantization() const;
 
 	idx_t GetNumDimensions() const {
-		return pdxearch_wrapper->GetNumDimensions();
+		return vss_wrapper->GetNumDimensions();
 	}
 
 	string GetDistanceMetric() const;
 
 	bool IsNormalized() const {
-		return pdxearch_wrapper->IsNormalized();
+		return vss_wrapper->IsNormalized();
 	}
 
-	// N_probe precedence: runtime setting (pdxearch_n_probe) > index setting (n_probe) > default.
+	// N_probe precedence: runtime setting (duckir_vss_n_probe) > index setting (n_probe) > default.
 	idx_t GetEffectiveNProbe(const ClientContext &context) const {
-		auto current_n_probe = static_cast<idx_t>(pdxearch_wrapper->GetNProbe());
+		auto current_n_probe = static_cast<idx_t>(vss_wrapper->GetNProbe());
 
-		Value pdxearch_n_probe_opt;
-		if (context.TryGetCurrentSetting("pdxearch_n_probe", pdxearch_n_probe_opt)) {
-			if (!pdxearch_n_probe_opt.IsNull() && pdxearch_n_probe_opt.type() == LogicalType::INTEGER) {
-				auto val = pdxearch_n_probe_opt.GetValue<int32_t>();
+		Value vss_n_probe_opt;
+		if (context.TryGetCurrentSetting("duckir_vss_n_probe", vss_n_probe_opt)) {
+			if (!vss_n_probe_opt.IsNull() && vss_n_probe_opt.type() == LogicalType::INTEGER) {
+				auto val = vss_n_probe_opt.GetValue<int32_t>();
 				if (val >= 0) {
 					current_n_probe = static_cast<idx_t>(val);
 				}
@@ -305,12 +304,12 @@ public:
 	}
 
 	float *GetRotationMatrix() const {
-		return pdxearch_wrapper->GetRotationMatrix();
+		return vss_wrapper->GetRotationMatrix();
 	}
 
 	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, PDX::ParallelExecutor *const executor,
 	                                       const idx_t base_row_id) const {
-		return pdxearch_wrapper->MakePDXIndexConfig(num_clusters, executor, base_row_id);
+		return vss_wrapper->MakePDXIndexConfig(num_clusters, executor, base_row_id);
 	}
 };
 

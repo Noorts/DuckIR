@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Row groups of 8192 rows (4 in the table).
 statement ok
@@ -21,7 +21,7 @@ test-env DIMS 128
 
 # The join ranks clusters across row groups and single-query searches do not: they match when both probe all clusters.
 statement ok
-SET pdxearch_n_probe = 0;
+SET duckir_vss_n_probe = 0;
 
 statement ok
 CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
@@ -30,7 +30,7 @@ statement ok
 CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
 
 statement ok
-CREATE INDEX t_idx ON t USING PDXEARCH (emb) WITH (metric = 'l2sq', seed = 0);
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', seed = 0);
 
 # ============================================
 # Deleting the nearest row of query 0 inside the transaction: it is still in the index, and the fetch skips it.

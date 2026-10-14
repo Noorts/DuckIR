@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Row groups of 8192 rows (4 in the table).
 statement ok
@@ -21,7 +21,7 @@ test-env DIMS 128
 
 # The join ranks clusters across row groups and single-query searches do not: they match when both probe all clusters.
 statement ok
-SET pdxearch_n_probe = 0;
+SET duckir_vss_n_probe = 0;
 
 statement ok
 CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
@@ -43,7 +43,7 @@ statement ok
 DROP INDEX IF EXISTS t_idx;
 
 statement ok
-CREATE INDEX t_idx ON t USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', seed = 0);
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', seed = 0);
 
 foreach threads 1 4
 
@@ -60,7 +60,7 @@ CREATE OR REPLACE TABLE single_result (qid INTEGER, id INTEGER);
 query II
 EXPLAIN INSERT INTO single_result SELECT 0, id FROM t WHERE id % 7 = 0 OR cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 # ============================================
 # A filter pushed into the table scan: the scan below the index join emits the rowids that pass.
@@ -69,7 +69,7 @@ physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = 3 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*DELIM_SCAN.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*DELIM_SCAN.*SEQ_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = 3 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -104,7 +104,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 7 = 0 OR t.cat = 3 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*FILTER.*SEQ_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 7 = 0 OR t.cat = 3 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -139,7 +139,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = 3 OR t.id IN (1, 5, 9, 200, 4000, 30000) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*MARK.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*MARK.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = 3 OR t.id IN (1, 5, 9, 200, 4000, 30000) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -176,7 +176,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id IN (SELECT x FROM small) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*SEMI.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*SEMI.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id IN (SELECT x FROM small) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -207,7 +207,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE NOT EXISTS (SELECT 1 FROM small WHERE small.x = t.id) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*ANTI.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*ANTI.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE NOT EXISTS (SELECT 1 FROM small WHERE small.x = t.id) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -238,7 +238,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id NOT IN (SELECT x FROM small) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*MARK.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*MARK.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id NOT IN (SELECT x FROM small) ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -303,7 +303,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT v.id FROM v ORDER BY array_distance(v.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*FILTER.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*FILTER.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT v.id FROM v ORDER BY array_distance(v.emb, q.vec) LIMIT 10) s;
@@ -373,7 +373,7 @@ SELECT count(*) FROM q, LATERAL (SELECT t.id FROM t WHERE t.id < 7 ORDER BY arra
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 1000 = 1001 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 query I
 SELECT count(*) FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 1000 = 1001 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -453,7 +453,7 @@ statement ok
 DROP INDEX t_idx;
 
 statement ok
-CREATE INDEX t_idx ON t USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = 0);
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = 0);
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 100 = 0 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -482,7 +482,7 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 0
 
 # ============================================
-# Many passing rows (16,384) with pdxearch_experimental_on_the_fly_indexing = 'always': the join searches indexes built over only them, one over all row groups and one per 2 row groups.
+# Many passing rows (16,384) with duckir_vss_experimental_on_the_fly_indexing = 'always': the join searches indexes built over only them, one over all row groups and one per 2 row groups.
 # ============================================
 
 statement ok
@@ -499,12 +499,12 @@ INSERT INTO single_result SELECT ${i}, id FROM t WHERE id % 2 = 0 ORDER BY array
 endloop
 
 statement ok
-SET pdxearch_experimental_on_the_fly_indexing = 'always';
+SET duckir_vss_experimental_on_the_fly_indexing = 'always';
 
 foreach max_row_groups 0 2
 
 statement ok
-SET pdxearch_on_the_fly_indexing_max_row_groups = ${max_row_groups};
+SET duckir_vss_on_the_fly_indexing_max_row_groups = ${max_row_groups};
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 2 = 0 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -523,10 +523,10 @@ endloop
 
 # 'auto' builds them when the passing rows per estimated query are few enough (16,384 / 10 against 10,000 here).
 statement ok
-SET pdxearch_experimental_on_the_fly_indexing = 'auto';
+SET duckir_vss_experimental_on_the_fly_indexing = 'auto';
 
 statement ok
-SET pdxearch_on_the_fly_indexing_threshold = 10000;
+SET duckir_vss_on_the_fly_indexing_threshold = 10000;
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 2 = 0 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -537,10 +537,10 @@ SELECT count(*) FROM ((FROM single_result EXCEPT ALL FROM join_result) UNION ALL
 0
 
 statement ok
-RESET pdxearch_experimental_on_the_fly_indexing;
+RESET duckir_vss_experimental_on_the_fly_indexing;
 
 statement ok
-RESET pdxearch_on_the_fly_indexing_threshold;
+RESET duckir_vss_on_the_fly_indexing_threshold;
 
 statement ok
-RESET pdxearch_on_the_fly_indexing_max_row_groups;
+RESET duckir_vss_on_the_fly_indexing_max_row_groups;

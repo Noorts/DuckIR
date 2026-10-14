@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Variables
 test-env DIMS 128
@@ -19,7 +19,7 @@ statement ok
 CREATE TABLE t1_bf AS FROM t1;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
 
 # Of these ids only 4474 is among the 10 nearest rows with id < 15000.
 statement ok
@@ -48,7 +48,7 @@ analyzed_plan	<!REGEX>:.*Dynamic Filters.*
 query II
 EXPLAIN SELECT id FROM (SELECT id FROM t1 WHERE id < 15000 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10) s WHERE s.id IN (SELECT x FROM other);
 ----
-physical_plan	<REGEX>:.*HASH_JOIN.*PDXEARCH_INDEX_FILT_SCAN.*
+physical_plan	<REGEX>:.*HASH_JOIN.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 # Same with a residual filter in the search (a FILTER operator between the search and the scan).
 query I nosort outer_in_residual_filter

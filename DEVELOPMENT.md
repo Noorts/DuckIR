@@ -86,13 +86,13 @@ export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
 1. Clone the repo and ensure the submodules are also cloned:
 
     ```sh
-    git clone --recurse-submodules https://github.com/Noorts/PDXearch.git
+    git clone --recurse-submodules https://github.com/Noorts/DuckIR.git
     ```
 
 2. Build the extension (the default is an optimized `release` build):
 
     ```sh
-    cd PDXearch
+    cd DuckIR
     ```
 
     ```sh
@@ -121,9 +121,9 @@ export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
 GEN=ninja DISABLE_SANITIZER=1 CC=$HOMEBREW_PREFIX/opt/llvm@18/bin/clang CXX=$HOMEBREW_PREFIX/opt/llvm@18/bin/clang++ EXTRA_CMAKE_ARGS="-DCMAKE_EXPORT_COMPILE_COMMANDS=1" make
 ```
 
-The built extension artifact can be found at `PDXearch/build/release/extension/pdxearch/pdxearch.duckdb_extension`.
+The built extension artifact can be found at `DuckIR/build/release/extension/duckir/duckir.duckdb_extension`.
 
-For PDXearch extension usage, please see to the [README.md](README.md).
+For DuckIR extension usage, please see to the [README.md](README.md).
 
 ### Clangd Language Server Support
 
@@ -137,7 +137,7 @@ Include the following argument in your build command (each time you build):
 EXTRA_CMAKE_ARGS="-DCMAKE_EXPORT_COMPILE_COMMANDS=1" make
 ```
 
-Then in the PDXearch root directory, symlink the generated compilation database (once).
+Then in the DuckIR root directory, symlink the generated compilation database (once).
 
 ```sh
 ln -s ./build/release/compile_commands.json ./
@@ -196,4 +196,4 @@ Run one specific test:
 ## FAQ
 
 - Q: I pulled the latest commits and now I run into compiler errors when I build the extension.
-  - A: Did the latest commits include the bump of a submodule? (e.g., DuckDB was updated) If this is the case, then when you run `git status` it will state `"modified: duckdb (new commits)"`. In the root PDXearch directory, run `git submodule update --init --recursive` to ensure your local submodules match the committed versions.
+  - A: Did the latest commits include the bump of a submodule? (e.g., DuckDB was updated) If this is the case, then when you run `git status` it will state `"modified: duckdb (new commits)"`. In the root DuckIR directory, run `git submodule update --init --recursive` to ensure your local submodules match the committed versions.

@@ -4,7 +4,7 @@
 
 namespace duckdb {
 
-struct PDXearchBlobFunctions {
+struct VSSBlobFunctions {
 	static void Register(ExtensionLoader &loader);
 };
 

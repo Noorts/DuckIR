@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Row groups of 8192 rows (4 in the table), so selective filters glue the rows of several row groups into one chunk.
 statement ok
@@ -29,7 +29,7 @@ statement ok
 CREATE TABLE t_bf AS FROM t;
 
 statement ok
-CREATE INDEX t_idx ON t USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
 
 foreach threads 1 4
 
@@ -43,7 +43,7 @@ SET threads = ${threads};
 query II
 EXPLAIN SELECT id FROM t WHERE id > 50 OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 query II
 EXPLAIN SELECT id FROM t WHERE id > 50 OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -82,7 +82,7 @@ SELECT * FROM t_bf WHERE id > 50 OR cat = 3 ORDER BY array_distance(emb, ${QUERY
 query II
 EXPLAIN SELECT id FROM t WHERE id + cat > 30000 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 query I nosort sum_of_columns
 SELECT id FROM t WHERE id + cat > 30000 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -95,7 +95,7 @@ SELECT id FROM t_bf WHERE id + cat > 30000 ORDER BY array_distance(emb, ${QUERY_
 query II
 EXPLAIN SELECT id FROM t WHERE CASE WHEN cat < 5 THEN id < 3000 ELSE id > 30000 END ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 query I nosort case_over_columns
 SELECT id FROM t WHERE CASE WHEN cat < 5 THEN id < 3000 ELSE id > 30000 END ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -120,7 +120,7 @@ SELECT id FROM t_bf WHERE id % 7 = 0 OR name = 'n5' ORDER BY array_distance(emb,
 query II
 EXPLAIN SELECT id FROM t WHERE id > 1500 AND (id < 1000 OR cat = 3) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*Filters.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*Filters.*
 
 query I nosort filter_and_scan_filter
 SELECT id FROM t WHERE id > 1500 AND (id < 1000 OR cat = 3) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -152,7 +152,7 @@ SELECT COUNT(*) FROM (SELECT id FROM t WHERE id % 1000 = 0 OR cat = -1 ORDER BY 
 query II
 EXPLAIN SELECT id FROM t WHERE name || cat::VARCHAR = 'none' ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 query I
 SELECT COUNT(*) FROM (SELECT id FROM t WHERE name || cat::VARCHAR = 'none' ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10);
@@ -166,7 +166,7 @@ SELECT COUNT(*) FROM (SELECT id FROM t WHERE name || cat::VARCHAR = 'none' ORDER
 query II
 EXPLAIN SELECT id FROM t WHERE emb[1] > 10 OR id < 100 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 query I nosort filter_on_embedding
 SELECT id FROM t WHERE emb[1] > 10 OR id < 100 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -179,7 +179,7 @@ SELECT id FROM t_bf WHERE emb[1] > 10 OR id < 100 ORDER BY array_distance(emb, $
 query II
 EXPLAIN SELECT id FROM t WHERE rowid % 3 = 0 OR cat = 1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 query I nosort filter_on_rowid
 SELECT id FROM t WHERE rowid % 3 = 0 OR cat = 1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -196,7 +196,7 @@ SELECT id FROM t_bf WHERE rowid % 3 = 0 OR cat = 1 ORDER BY array_distance(emb, 
 query II
 EXPLAIN SELECT id FROM t WHERE id > 50 OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 5;
 ----
-physical_plan	<REGEX>:.*TOP_N.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*TOP_N.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 query I nosort filter_offset
 SELECT id FROM t WHERE id > 50 OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 5;
@@ -213,7 +213,7 @@ SELECT id FROM t_bf WHERE id > 50 OR cat = 3 ORDER BY array_distance(emb, ${QUER
 query II
 EXPLAIN SELECT id FROM t WHERE random() < 0.5 AND (id > 5 OR cat = 1) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 query I
 SELECT COUNT(*) FROM (SELECT id FROM t WHERE random() < 0.5 AND (id > 5 OR cat = 1) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10);
@@ -223,7 +223,7 @@ SELECT COUNT(*) FROM (SELECT id FROM t WHERE random() < 0.5 AND (id > 5 OR cat =
 query II
 EXPLAIN SELECT id FROM t WHERE id > 50 OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 # No late materialization (a second scan of t, joined on the rowid).
 query II

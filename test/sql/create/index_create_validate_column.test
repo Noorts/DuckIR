@@ -2,7 +2,7 @@
 # description: Validate the column the index is created over.
 # group: [create]
 
-require pdxearch
+require duckir
 
 # ============================================
 # Invalid create index statement
@@ -12,9 +12,9 @@ statement ok
 CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[128]);
 
 statement error
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb, id);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb, id);
 ----
-Binder Error: PDXearch indexes can only be created over a single column of keys.
+Binder Error: DuckIR VSS indexes can only be created over a single column of keys.
 
 # ============================================
 # Invalid table column type
@@ -24,17 +24,17 @@ statement ok
 CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT);
 
 statement error
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb);
 ----
-Binder Error: PDXearch index keys must be of type FLOAT[N]
+Binder Error: DuckIR VSS index keys must be of type FLOAT[N]
 
 statement ok
 CREATE OR REPLACE TABLE t1 (id INTEGER, emb DOUBLE[128]);
 
 statement error
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb);
 ----
-Binder Error: PDXearch index key type must be FLOAT
+Binder Error: DuckIR VSS index key type must be FLOAT
 
 # ============================================
 # Valid number of dimensions
@@ -47,7 +47,7 @@ statement ok
 INSERT INTO t1 SELECT i + 1 as id, list_transform(range(128), lambda x: random()) FROM range(10000) t(i);
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb);
 
 # ============================================
 # Invalid number of dimensions
@@ -60,8 +60,8 @@ statement ok
 CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[${dims}]);
 
 statement error
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb);
 ----
-<REGEX>:Binder Error: PDXearch index FLOAT array length \(i\.e\., dimensions\) must be less than or equal to 16384, got .*
+<REGEX>:Binder Error: DuckIR VSS index FLOAT array length \(i\.e\., dimensions\) must be less than or equal to 16384, got .*
 
 endloop

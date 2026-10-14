@@ -5,7 +5,7 @@
 
 namespace duckdb {
 
-struct PDXearchModule {
+struct VSSModule {
 public:
 	static void Register(ExtensionLoader &loader) {
 		auto &db = loader.GetDatabaseInstance();

@@ -7,11 +7,10 @@ namespace duckdb {
 class Index;
 class DuckTableEntry;
 
-class LogicalPDXearchIndexScan : public LogicalExtensionOperator {
+class LogicalVSSIndexScan : public LogicalExtensionOperator {
 public:
-	LogicalPDXearchIndexScan(DuckTableEntry &table, Index &index, idx_t limit,
-	                         unsafe_unique_array<float> query_embedding, vector<ColumnIndex> column_ids,
-	                         vector<ColumnBinding> column_bindings)
+	LogicalVSSIndexScan(DuckTableEntry &table, Index &index, idx_t limit, unsafe_unique_array<float> query_embedding,
+	                    vector<ColumnIndex> column_ids, vector<ColumnBinding> column_bindings)
 	    : LogicalExtensionOperator(), column_ids(std::move(column_ids)), column_bindings(std::move(column_bindings)),
 	      table(table), index(index), limit(limit), query_embedding(std::move(query_embedding)) {
 	}
@@ -29,7 +28,7 @@ public:
 
 public:
 	string GetName() const override {
-		return "PDXEARCH_INDEX_SCAN";
+		return "DUCKIR_VSS_INDEX_SCAN";
 	}
 
 	void ResolveTypes() override;

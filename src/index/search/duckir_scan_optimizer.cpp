@@ -22,21 +22,21 @@
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_table.hpp"
 
-#include "index/pdxearch_blob_codec.hpp"
+#include "index/vss_blob_codec.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
-#include "index/pdxearch_module.hpp"
-#include "index/pdxearch_index.hpp"
-#include "index/search/pdxearch_index_filtered_scan_logical.hpp"
-#include "index/search/pdxearch_index_join_logical.hpp"
-#include "index/search/pdxearch_index_scan_logical.hpp"
-#include "index/search/pdxearch_index_scan_physical.hpp"
+#include "index/vss_module.hpp"
+#include "index/vss_index.hpp"
+#include "index/search/vss_index_filtered_scan_logical.hpp"
+#include "index/search/vss_index_join_logical.hpp"
+#include "index/search/vss_index_scan_logical.hpp"
+#include "index/search/vss_index_scan_physical.hpp"
 
 namespace duckdb {
 
 /**
  * Optimizes various vector similarity search queries, where the table has a
- * matching PDXearch index.
+ * matching DuckIR VSS index.
  *
  * Note: this optimizer sets `optimize_function` and thus runs after DuckDB's
  * optimization passes. Its `pre_optimize_function` runs before them (see LATE
@@ -52,7 +52,7 @@ namespace duckdb {
  * Scenario 1 targets the logical query plan shown on the left (this has been
  * optimized by DuckDB's optimization passes, but has not been optimized by this
  * optimizer yet; e.g., print TryOptimize's `plan`). This optimizer replaces the
- * TopN operator and the sequential scan with a PDXearch index scan, turning it
+ * TopN operator and the sequential scan with a DuckIR VSS index scan, turning it
  * into the logical query plan shown on the right.
  *
  *              [IN]                                [OUT]
@@ -76,10 +76,10 @@ namespace duckdb {
  * │        Expressions:       │        │      ~1,000,000 rows      │
  * │             id            │        └─────────────┬─────────────┘
  * │            vec            │        ┌─────────────┴─────────────┐
- * │    array_distance(vec,    │        │    PDXEARCH_INDEX_SCAN    │
+ * │    array_distance(vec,    │        │   DUCKIR_VSS_INDEX_SCAN   │
  * │     [1.0, 2.0, 3.0])      │        │    ────────────────────   │
  * │                           │        │        Table: table       │
- * │      ~1,000,000 rows      │        │    PDXearch Index: idx    │
+ * │      ~1,000,000 rows      │        │   DuckIR VSS Index: idx   │
  * └─────────────┬─────────────┘        │       Clusters: 4000      │
  * ┌─────────────┴─────────────┐        │                           │
  * │          SEQ_SCAN         │        │        Projections:       │
@@ -132,10 +132,10 @@ namespace duckdb {
  * │        Expressions:       │        │      ~1,000,000 rows      │
  * │             id            │        └─────────────┬─────────────┘
  * │            vec            │        ┌─────────────┴─────────────┐
- * │    array_distance(vec,    │        │  PDXEARCH_INDEX_FILT_SCAN │
+ * │    array_distance(vec,    │        │DUCKIR_VSS_INDEX_FILT_SCAN │
  * │     [1.0, 2.0, 3.0])      │        │    ────────────────────   │
  * │                           │        │        Table: table       │
- * │      ~1,000,000 rows      │        │    PDXearch Index: idx    │
+ * │      ~1,000,000 rows      │        │   DuckIR VSS Index: idx   │
  * └─────────────┬─────────────┘        │       Clusters: 4000      │
  * ┌─────────────┴─────────────┐        │                           │
  * │          SEQ_SCAN         │        │        Projections:       │
@@ -172,7 +172,7 @@ namespace duckdb {
  *   ORDER BY array_distance(vec, [1, 2, 3]::FLOAT[3])
  *   LIMIT 10;
  *
- * The filters move below the PDXEARCH_INDEX_FILT_SCAN unchanged. The table scan
+ * The filters move below the DUCKIR_VSS_INDEX_FILT_SCAN unchanged. The table scan
  * and every filter forward the rowid, and a projection on top keeps only the
  * rowid, which the filtered search consumes. When no predicate reads the
  * embedding, the rowid takes the embedding's slot in the table scan, so the
@@ -229,10 +229,10 @@ namespace duckdb {
  * │        Expressions:       │        │          ~10 rows         │
  * │             id            │        └─────────────┬─────────────┘
  * │            cat            │        ┌─────────────┴─────────────┐
- * │            vec            │        │  PDXEARCH_INDEX_FILT_SCAN │
+ * │            vec            │        │DUCKIR_VSS_INDEX_FILT_SCAN │
  * │    array_distance(vec,    │        │    ────────────────────   │
  * │      [1.0, 2.0, 3.0])     │        │        Table: table       │
- * │                           │        │    PDXearch Index: idx    │
+ * │                           │        │   DuckIR VSS Index: idx   │
  * │       ~550,000 rows       │        │                           │
  * └─────────────┬─────────────┘        │        Projections:       │
  * ┌─────────────┴─────────────┐        │             id            │
@@ -294,7 +294,7 @@ namespace duckdb {
  *     arg_min_nulls_last(id, #1, 10)]             arg_min_nulls_last(id, #1, 10)]
  *     PROJECTION [id,                             PROJECTION [id,
  *       array_distance(vec, query), query]          array_distance(vec, query), query]
- *       CROSS_PRODUCT                               PDXEARCH_INDEX_JOIN (K = 10)
+ *       CROSS_PRODUCT                               DUCKIR_VSS_INDEX_JOIN (K = 10)
  *         SEQ_SCAN [table, Filters: id>50]            DELIM_GET [query]
  *         DELIM_GET [query]                           SEQ_SCAN [table, Filters: id>50,
  *                                                       Projections: rowid]
@@ -344,9 +344,9 @@ namespace duckdb {
  * TODO: Fix cardinality of after-optimization plan (K instead of 1M?).
  *       Also see filtered scan optimizer.
  */
-class PDXearchIndexScanOptimizer : public OptimizerExtension {
+class DuckIRScanOptimizer : public OptimizerExtension {
 public:
-	PDXearchIndexScanOptimizer() {
+	DuckIRScanOptimizer() {
 		pre_optimize_function = PreOptimize;
 		optimize_function = Optimize;
 	}
@@ -739,7 +739,7 @@ public:
 
 	// A distance function matched to an index of the scanned table.
 	struct IndexMatch {
-		optional_ptr<PDXearchIndex> index;
+		optional_ptr<VSSIndex> index;
 		// The distance function's argument that holds the query vector.
 		optional_ptr<Expression> query_argument;
 		// When the indexed argument is a plain column: the embedding's binding as the distance function reads it, and
@@ -757,12 +757,12 @@ public:
 		auto &table_info = *get.GetTable()->GetStorage().GetDataTableInfo();
 		vector<reference<Expression>> bindings;
 
-		table_info.BindIndexes(context, PDXearchIndex::TYPE_NAME);
+		table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
 		for (auto &index : table_info.GetIndexes().Indexes()) {
-			if (!index.IsBound() || PDXearchIndex::TYPE_NAME != index.GetIndexType()) {
+			if (!index.IsBound() || VSSIndex::TYPE_NAME != index.GetIndexType()) {
 				continue;
 			}
-			auto &cast_index = index.Cast<PDXearchIndex>();
+			auto &cast_index = index.Cast<VSSIndex>();
 
 			// Reset the bindings
 			bindings.clear();
@@ -771,7 +771,7 @@ public:
 			if (!cast_index.TryMatchDistanceFunction(distance_expression, bindings)) {
 				continue;
 			}
-			// Check that the PDXearch index actually indexes the expression
+			// Check that the DuckIR VSS index actually indexes the expression
 			unique_ptr<Expression> index_expr;
 			if (!cast_index.TryBindIndexExpression(get, index_expr)) {
 				continue;
@@ -818,7 +818,7 @@ public:
 
 	// Copies a constant query vector (a FLOAT array, or a BLOB of our encoding) into a float array of the index's
 	// dimension. nullptr when the BLOB's dimension differs from the index's.
-	static unsafe_unique_array<float> TryDecodeConstantQuery(const PDXearchIndex &index, const Value &query) {
+	static unsafe_unique_array<float> TryDecodeConstantQuery(const VSSIndex &index, const Value &query) {
 		const auto num_dimensions = index.GetNumDimensions();
 		auto query_embedding = make_unsafe_uniq_array<float>(num_dimensions);
 
@@ -1020,8 +1020,8 @@ public:
 			return false;
 		}
 		// With an OFFSET the TopN stays in the plan and skips the first `offset` of the rows we return.
-		auto bind_data = make_uniq<PDXearchIndexScanBindData>(duck_table, *match.index, top_n.limit + top_n.offset,
-		                                                      std::move(query_embedding));
+		auto bind_data = make_uniq<VSSIndexScanBindData>(duck_table, *match.index, top_n.limit + top_n.offset,
+		                                                 std::move(query_embedding));
 
 		DetachDynamicFilters(get, chain);
 
@@ -1031,12 +1031,12 @@ public:
 			// Scenario 1: Non-filtered search.
 
 			// Replace the table scan, and the projections above it that forward its columns, with the index scan.
-			auto pdxearch_index_scan = make_uniq<LogicalPDXearchIndexScan>(
+			auto vss_index_scan = make_uniq<LogicalVSSIndexScan>(
 			    duck_table, bind_data->index, bind_data->limit, std::move(bind_data->query_embedding),
 			    std::move(output_column_ids), std::move(output_bindings));
 
 			projection.children.clear();
-			projection.children.push_back(std::move(pdxearch_index_scan));
+			projection.children.push_back(std::move(vss_index_scan));
 			projection.estimated_cardinality = top_n.estimated_cardinality;
 			projection.ResolveOperatorTypes();
 
@@ -1046,24 +1046,24 @@ public:
 			}
 			return true;
 		} else {
-			// Scenarios 2 and 3: Filtered search. The PDXearchIndexFilteredScan emits the columns the projection reads
+			// Scenarios 2 and 3: Filtered search. The VSSIndexFilteredScan emits the columns the projection reads
 			// (output_bindings), fetched by rowid, so the operators above it keep working unchanged. Its child emits
 			// the rowid of every row that passes the predicate.
 			ColumnBinding rowid_binding;
 			auto rowid_child = BuildRowIdChild(input, projection.children.front(), get_ptr, chain, chain_filters_rows,
 			                                   match, rowid_binding);
 
-			// Insert a PDXearchIndexFilteredScan operator above the rowid child.
-			auto pdxearch_index_filtered_scan = make_uniq<LogicalPDXearchIndexFilteredScan>(
+			// Insert a VSSIndexFilteredScan operator above the rowid child.
+			auto vss_index_filtered_scan = make_uniq<LogicalVSSIndexFilteredScan>(
 			    duck_table, bind_data->index, bind_data->limit, std::move(bind_data->query_embedding),
 			    std::move(output_column_ids), std::move(output_bindings));
-			pdxearch_index_filtered_scan->expressions.push_back(
+			vss_index_filtered_scan->expressions.push_back(
 			    make_uniq<BoundColumnRefExpression>(LogicalType::ROW_TYPE, rowid_binding));
-			pdxearch_index_filtered_scan->children.push_back(std::move(rowid_child));
-			pdxearch_index_filtered_scan->ResolveOperatorTypes();
+			vss_index_filtered_scan->children.push_back(std::move(rowid_child));
+			vss_index_filtered_scan->ResolveOperatorTypes();
 
 			projection.children.clear();
-			projection.children.push_back(std::move(pdxearch_index_filtered_scan));
+			projection.children.push_back(std::move(vss_index_filtered_scan));
 			projection.estimated_cardinality = top_n.estimated_cardinality;
 			projection.ResolveOperatorTypes();
 
@@ -1254,7 +1254,7 @@ public:
 	}
 
 	// Scenario 4: a LATERAL join searching the table once per query row. Replaces the cross product between the table
-	// and the query rows, below the projection that computes the distance, with a PDXearchIndexJoin.
+	// and the query rows, below the projection that computes the distance, with a VSSIndexJoin.
 	static bool TryOptimizeIndexJoin(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
 		idx_t limit = 0;
 		ColumnBinding key_binding;
@@ -1348,8 +1348,8 @@ public:
 		DetachDynamicFilters(get, chain);
 		const bool is_filtered = chain_filters_rows || !get.table_filters.filters.empty();
 
-		auto index_join = make_uniq<LogicalPDXearchIndexJoin>(duck_table, *match.index, limit, query_binding,
-		                                                      std::move(output_column_ids), std::move(output_bindings));
+		auto index_join = make_uniq<LogicalVSSIndexJoin>(duck_table, *match.index, limit, query_binding,
+		                                                 std::move(output_column_ids), std::move(output_bindings));
 		const auto num_query_rows = cross_product.children[query_rows_side]->EstimateCardinality(input.context);
 		index_join->children.push_back(std::move(cross_product.children[query_rows_side]));
 		if (is_filtered) {
@@ -1439,7 +1439,7 @@ public:
 		auto &op = below.get();
 		const auto is_index_scan =
 		    op.type == LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR &&
-		    (op.GetName() == "PDXEARCH_INDEX_SCAN" || op.GetName() == "PDXEARCH_INDEX_FILT_SCAN");
+		    (op.GetName() == "DUCKIR_VSS_INDEX_SCAN" || op.GetName() == "DUCKIR_VSS_INDEX_FILT_SCAN");
 		if (projections.size() < 2 || !is_index_scan) {
 			for (auto &child : op.children) {
 				MergeProjections(child);
@@ -1449,10 +1449,10 @@ public:
 		for (idx_t i = 1; i < projections.size(); i++) {
 			DropUnreadExpressions(projections[i - 1], projections[i]);
 		}
-		if (op.GetName() == "PDXEARCH_INDEX_SCAN") {
-			DropUnreadColumns(op.Cast<LogicalPDXearchIndexScan>(), projections.back());
+		if (op.GetName() == "DUCKIR_VSS_INDEX_SCAN") {
+			DropUnreadColumns(op.Cast<LogicalVSSIndexScan>(), projections.back());
 		} else {
-			DropUnreadColumns(op.Cast<LogicalPDXearchIndexFilteredScan>(), projections.back());
+			DropUnreadColumns(op.Cast<LogicalVSSIndexFilteredScan>(), projections.back());
 		}
 	}
 
@@ -1464,16 +1464,16 @@ public:
 	}
 
 	static void Optimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
-		auto did_use_pdxearch_scan = OptimizeChildren(input, plan);
-		if (did_use_pdxearch_scan) {
+		auto did_use_vss_scan = OptimizeChildren(input, plan);
+		if (did_use_vss_scan) {
 			MergeProjections(plan);
 		}
 	}
 };
 
-void PDXearchModule::RegisterScanOptimizer(DatabaseInstance &db) {
+void VSSModule::RegisterScanOptimizer(DatabaseInstance &db) {
 	// Register the optimizer extension
-	OptimizerExtension::Register(db.config, PDXearchIndexScanOptimizer());
+	OptimizerExtension::Register(db.config, DuckIRScanOptimizer());
 }
 
 } // namespace duckdb

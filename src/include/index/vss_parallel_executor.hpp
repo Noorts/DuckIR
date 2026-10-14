@@ -57,7 +57,7 @@ private:
 		}
 
 		string TaskType() const override {
-			return "PDXearchRangeTask";
+			return "VSSRangeTask";
 		}
 
 	private:

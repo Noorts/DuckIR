@@ -1,6 +1,6 @@
-#include "index/pdxearch_blob_functions.hpp"
-#include "index/pdxearch_blob_codec.hpp"
-#include "index/pdxearch_module.hpp"
+#include "index/vss_blob_functions.hpp"
+#include "index/vss_blob_codec.hpp"
+#include "index/vss_module.hpp"
 
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/vector.hpp"
@@ -305,19 +305,19 @@ static void RegisterDistanceOverloads(ExtensionLoader &loader, const string &fun
 // Registration
 //------------------------------------------------------------------------------
 
-void PDXearchBlobFunctions::Register(ExtensionLoader &loader) {
+void VSSBlobFunctions::Register(ExtensionLoader &loader) {
 	// Utility functions
-	loader.RegisterFunction(ScalarFunction("pdxearch_encode_blob", {LogicalType::LIST(LogicalType::FLOAT)},
+	loader.RegisterFunction(ScalarFunction("duckir_vss_encode_blob", {LogicalType::LIST(LogicalType::FLOAT)},
 	                                       LogicalType::BLOB, EncodeBlobFunction));
 
-	loader.RegisterFunction(ScalarFunction("pdxearch_decode_blob", {LogicalType::BLOB},
+	loader.RegisterFunction(ScalarFunction("duckir_vss_decode_blob", {LogicalType::BLOB},
 	                                       LogicalType::LIST(LogicalType::FLOAT), DecodeBlobFunction));
 
 	loader.RegisterFunction(
-	    ScalarFunction("pdxearch_blob_to_base64", {LogicalType::BLOB}, LogicalType::VARCHAR, BlobToBase64Function));
+	    ScalarFunction("duckir_vss_blob_to_base64", {LogicalType::BLOB}, LogicalType::VARCHAR, BlobToBase64Function));
 
 	loader.RegisterFunction(
-	    ScalarFunction("pdxearch_base64_to_blob", {LogicalType::VARCHAR}, LogicalType::BLOB, Base64ToBlobFunction));
+	    ScalarFunction("duckir_vss_base64_to_blob", {LogicalType::VARCHAR}, LogicalType::BLOB, Base64ToBlobFunction));
 
 	// Distance function overloads
 	RegisterDistanceOverloads<BlobDistanceOp>(loader, "array_distance");
@@ -326,8 +326,8 @@ void PDXearchBlobFunctions::Register(ExtensionLoader &loader) {
 	RegisterDistanceOverloads<BlobCosineDistanceOp>(loader, "<=>");
 }
 
-void PDXearchModule::RegisterBlobFunctions(ExtensionLoader &loader) {
-	PDXearchBlobFunctions::Register(loader);
+void VSSModule::RegisterBlobFunctions(ExtensionLoader &loader) {
+	VSSBlobFunctions::Register(loader);
 }
 
 } // namespace duckdb

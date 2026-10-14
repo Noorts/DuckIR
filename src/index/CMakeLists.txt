@@ -1,17 +1,17 @@
 set(EXTENSION_SOURCES
     ${EXTENSION_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_index.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_storage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_index_info_function.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_sync_function.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/create/pdxearch_index_create_plan.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/create/pdxearch_index_create.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/search/pdxearch_index_filtered_scan_logical.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/search/pdxearch_index_filtered_scan_physical.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/search/pdxearch_index_join_logical.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/search/pdxearch_index_join_physical.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/search/pdxearch_index_scan_logical.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/search/pdxearch_index_scan_physical.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/search/pdxearch_scan_optimizer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/pdxearch_blob_functions.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vss_index.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vss_storage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vss_index_info_function.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vss_sync_function.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/create/vss_index_create_plan.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/create/vss_index_create.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_filtered_scan_logical.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_filtered_scan_physical.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_join_logical.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_join_physical.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_scan_logical.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_scan_physical.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/search/duckir_scan_optimizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vss_blob_functions.cpp
     PARENT_SCOPE)

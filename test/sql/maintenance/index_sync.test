@@ -1,10 +1,10 @@
 # name: test/sql/maintenance/index_sync.test
-# description: CALL pdxearch_sync_index indexes the rows committed since the last search eagerly, and reports whether there was anything to do.
+# description: CALL duckir_vss_sync_index indexes the rows committed since the last search eagerly, and reports whether there was anything to do.
 # group: [maintenance]
 
 require parquet
 
-require pdxearch
+require duckir
 
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
@@ -31,11 +31,11 @@ statement ok
 CREATE TABLE t1 AS SELECT * FROM sift WHERE id < 20000;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
 
 # Nothing committed since the build.
 query II
-CALL pdxearch_sync_index('t1_idx');
+CALL duckir_vss_sync_index('t1_idx');
 ----
 t1_idx	false
 
@@ -46,12 +46,12 @@ statement ok
 INSERT INTO t1 VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
 
 query II
-CALL pdxearch_sync_index('t1_idx');
+CALL duckir_vss_sync_index('t1_idx');
 ----
 t1_idx	true
 
 query II
-CALL pdxearch_sync_index('t1_idx');
+CALL duckir_vss_sync_index('t1_idx');
 ----
 t1_idx	false
 
@@ -61,6 +61,6 @@ SELECT id FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMI
 -1
 
 statement error
-CALL pdxearch_sync_index('no_such_index');
+CALL duckir_vss_sync_index('no_such_index');
 ----
 not found

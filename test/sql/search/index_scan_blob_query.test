@@ -1,10 +1,10 @@
 # name: test/sql/search/index_scan_blob_query.test
-# description: Test blob-based query vectors for PDXearch index scan
+# description: Test blob-based query vectors for DuckIR VSS index scan
 # group: [search]
 
 require parquet
 
-require pdxearch
+require duckir
 
 # ============================================
 # 1. Encode/decode round-trip (within quantization tolerance)
@@ -14,7 +14,7 @@ require pdxearch
 query I
 SELECT max(abs(a - b)) < 0.01
 FROM (
-    SELECT unnest(pdxearch_decode_blob(pdxearch_encode_blob([1.0, -0.5, 0.001, 0.0, -0.001]::FLOAT[]))) AS a,
+    SELECT unnest(duckir_vss_decode_blob(duckir_vss_encode_blob([1.0, -0.5, 0.001, 0.0, -0.001]::FLOAT[]))) AS a,
            unnest([1.0, -0.5, 0.001, 0.0, -0.001]::FLOAT[]) AS b
 );
 ----
@@ -25,8 +25,8 @@ true
 # ============================================
 
 query I
-SELECT pdxearch_base64_to_blob(pdxearch_blob_to_base64(pdxearch_encode_blob([1.0, -0.5, 0.25]::FLOAT[])))
-    = pdxearch_encode_blob([1.0, -0.5, 0.25]::FLOAT[]);
+SELECT duckir_vss_base64_to_blob(duckir_vss_blob_to_base64(duckir_vss_encode_blob([1.0, -0.5, 0.25]::FLOAT[])))
+    = duckir_vss_encode_blob([1.0, -0.5, 0.25]::FLOAT[]);
 ----
 true
 
@@ -42,7 +42,7 @@ INSERT INTO t1 VALUES (1, [1.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0]), (3, [0.0, 0.0,
 
 # array_distance with blob on left
 query I
-SELECT round(array_distance(pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]), emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
+SELECT round(array_distance(duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]), emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
 ----
 0.00
 1.41
@@ -50,7 +50,7 @@ SELECT round(array_distance(pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]), emb)
 
 # array_distance with blob on right
 query I
-SELECT round(array_distance(emb, pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]))::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
+SELECT round(array_distance(emb, duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]))::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
 ----
 0.00
 1.41
@@ -58,7 +58,7 @@ SELECT round(array_distance(emb, pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]))
 
 # array_cosine_distance with blob (identical=0, orthogonal=1)
 query I
-SELECT round(array_cosine_distance(pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]), emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
+SELECT round(array_cosine_distance(duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]), emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
 ----
 0.00
 1.00
@@ -66,7 +66,7 @@ SELECT round(array_cosine_distance(pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]
 
 # <-> operator with blob
 query I
-SELECT round((pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]) <-> emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
+SELECT round((duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]) <-> emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
 ----
 0.00
 1.41
@@ -74,7 +74,7 @@ SELECT round((pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]) <-> emb)::DECIMAL(1
 
 # <=> operator with blob
 query I
-SELECT round((pdxearch_encode_blob([1.0, 0.0, 0.0]::FLOAT[]) <=> emb)::DECIMAL(18,4), 4) FROM t1 WHERE id = 1;
+SELECT round((duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]) <=> emb)::DECIMAL(18,4), 4) FROM t1 WHERE id = 1;
 ----
 0.0000
 
@@ -82,7 +82,7 @@ statement ok
 DROP TABLE t1;
 
 # ============================================
-# 4. Optimizer recognition: EXPLAIN shows PDXEARCH_INDEX_SCAN with blob query
+# 4. Optimizer recognition: EXPLAIN shows DUCKIR_VSS_INDEX_SCAN with blob query
 # ============================================
 
 test-env DIMS 128
@@ -103,13 +103,13 @@ statement ok
 DROP INDEX IF EXISTS t2_idx;
 
 statement ok
-CREATE INDEX t2_idx ON t2 USING PDXEARCH (emb) WITH (metric = '${metric_name}');
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}');
 
 # Index scan is used with blob query
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY ${distance_func}(emb, pdxearch_encode_blob(${QUERY_EMB}::FLOAT[])) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY ${distance_func}(emb, duckir_vss_encode_blob(${QUERY_EMB}::FLOAT[])) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 endloop
 
@@ -121,23 +121,23 @@ statement ok
 DROP INDEX IF EXISTS t2_idx;
 
 statement ok
-CREATE INDEX t2_idx ON t2 USING PDXEARCH (emb) WITH (metric = 'l2sq');
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq');
 
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY emb <-> pdxearch_encode_blob(${QUERY_EMB}::FLOAT[]) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY emb <-> duckir_vss_encode_blob(${QUERY_EMB}::FLOAT[]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 DROP INDEX IF EXISTS t2_idx;
 
 statement ok
-CREATE INDEX t2_idx ON t2 USING PDXEARCH (emb) WITH (metric = 'cosine');
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'cosine');
 
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY emb <=> pdxearch_encode_blob(${QUERY_EMB}::FLOAT[]) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY emb <=> duckir_vss_encode_blob(${QUERY_EMB}::FLOAT[]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 DROP TABLE t2;

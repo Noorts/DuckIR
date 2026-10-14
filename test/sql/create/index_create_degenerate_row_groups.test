@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
@@ -124,12 +124,12 @@ statement ok
 DROP INDEX IF EXISTS ${tbl}_idx;
 
 statement ok
-CREATE INDEX ${tbl}_idx ON ${tbl} USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX ${tbl}_idx ON ${tbl} USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 query II
 EXPLAIN SELECT * FROM ${tbl} ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Row Groups: 2[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
 
 # The degenerate row is the nearest neighbor of its own marker embedding.
 query I

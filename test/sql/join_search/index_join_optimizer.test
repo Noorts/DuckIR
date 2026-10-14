@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # Variables
 test-env DIMS 128
@@ -19,69 +19,69 @@ statement ok
 CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[${DIMS}] AS vec, emb::DOUBLE[${DIMS}] AS double_vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
 
 statement ok
-CREATE INDEX t_idx ON t USING PDXEARCH (emb) WITH (metric = 'l2sq', seed = 0);
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', seed = 0);
 
 # The shape the index join handles.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # Descending order (an arg_max).
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec) DESC LIMIT 10) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # A second ORDER BY key.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec), t.id LIMIT 10) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # NULL distances first: rows without an embedding are not in the index.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec) NULLS FIRST LIMIT 10) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # K above 2048 (STANDARD_VECTOR_SIZE), also as LIMIT + OFFSET.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec) LIMIT 2049) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec) LIMIT 2000 OFFSET 49) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # A filter on t that reads the query row: each query would have its own passing rows.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = q.qid % 10 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # The query vector is an expression over the query row, not one of its columns.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.double_vec::FLOAT[${DIMS}]) LIMIT 10) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # A distance function of another metric than the index's.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_cosine_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # A table without an index.
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t_unindexed.id FROM t_unindexed ORDER BY array_distance(t_unindexed.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # The top K per query written without LATERAL (not handled yet).
 query II
 EXPLAIN SELECT q.qid, t.id FROM q, t QUALIFY row_number() OVER (PARTITION BY q.qid ORDER BY array_distance(t.emb, q.vec)) <= 10;
 ----
-physical_plan	<!REGEX>:.*PDXEARCH_INDEX_JOIN.*
+physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*

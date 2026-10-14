@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 load __TEST_DIR__/index_cluster_paging_main.db
 
@@ -25,13 +25,13 @@ statement ok
 CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
 
 statement ok
-CREATE INDEX t_idx ON p.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
 statement ok
 CHECKPOINT p;
 
 statement ok
-SET pdxearch_cluster_paging = false;
+SET duckir_vss_cluster_paging = false;
 
 restart
 
@@ -46,7 +46,7 @@ SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distan
 ----
 
 statement ok
-SET pdxearch_cluster_paging = true;
+SET duckir_vss_cluster_paging = true;
 
 restart
 
@@ -60,7 +60,7 @@ SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distan
 
 # The paging counters stay off by default.
 query I
-SELECT cluster_acquires FROM pdxearch_index_info() WHERE index_name = 't_idx';
+SELECT cluster_acquires FROM duckir_vss_index_info() WHERE index_name = 't_idx';
 ----
 0
 
@@ -84,10 +84,10 @@ statement ok
 SET memory_limit = '32MB';
 
 statement ok
-SET pdxearch_paging_counters = true;
+SET duckir_vss_paging_counters = true;
 
 statement ok
-SET pdxearch_cache_tiers = true;
+SET duckir_vss_cache_tiers = true;
 
 restart
 
@@ -100,12 +100,12 @@ SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distan
 ----
 
 query I
-SELECT cluster_cache_misses > 0 FROM pdxearch_index_info() WHERE index_name = 't_idx';
+SELECT cluster_cache_misses > 0 FROM duckir_vss_index_info() WHERE index_name = 't_idx';
 ----
 true
 
 statement ok
-SET pdxearch_cluster_paging = false;
+SET duckir_vss_cluster_paging = false;
 
 restart
 

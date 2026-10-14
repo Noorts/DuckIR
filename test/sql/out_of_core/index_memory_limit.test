@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 load __TEST_DIR__/index_memory_limit_main.db
 
@@ -16,7 +16,7 @@ SET checkpoint_threshold = '10GB';
 
 # The index on the heap is what is reserved: with paging, its clusters are DuckDB buffers instead.
 statement ok
-SET pdxearch_cluster_paging = false;
+SET duckir_vss_cluster_paging = false;
 
 # Variables
 test-env DIMS 128
@@ -33,11 +33,11 @@ SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'EXTENSION';
 0
 
 statement ok
-CREATE INDEX t_idx ON m.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON m.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
 # CREATE INDEX reserves the index's size.
 query I
-SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
+SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
 ----
 true
 
@@ -49,7 +49,7 @@ SELECT id FROM m.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LI
 
 # The search's sync reserves what it added.
 query I
-SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
+SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
 ----
 true
 
@@ -69,7 +69,7 @@ SELECT id FROM m.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LI
 
 # A loaded index reserves its size.
 query I
-SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM pdxearch_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
+SELECT memory_usage_bytes = (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 't_idx') FROM duckdb_memory() WHERE tag = 'EXTENSION';
 ----
 true
 
@@ -90,7 +90,7 @@ SET memory_limit = '6MB';
 
 # An index larger than memory_limit fails to build, and frees what it reserved.
 statement error
-CREATE INDEX t_idx ON m.t USING PDXEARCH (emb) WITH (quantization = 'f32');
+CREATE INDEX t_idx ON m.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 ----
 Out of Memory Error
 

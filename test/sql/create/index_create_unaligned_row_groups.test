@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
@@ -54,12 +54,12 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Total Clusters: 600[^0-9].*Row Groups: 5[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 600[^0-9].*Row Groups: 5[^0-9].*
 
 statement ok
 CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_no_index WHERE emb IS NOT NULL ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT};

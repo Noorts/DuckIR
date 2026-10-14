@@ -11,10 +11,10 @@ class DuckTableEntry;
 // the table. It replaces the cross product between the table (possibly filtered) and the query rows in the plan
 // DuckDB builds for a LATERAL join, and emits the cross product's columns: the query rows' columns, and the table
 // columns fetched by rowid.
-class LogicalPDXearchIndexJoin : public LogicalExtensionOperator {
+class LogicalVSSIndexJoin : public LogicalExtensionOperator {
 public:
-	LogicalPDXearchIndexJoin(DuckTableEntry &table, Index &index, idx_t limit, ColumnBinding query_binding,
-	                         vector<ColumnIndex> column_ids, vector<ColumnBinding> column_bindings)
+	LogicalVSSIndexJoin(DuckTableEntry &table, Index &index, idx_t limit, ColumnBinding query_binding,
+	                    vector<ColumnIndex> column_ids, vector<ColumnBinding> column_bindings)
 	    : LogicalExtensionOperator(), query_binding(query_binding), column_ids(std::move(column_ids)),
 	      column_bindings(std::move(column_bindings)), table(table), index(index), limit(limit) {
 	}
@@ -36,7 +36,7 @@ public:
 
 public:
 	string GetName() const override {
-		return "PDXEARCH_INDEX_JOIN";
+		return "DUCKIR_VSS_INDEX_JOIN";
 	}
 
 	void ResolveTypes() override;

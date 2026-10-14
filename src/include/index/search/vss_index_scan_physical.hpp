@@ -8,9 +8,8 @@ namespace duckdb {
 class Index;
 class DuckTableEntry;
 
-struct PDXearchIndexScanBindData {
-	PDXearchIndexScanBindData(DuckTableEntry &table, Index &index, idx_t limit,
-	                          unsafe_unique_array<float> query_embedding)
+struct VSSIndexScanBindData {
+	VSSIndexScanBindData(DuckTableEntry &table, Index &index, idx_t limit, unsafe_unique_array<float> query_embedding)
 	    : table(table), index(index), limit(limit), query_embedding(std::move(query_embedding)) {
 	}
 
@@ -21,17 +20,17 @@ struct PDXearchIndexScanBindData {
 	unsafe_unique_array<float> query_embedding;
 };
 
-class PhysicalPDXearchIndexScan : public PhysicalOperator {
+class PhysicalVSSIndexScan : public PhysicalOperator {
 public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::EXTENSION;
 
 public:
-	PhysicalPDXearchIndexScan(PhysicalPlan &physical_plan, vector<LogicalType> types,
-	                          unique_ptr<PDXearchIndexScanBindData> bind_data, vector<ColumnIndex> column_ids,
-	                          idx_t estimated_cardinality);
+	PhysicalVSSIndexScan(PhysicalPlan &physical_plan, vector<LogicalType> types,
+	                     unique_ptr<VSSIndexScanBindData> bind_data, vector<ColumnIndex> column_ids,
+	                     idx_t estimated_cardinality);
 
 	string GetName() const override {
-		return "PDXEARCH_INDEX_SCAN";
+		return "DUCKIR_VSS_INDEX_SCAN";
 	};
 
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
@@ -53,7 +52,7 @@ public:
 	}
 
 private:
-	unique_ptr<PDXearchIndexScanBindData> bind_data;
+	unique_ptr<VSSIndexScanBindData> bind_data;
 
 	// IDs of the columns to fetch from local storage for the (at most) top K
 	// results. This depends on the column IDs of the original table scan.

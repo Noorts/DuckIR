@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
@@ -37,7 +37,7 @@ statement ok
 CREATE OR REPLACE TABLE t1 AS SELECT id, emb, id % 7 AS extra FROM sift WHERE id < 8192;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING PDXEARCH (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
 
 query I
 SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 1;
@@ -59,7 +59,7 @@ SELECT id FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMI
 query II
 EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
 ----
-physical_plan	<REGEX>:.*PDXEARCH_INDEX_SCAN.*Row Groups: 2[^0-9].*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
 
 statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t1;
@@ -125,7 +125,7 @@ SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 true
 
 query II
-CALL pdxearch_sync_index('t1_idx');
+CALL duckir_vss_sync_index('t1_idx');
 ----
 t1_idx	false
 

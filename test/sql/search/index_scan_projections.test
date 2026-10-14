@@ -4,7 +4,7 @@
 
 require parquet
 
-require pdxearch
+require duckir
 
 test-env DIMS 128
 
@@ -19,13 +19,13 @@ CREATE TABLE t_bf AS FROM t;
 
 # Probing every cluster of an f32 index returns the exact nearest rows.
 statement ok
-CREATE INDEX t_idx ON t USING PDXEARCH (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
 
 # Reading only the id fetches only the id.
 query II
 EXPLAIN (FORMAT json) SELECT id FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": "id",.*
+physical_plan	<REGEX>:.*"DUCKIR_VSS_INDEX_SCAN".*"DuckIR VSS Index": "t_idx",\s*"Projections": "id",.*
 
 query I nosort id_only
 SELECT id FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -39,7 +39,7 @@ SELECT id FROM t_bf ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) L
 query II
 EXPLAIN (FORMAT json) SELECT id, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10;
 ----
-physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
+physical_plan	<REGEX>:.*"DUCKIR_VSS_INDEX_SCAN".*"DuckIR VSS Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
 
 query II nosort distance
 SELECT id, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10;
@@ -62,13 +62,13 @@ SELECT id, emb, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t_bf
 query II
 EXPLAIN (FORMAT json) SELECT id FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 3;
 ----
-physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
+physical_plan	<REGEX>:.*"DUCKIR_VSS_INDEX_SCAN".*"DuckIR VSS Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
 
 # A subquery that forwards the distance nobody reads fetches only the columns read.
 query II
 EXPLAIN (FORMAT json) SELECT id, label FROM (SELECT id, label, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10);
 ----
-physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"label"\s*\].*
+physical_plan	<REGEX>:.*"DUCKIR_VSS_INDEX_SCAN".*"DuckIR VSS Index": "t_idx",\s*"Projections": \[\s*"id",\s*"label"\s*\].*
 
 query II nosort subquery
 SELECT id, label FROM (SELECT id, label, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10);
@@ -82,13 +82,13 @@ SELECT id, label FROM (SELECT id, label, array_distance(emb, ${QUERY_EMB}::FLOAT
 query II
 EXPLAIN (FORMAT json) SELECT id, d FROM (SELECT id, label, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t ORDER BY d LIMIT 10);
 ----
-physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
+physical_plan	<REGEX>:.*"DUCKIR_VSS_INDEX_SCAN".*"DuckIR VSS Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
 
 # Reading no column fetches only the rowid.
 query II
 EXPLAIN (FORMAT json) SELECT 42 FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*"PDXEARCH_INDEX_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": "rowid",.*
+physical_plan	<REGEX>:.*"DUCKIR_VSS_INDEX_SCAN".*"DuckIR VSS Index": "t_idx",\s*"Projections": "rowid",.*
 
 # The rowid fetch still drops a row deleted in the transaction.
 statement ok
@@ -112,7 +112,7 @@ ROLLBACK;
 query II
 EXPLAIN (FORMAT json) SELECT id FROM t WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
 ----
-physical_plan	<REGEX>:.*"PDXEARCH_INDEX_FILT_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": "id",.*
+physical_plan	<REGEX>:.*"DUCKIR_VSS_INDEX_FILT_SCAN".*"DuckIR VSS Index": "t_idx",\s*"Projections": "id",.*
 
 query I nosort filtered
 SELECT id FROM t WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
@@ -126,4 +126,4 @@ SELECT id FROM t_bf WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::
 query II
 EXPLAIN (FORMAT json) SELECT id, array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) AS d FROM t WHERE id % 3 = 0 ORDER BY d LIMIT 10;
 ----
-physical_plan	<REGEX>:.*"PDXEARCH_INDEX_FILT_SCAN".*"PDXearch Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
+physical_plan	<REGEX>:.*"DUCKIR_VSS_INDEX_FILT_SCAN".*"DuckIR VSS Index": "t_idx",\s*"Projections": \[\s*"id",\s*"emb"\s*\].*
