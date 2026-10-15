@@ -866,6 +866,10 @@ public:
 					continue;
 				}
 			}
+			// The read handle only exposes a const index, but the plan's operators search it (non-const) after this
+			// handle is released. TODO: Keep the IndexEntry in the plan and take a handle at execution time instead, as
+			// DuckDB does (e.g. IndexKeyBindData), which removes this cast.
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
 			match.index = const_cast<VSSIndex *>(index.operator->());
 			match.query_argument = query_expr_ref.get();
 			if (index_expr_ref.get().GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
