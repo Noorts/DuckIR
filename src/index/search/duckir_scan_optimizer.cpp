@@ -1,4 +1,6 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
+#include "duckdb/function/scalar/compressed_materialization_functions.hpp"
+#include "duckdb/function/scalar/compressed_materialization_utils.hpp"
 #include "duckdb/optimizer/column_lifetime_analyzer.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
@@ -382,21 +384,38 @@ public:
 		}
 	}
 
-	// DuckDB's compressed materialization (compressed_materialization.cpp) narrows a join key: `__internal_compress_*`
-	// below the join, and `__internal_decompress_*` above it to read the key back. True when `expression` is such a
-	// call, picked by `prefix`, on a column reference; `call` receives it.
-	static bool TryUnwrapCompression(const Expression &expression, const string &prefix,
-	                                 optional_ptr<const BoundFunctionExpression> &call) {
-		if (expression.GetExpressionType() != ExpressionType::BOUND_FUNCTION) {
-			return false;
+	// DuckDB's compressed materialization (compressed_materialization.cpp) narrows a join key below the join and reads
+	// it back above it: with a value-preserving cast each way (CAST), or with `__internal_compress_*` and
+	// `__internal_decompress_*` (COMPRESS, DECOMPRESS). Matched by name: CMUtils::GetExpressionType compares the bind
+	// callback, which is DuckDB's own copy in a loadable extension.
+	static CMExpressionType GetCompressionKind(const BoundFunctionExpression &function) {
+		const auto &name = function.Function().GetName();
+		if (name == InternalCompressedMaterializationCastFun::Name) {
+			return CMExpressionType::CAST;
+		}
+		if (name.StartsWith("__internal_compress_")) {
+			return CMExpressionType::COMPRESS;
+		}
+		if (name.StartsWith("__internal_decompress_")) {
+			return CMExpressionType::DECOMPRESS;
+		}
+		return CMExpressionType::NONE;
+	}
+
+	// Returns the kind of `expression` when it is a compressed materialization call on a column reference, which
+	// `call` receives, and NONE otherwise.
+	static CMExpressionType TryUnwrapCompression(const Expression &expression,
+	                                             optional_ptr<const BoundFunctionExpression> &call) {
+		if (expression.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+			return CMExpressionType::NONE;
 		}
 		auto &function = expression.Cast<BoundFunctionExpression>();
-		if (!function.Function().GetName().StartsWith(prefix) || function.GetChildren().empty() ||
+		if (function.GetChildren().empty() ||
 		    function.GetChildren()[0]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-			return false;
+			return CMExpressionType::NONE;
 		}
 		call = &function;
-		return true;
+		return GetCompressionKind(function);
 	}
 
 	// Follows a binding read above chain.front() down the chain (ordered from the top down to the table scan) to the
@@ -423,10 +442,17 @@ public:
 				continue;
 			}
 			optional_ptr<const BoundFunctionExpression> call;
-			if (TryUnwrapCompression(expression, "__internal_decompress_", call)) {
+			const auto kind = TryUnwrapCompression(expression, call);
+			if (kind == CMExpressionType::CAST && !pending_decompressions.empty() &&
+			    GetCompressionKind(pending_decompressions.back().get()) == CMExpressionType::CAST &&
+			    pending_decompressions.back().get().GetReturnType() == call->GetChildren()[0]->GetReturnType() &&
+			    pending_decompressions.back().get().GetChildren()[0]->GetReturnType() == call->GetReturnType()) {
+				// The cast below the join that the decompressing cast above it undoes.
+				pending_decompressions.pop_back();
+			} else if (kind == CMExpressionType::CAST || kind == CMExpressionType::DECOMPRESS) {
 				pending_decompressions.push_back(*call);
-			} else if (!pending_decompressions.empty() &&
-			           TryUnwrapCompression(expression, "__internal_compress_", call)) {
+			} else if (kind == CMExpressionType::COMPRESS && !pending_decompressions.empty() &&
+			           GetCompressionKind(pending_decompressions.back().get()) == CMExpressionType::DECOMPRESS) {
 				// It must undo the decompress: the key's own type and, for integral keys, the same `min`.
 				auto &decompress = pending_decompressions.back().get();
 				if (decompress.GetReturnType() != call->GetChildren()[0]->GetReturnType() ||
