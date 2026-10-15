@@ -79,7 +79,7 @@ physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*DELIM_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*CTE_SCAN.*
 
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;

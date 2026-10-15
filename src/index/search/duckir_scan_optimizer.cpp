@@ -13,7 +13,6 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
-#include "duckdb/planner/operator/logical_delim_get.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
@@ -288,7 +287,10 @@ namespace duckdb {
  * vector with a FILTER on the row number. Its TopN window elimination then
  * turns these into an AGGREGATE per query vector (with an OFFSET, the FILTER
  * and the WINDOW stay). There is no TopN, and the DELIM_JOIN above joins the
- * results back to q. The index join replaces only the cross product:
+ * results back to q. By default (`delim_join_as_cte`), DuckDB rewrites the
+ * DELIM_JOIN to a CTE of q's rows: the DELIM_GET becomes their DISTINCT (an
+ * AGGREGATE over a CTE_REF), and a join on the query vector replaces the
+ * DELIM_JOIN. The index join replaces only the cross product:
  *
  *                     IN                                         OUT
  *   AGGREGATE [query |                          AGGREGATE [query |
@@ -746,6 +748,29 @@ public:
 			return nullptr;
 		}
 		return cross_product_ptr_ptr;
+	}
+
+	// Whether `op` is the distinct query rows of a LATERAL join: a DELIM_GET, or, when DuckDB rewrites the DELIM_JOIN
+	// to a CTE (`delim_join_as_cte`, the default), an AGGREGATE without aggregates over the CTE's rows (a CTE_REF),
+	// with projections above and below it.
+	static bool IsQueryRows(const LogicalOperator &op) {
+		const auto skip_projections = [](reference<const LogicalOperator> child) {
+			while (child.get().type == LogicalOperatorType::LOGICAL_PROJECTION && child.get().children.size() == 1) {
+				child = *child.get().children.front();
+			}
+			return child;
+		};
+		auto &top = skip_projections(op).get();
+		// TODO: Remove the DELIM_GET case once DuckDB removes DELIM_JOINs (duckdb/duckdb#23187). Until then it serves
+		// `delim_join_as_cte = false` and plans serialized before v2.0 (duckdb/duckdb#26563).
+		if (top.type == LogicalOperatorType::LOGICAL_DELIM_GET) {
+			return true;
+		}
+		if (top.type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY || !top.expressions.empty() ||
+		    top.children.size() != 1) {
+			return false;
+		}
+		return skip_projections(*top.children.front()).get().type == LogicalOperatorType::LOGICAL_CTE_REF;
 	}
 
 	// A distance function matched to an index of the scanned table.
@@ -1320,18 +1345,18 @@ public:
 		auto &cross_product_reader =
 		    forwarding_projections.empty() ? projection : forwarding_projections.back().get().Cast<LogicalProjection>();
 
-		// One side of the cross product holds the query rows: the DELIM_GET of the LATERAL join, which DuckDB fills
-		// with the distinct query rows. The other side is the table, possibly below a chain (the subquery's predicate).
+		// One side of the cross product holds the distinct query rows of the LATERAL join (IsQueryRows). The other side
+		// is the table, possibly below a chain (the subquery's predicate).
 		idx_t query_rows_side;
-		if (cross_product.children[0]->type == LogicalOperatorType::LOGICAL_DELIM_GET) {
+		if (IsQueryRows(*cross_product.children[0])) {
 			query_rows_side = 0;
-		} else if (cross_product.children[1]->type == LogicalOperatorType::LOGICAL_DELIM_GET) {
+		} else if (IsQueryRows(*cross_product.children[1])) {
 			query_rows_side = 1;
 		} else {
 			return false;
 		}
 		const auto query_rows_table_index =
-		    cross_product.children[query_rows_side]->Cast<LogicalDelimGet>().table_index;
+		    cross_product.children[query_rows_side]->GetColumnBindings().front().table_index;
 		auto &table_side = cross_product.children[1 - query_rows_side];
 
 		vector<reference<LogicalOperator>> chain; // From the table side's top down to the table scan (excluded).

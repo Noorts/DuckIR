@@ -72,7 +72,7 @@ physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = 3 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*DELIM_SCAN.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*SEQ_SCAN.*CTE_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = 3 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
