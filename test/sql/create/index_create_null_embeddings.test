@@ -12,7 +12,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
 statement ok
-ATTACH '__TEST_DIR__/nul.db' AS nul (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/nul.db' AS nul (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE nul;
@@ -28,7 +28,7 @@ test-env LIMIT 10
 test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20,8,3,5,67,17,19,26,5,0,1,22,60,26,7,1,18,22,84,53,85,119,119,4,24,18,7,7,1,81,106,102,72,30,6,0,9,1,9,119,72,1,4,33,119,29,6,1,0,1,14,52,119,30,3,0,0,55,92,111,2,5,4,9,22,89,96,14,1,0,1,82,59,16,20,5,25,14,11,4,0,0,1,26,47,23,4,0,0,4,38,83,30,14,9,4,9,17,23,41,0,0,2,8,19,25,23,1]
 
 statement ok
-CREATE TABLE sift AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE sift AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 statement ok
 CREATE TABLE t1 AS SELECT * FROM sift WHERE id < 8192;
@@ -51,21 +51,21 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 query II
-EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 1[^0-9].*
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_no_index WHERE emb IS NOT NULL ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_no_index WHERE emb IS NOT NULL ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
@@ -76,13 +76,13 @@ SELECT COUNT(*) FROM t_idx_res WHERE id % 10 = 0;
 
 # The predicate passes the NULL rows too; they must be skipped, not mapped onto other rows.
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_no_index WHERE emb IS NOT NULL AND id % 5 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_no_index WHERE emb IS NOT NULL AND id % 5 = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 WHERE id % 5 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 WHERE id % 5 = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 

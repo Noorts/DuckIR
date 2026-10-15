@@ -21,19 +21,19 @@ statement ok
 CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb);
 
 query II
-EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[128]) LIMIT 10;
+EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[128]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 query I
-SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[128]) LIMIT 10;
+SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[128]) LIMIT 10;
 ----
 
 statement ok
 INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT 10000;
 
 query I
-SELECT count(*) FROM (SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[128]) LIMIT 10);
+SELECT count(*) FROM (SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[128]) LIMIT 10);
 ----
 10
 

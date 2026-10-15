@@ -57,7 +57,7 @@ CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb);
 foreach dims 16385 70000
 
 statement ok
-CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[${dims}]);
+CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[{dims}]);
 
 statement error
 CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb);

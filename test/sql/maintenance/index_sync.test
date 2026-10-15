@@ -9,7 +9,7 @@ require duckir
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
 statement ok
-ATTACH '__TEST_DIR__/sync.db' AS sync (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/sync.db' AS sync (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE sync;
@@ -25,7 +25,7 @@ test-env LIMIT 10
 test-env MARKER_A [200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200]
 
 statement ok
-CREATE TABLE sift AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE sift AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 statement ok
 CREATE TABLE t1 AS SELECT * FROM sift WHERE id < 20000;
@@ -43,7 +43,7 @@ statement ok
 INSERT INTO t1 SELECT * FROM sift WHERE id >= 20000 AND id < 20100;
 
 statement ok
-INSERT INTO t1 VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
+INSERT INTO t1 VALUES (-1, {MARKER_A}::FLOAT[{DIMS}]);
 
 query II
 CALL duckir_vss_sync_index('t1_idx');
@@ -56,7 +56,7 @@ CALL duckir_vss_sync_index('t1_idx');
 t1_idx	false
 
 query I
-SELECT id FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t1 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 

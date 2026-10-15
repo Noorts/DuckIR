@@ -13,13 +13,13 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 test-env DIMS 128
 
 statement ok
-CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 statement ok
 CREATE TABLE t_unindexed AS FROM t;
 
 statement ok
-CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[${DIMS}] AS vec, emb::DOUBLE[${DIMS}] AS double_vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
+CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[{DIMS}] AS vec, emb::DOUBLE[{DIMS}] AS double_vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
 
 statement ok
 CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', seed = 0);
@@ -67,7 +67,7 @@ physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 
 # The query vector is an expression over the query row, not one of its columns.
 query II
-EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.double_vec::FLOAT[${DIMS}]) LIMIT 10) s;
+EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.double_vec::FLOAT[{DIMS}]) LIMIT 10) s;
 ----
 physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
 

@@ -11,7 +11,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 # Row groups of 8192 rows (4 in the table), so selective filters glue the rows of several row groups into one chunk.
 statement ok
-ATTACH '__TEST_DIR__/in_lists.db' AS in_lists (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/in_lists.db' AS in_lists (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE in_lists;
@@ -34,10 +34,10 @@ test-env NAMES 'n0','n3','n6','n9','n12','n15','n18','n21','n24','n27','n30','n3
 # t is indexed; t_bf is an unindexed copy whose searches give the brute-force result. Row -1 has no name and the query
 # vector as its embedding: it is the nearest row whenever it passes a predicate.
 statement ok
-CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, 'n' || (id % 100) AS name, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, 'n' || (id % 100) AS name, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 statement ok
-INSERT INTO t VALUES (-1, 3, NULL, ${QUERY_EMB}::FLOAT[${DIMS}]);
+INSERT INTO t VALUES (-1, 3, NULL, {QUERY_EMB}::FLOAT[{DIMS}]);
 
 statement ok
 CREATE TABLE t_bf AS FROM t;
@@ -54,36 +54,36 @@ CREATE VIEW v_bf AS SELECT * FROM t_bf WHERE id % 2 = 0 OR cat = 1;
 foreach threads 1 4
 
 statement ok
-SET threads = ${threads};
+SET threads = {threads};
 
 # ============================================
 # Where DuckDB (v1.5.6) switches to the MARK join: 4 constants are an OR of equalities in a FILTER, 5 a MARK join.
 # ============================================
 
 query II
-EXPLAIN SELECT id FROM t WHERE id IN (5, 797, 1594, 2391) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE id IN (5, 797, 1594, 2391) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<!REGEX>:.*HASH_JOIN.*
 
 query I nosort four_constants
-SELECT id FROM t WHERE id IN (5, 797, 1594, 2391) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE id IN (5, 797, 1594, 2391) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort four_constants
-SELECT id FROM t_bf WHERE id IN (5, 797, 1594, 2391) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE id IN (5, 797, 1594, 2391) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query II
-EXPLAIN SELECT id FROM t WHERE id IN (5, 797, 1594, 2391, 3188) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE id IN (5, 797, 1594, 2391, 3188) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*HASH_JOIN.*SEQ_SCAN.*
 
 query I nosort five_constants
-SELECT id FROM t WHERE id IN (5, 797, 1594, 2391, 3188) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE id IN (5, 797, 1594, 2391, 3188) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort five_constants
-SELECT id FROM t_bf WHERE id IN (5, 797, 1594, 2391, 3188) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE id IN (5, 797, 1594, 2391, 3188) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # ============================================
@@ -91,47 +91,47 @@ SELECT id FROM t_bf WHERE id IN (5, 797, 1594, 2391, 3188) ORDER BY array_distan
 # ============================================
 
 query II
-EXPLAIN SELECT id FROM t WHERE id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<!REGEX>:.*SEQ_SCAN.*emb.*
 
 query I nosort forty_constants_k10
-SELECT id FROM t WHERE id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort forty_constants_k10
-SELECT id FROM t_bf WHERE id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort forty_constants_k100
-SELECT id FROM t WHERE id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+SELECT id FROM t WHERE id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100;
 ----
 
 query I nosort forty_constants_k100
-SELECT id FROM t_bf WHERE id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+SELECT id FROM t_bf WHERE id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100;
 ----
 
 query I
-SELECT COUNT(*) FROM (SELECT id FROM t WHERE id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100);
+SELECT COUNT(*) FROM (SELECT id FROM t WHERE id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100);
 ----
 40
 
 # A NULL and a duplicate in the list.
 query I nosort null_and_duplicate
-SELECT id FROM t WHERE id IN (${IDS}, NULL, 797) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+SELECT id FROM t WHERE id IN ({IDS}, NULL, 797) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100;
 ----
 
 query I nosort null_and_duplicate
-SELECT id FROM t_bf WHERE id IN (${IDS}, NULL, 797) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+SELECT id FROM t_bf WHERE id IN ({IDS}, NULL, 797) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100;
 ----
 
 # With a filter DuckDB pushes into the scan on another column.
 query I nosort in_and_pushed_filter
-SELECT id FROM t WHERE id IN (${IDS}) AND cat = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE id IN ({IDS}) AND cat = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort in_and_pushed_filter
-SELECT id FROM t_bf WHERE id IN (${IDS}) AND cat = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE id IN ({IDS}) AND cat = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # ============================================
@@ -139,45 +139,45 @@ SELECT id FROM t_bf WHERE id IN (${IDS}) AND cat = 0 ORDER BY array_distance(emb
 # ============================================
 
 query I nosort or_with_in
-SELECT id FROM t WHERE cat = 3 OR id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+SELECT id FROM t WHERE cat = 3 OR id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100;
 ----
 
 query I nosort or_with_in
-SELECT id FROM t_bf WHERE cat = 3 OR id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 100;
+SELECT id FROM t_bf WHERE cat = 3 OR id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100;
 ----
 
 query II
-EXPLAIN SELECT id FROM t WHERE cat = 3 OR id NOT IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE cat = 3 OR id NOT IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*HASH_JOIN.*SEQ_SCAN.*
 
 query I nosort or_with_not_in
-SELECT id FROM t WHERE cat = 3 OR id NOT IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE cat = 3 OR id NOT IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort or_with_not_in
-SELECT id FROM t_bf WHERE cat = 3 OR id NOT IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE cat = 3 OR id NOT IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort expression_in
-SELECT id FROM t WHERE id % 1000 IN (1, 7, 13, 99, 500, 998) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE id % 1000 IN (1, 7, 13, 99, 500, 998) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort expression_in
-SELECT id FROM t_bf WHERE id % 1000 IN (1, 7, 13, 99, 500, 998) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE id % 1000 IN (1, 7, 13, 99, 500, 998) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query II
-EXPLAIN SELECT id FROM t WHERE id IN (${IDS}) OR name IN (${NAMES}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE id IN ({IDS}) OR name IN ({NAMES}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*HASH_JOIN.*HASH_JOIN.*SEQ_SCAN.*
 
 query I nosort two_lists
-SELECT id FROM t WHERE id IN (${IDS}) OR name IN (${NAMES}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE id IN ({IDS}) OR name IN ({NAMES}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort two_lists
-SELECT id FROM t_bf WHERE id IN (${IDS}) OR name IN (${NAMES}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE id IN ({IDS}) OR name IN ({NAMES}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # ============================================
@@ -186,39 +186,39 @@ SELECT id FROM t_bf WHERE id IN (${IDS}) OR name IN (${NAMES}) ORDER BY array_di
 # ============================================
 
 query I nosort varchar_in
-SELECT id FROM t WHERE name IN (${NAMES}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE name IN ({NAMES}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort varchar_in
-SELECT id FROM t_bf WHERE name IN (${NAMES}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE name IN ({NAMES}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I
-SELECT COUNT(*) FILTER (WHERE id = -1) FROM (SELECT id FROM t WHERE name IN (${NAMES}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10);
+SELECT COUNT(*) FILTER (WHERE id = -1) FROM (SELECT id FROM t WHERE name IN ({NAMES}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10);
 ----
 0
 
 query I
-SELECT id FROM t WHERE name NOT IN (${NAMES}) OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t WHERE name NOT IN ({NAMES}) OR cat = 3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 
 query I nosort varchar_not_in_or
-SELECT id FROM t WHERE name NOT IN (${NAMES}) OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE name NOT IN ({NAMES}) OR cat = 3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort varchar_not_in_or
-SELECT id FROM t_bf WHERE name NOT IN (${NAMES}) OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE name NOT IN ({NAMES}) OR cat = 3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # Constants inside the column's value range that no row holds.
 query II
-EXPLAIN SELECT id FROM t WHERE name IN ('n100', 'n101', 'n102', 'n103', 'n104') ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE name IN ('n100', 'n101', 'n102', 'n103', 'n104') ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*HASH_JOIN.*SEQ_SCAN.*
 
 query I
-SELECT COUNT(*) FROM (SELECT id FROM t WHERE name IN ('n100', 'n101', 'n102', 'n103', 'n104') ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10);
+SELECT COUNT(*) FROM (SELECT id FROM t WHERE name IN ('n100', 'n101', 'n102', 'n103', 'n104') ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10);
 ----
 0
 
@@ -227,16 +227,16 @@ SELECT COUNT(*) FROM (SELECT id FROM t WHERE name IN ('n100', 'n101', 'n102', 'n
 # ============================================
 
 query II
-EXPLAIN SELECT id FROM t WHERE emb[1] IN (0, 1, 2, 3, 4, 5) OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE emb[1] IN (0, 1, 2, 3, 4, 5) OR cat = 3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*HASH_JOIN.*SEQ_SCAN.*emb.*
 
 query I nosort embedding_in
-SELECT id FROM t WHERE emb[1] IN (0, 1, 2, 3, 4, 5) OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE emb[1] IN (0, 1, 2, 3, 4, 5) OR cat = 3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort embedding_in
-SELECT id FROM t_bf WHERE emb[1] IN (0, 1, 2, 3, 4, 5) OR cat = 3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE emb[1] IN (0, 1, 2, 3, 4, 5) OR cat = 3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # ============================================
@@ -244,11 +244,11 @@ SELECT id FROM t_bf WHERE emb[1] IN (0, 1, 2, 3, 4, 5) OR cat = 3 ORDER BY array
 # ============================================
 
 query I nosort view_in
-SELECT id FROM v WHERE id IN (${IDS}) OR cat = 5 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM v WHERE id IN ({IDS}) OR cat = 5 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort view_in
-SELECT id FROM v_bf WHERE id IN (${IDS}) OR cat = 5 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM v_bf WHERE id IN ({IDS}) OR cat = 5 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # ============================================
@@ -256,16 +256,16 @@ SELECT id FROM v_bf WHERE id IN (${IDS}) OR cat = 5 ORDER BY array_distance(emb,
 # ============================================
 
 query II
-EXPLAIN SELECT id, id IN (${IDS}) AS m FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id, id IN ({IDS}) AS m FROM t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
 query II nosort marker_selected
-SELECT id, id IN (${IDS}) AS m FROM t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id, id IN ({IDS}) AS m FROM t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query II nosort marker_selected
-SELECT id, id IN (${IDS}) AS m FROM t_bf ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id, id IN ({IDS}) AS m FROM t_bf ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # ============================================
@@ -273,22 +273,22 @@ SELECT id, id IN (${IDS}) AS m FROM t_bf ORDER BY array_distance(emb, ${QUERY_EM
 # ============================================
 
 query II
-EXPLAIN SELECT id FROM t WHERE cat = 3 OR id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE cat = 3 OR id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 # No late materialization (a second scan of t, joined on the rowid).
 query II
-EXPLAIN SELECT id FROM t WHERE cat = 3 OR id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t WHERE cat = 3 OR id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<!REGEX>:.*rowid = rowid.*
 
 query I nosort or_with_in_k10
-SELECT id FROM t WHERE cat = 3 OR id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t WHERE cat = 3 OR id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I nosort or_with_in_k10
-SELECT id FROM t_bf WHERE cat = 3 OR id IN (${IDS}) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_bf WHERE cat = 3 OR id IN ({IDS}) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 endloop

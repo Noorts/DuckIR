@@ -6,10 +6,10 @@ require parquet
 
 require duckir
 
-load __TEST_DIR__/index_temporary_chains_main.db
+load {TEST_DIR}/index_temporary_chains_main.db
 
 statement ok
-ATTACH '__TEST_DIR__/index_temporary_chains.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_temporary_chains.db' AS p (ROW_GROUP_SIZE 8192);
 
 statement ok
 SET checkpoint_threshold = '10GB';
@@ -19,10 +19,10 @@ test-env DIMS 128
 
 # Two full row groups and a partial one (IVF, 5,616 rows).
 statement ok
-CREATE TABLE p.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 22000;
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 22000;
 
 statement ok
-CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
+CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
 
 statement ok
 SET threads = 2;
@@ -47,7 +47,7 @@ CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
 # An insert into the partial row group, which the next search loads fully and moves to a new temporary chain.
 statement ok
-INSERT INTO p.t SELECT id, emb::FLOAT[${DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 22000 AND id < 23500;
+INSERT INTO p.t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 22000 AND id < 23500;
 
 query II nosort homed
 SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
@@ -65,7 +65,7 @@ SET duckir_vss_cluster_paging = false;
 restart
 
 statement ok
-ATTACH '__TEST_DIR__/index_temporary_chains.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_temporary_chains.db' AS p (ROW_GROUP_SIZE 8192);
 
 # Loaded fully from the chains the checkpoint copied, the index gives the same results.
 query II nosort homed

@@ -11,7 +11,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 # Row groups of 8192 rows.
 statement ok
-ATTACH '__TEST_DIR__/index_join_filtered_slow.db' AS index_join_filtered_slow (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_join_filtered_slow.db' AS index_join_filtered_slow (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE index_join_filtered_slow;
@@ -23,11 +23,11 @@ SET checkpoint_threshold = '10GB';
 test-env DIMS 128
 
 statement ok
-CREATE TABLE t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 # The query rows: 10 SIFT vectors that are not in t.
 statement ok
-CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
+CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
 
 # ============================================
 # A compressed join key in release builds too: DuckDB compresses the key of a subquery of at least 1,048,576 rows.
@@ -58,10 +58,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 

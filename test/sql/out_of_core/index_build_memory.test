@@ -6,10 +6,10 @@ require parquet
 
 require duckir
 
-load __TEST_DIR__/index_build_memory_main.db
+load {TEST_DIR}/index_build_memory_main.db
 
 statement ok
-ATTACH '__TEST_DIR__/index_build_memory.db' AS b;
+ATTACH '{TEST_DIR}/index_build_memory.db' AS b;
 
 statement ok
 SET checkpoint_threshold = '10GB';
@@ -19,7 +19,7 @@ test-env DIMS 128
 
 # Two row groups of 122,880 rows: a build holds 63 MB of embeddings and about 95 MB of index.
 statement ok
-CREATE TABLE b.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet');
+CREATE TABLE b.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet');
 
 statement ok
 SET threads = 4;

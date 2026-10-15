@@ -6,10 +6,10 @@ require parquet
 
 require duckir
 
-load __TEST_DIR__/index_persistence_main.db
+load {TEST_DIR}/index_persistence_main.db
 
 statement ok
-ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
 
 statement ok
 SET checkpoint_threshold = '10GB';
@@ -23,13 +23,13 @@ test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20
 
 # Two IVF row groups and a Flat one (fewer than 2048 rows).
 statement ok
-CREATE TABLE p.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 17408;
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 17408;
 
 statement ok
 CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 7, seed = 5);
 
 statement ok
-CREATE TABLE p.before_restart AS SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE TABLE p.before_restart AS SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
 CHECKPOINT p;
@@ -37,7 +37,7 @@ CHECKPOINT p;
 restart
 
 statement ok
-ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
 
 statement ok
 SET checkpoint_threshold = '10GB';
@@ -52,12 +52,12 @@ SELECT quantization, n_probe, seed FROM duckir_vss_index_info() WHERE index_name
 f32	7	5
 
 query II
-EXPLAIN SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 3[^0-9].*
 
 query I
-SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_restart USING (id);
+SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT}) JOIN p.before_restart USING (id);
 ----
 10
 
@@ -66,37 +66,37 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-INSERT INTO p.t SELECT id, emb::FLOAT[${DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 17408 AND id < 18432;
+INSERT INTO p.t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 17408 AND id < 18432;
 
 statement ok
-INSERT INTO p.t VALUES (-1, ${QUERY_EMB}::FLOAT[${DIMS}]);
+INSERT INTO p.t VALUES (-1, {QUERY_EMB}::FLOAT[{DIMS}]);
 
 statement ok
 DELETE FROM p.t WHERE id IN (SELECT id FROM p.before_restart);
 
 statement ok
-CREATE TABLE p.before_replay AS SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE TABLE p.before_replay AS SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 restart
 
 statement ok
-ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
 
 statement ok
 SET checkpoint_threshold = '10GB';
 
 query I
-SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 
 query I
-SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_replay USING (id);
+SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT}) JOIN p.before_replay USING (id);
 ----
 10
 
 query I
-SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_restart USING (id);
+SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT}) JOIN p.before_restart USING (id);
 ----
 0
 
@@ -114,18 +114,18 @@ statement ok
 CREATE INDEX t2_idx ON p.t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0);
 
 statement ok
-CREATE TABLE p.t2_before_restart AS SELECT id FROM p.t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE TABLE p.t2_before_restart AS SELECT id FROM p.t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 restart
 
 statement ok
-ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
 
 statement ok
 SET checkpoint_threshold = '10GB';
 
 query I
-SELECT count(*) FROM (SELECT id FROM p.t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.t2_before_restart USING (id);
+SELECT count(*) FROM (SELECT id FROM p.t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT}) JOIN p.t2_before_restart USING (id);
 ----
 10
 
@@ -136,15 +136,15 @@ statement ok
 PRAGMA disable_checkpoint_on_shutdown;
 
 statement ok
-INSERT INTO p.t VALUES (-2, ${QUERY_EMB}::FLOAT[${DIMS}]);
+INSERT INTO p.t VALUES (-2, {QUERY_EMB}::FLOAT[{DIMS}]);
 
 statement ok
-CREATE TABLE p.before_dropped_replay AS SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE TABLE p.before_dropped_replay AS SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 restart
 
 statement ok
-ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
 
 # Restarts keep the settings, and this session must checkpoint when it closes.
 statement ok
@@ -153,22 +153,22 @@ PRAGMA enable_checkpoint_on_shutdown;
 restart
 
 statement ok
-ATTACH '__TEST_DIR__/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
 
 statement ok
 SET checkpoint_threshold = '10GB';
 
 query I
-SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) JOIN p.before_dropped_replay USING (id);
+SELECT count(*) FROM (SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT}) JOIN p.before_dropped_replay USING (id);
 ----
 10
 
 # Checkpoints after a small change rewrite one row group and free the blocks it replaces: the used blocks stay the same.
 statement ok
-INSERT INTO p.t VALUES (-3, ${QUERY_EMB}::FLOAT[${DIMS}]);
+INSERT INTO p.t VALUES (-3, {QUERY_EMB}::FLOAT[{DIMS}]);
 
 statement ok
-SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
 CHECKPOINT p;
@@ -179,10 +179,10 @@ SET VARIABLE used_blocks = (SELECT used_blocks FROM pragma_database_size() WHERE
 loop i 0 2
 
 statement ok
-INSERT INTO p.t VALUES (-4 - ${i}, ${QUERY_EMB}::FLOAT[${DIMS}]);
+INSERT INTO p.t VALUES (-4 - {i}, {QUERY_EMB}::FLOAT[{DIMS}]);
 
 statement ok
-SELECT id FROM p.t ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+SELECT id FROM p.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
 CHECKPOINT p;

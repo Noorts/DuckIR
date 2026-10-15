@@ -11,7 +11,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 # Row groups of 8192 rows.
 statement ok
-ATTACH '__TEST_DIR__/subqueries_slow.db' AS subqueries_slow (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/subqueries_slow.db' AS subqueries_slow (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE subqueries_slow;
@@ -25,7 +25,7 @@ test-env DIMS 128
 test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20,8,3,5,67,17,19,26,5,0,1,22,60,26,7,1,18,22,84,53,85,119,119,4,24,18,7,7,1,81,106,102,72,30,6,0,9,1,9,119,72,1,4,33,119,29,6,1,0,1,14,52,119,30,3,0,0,55,92,111,2,5,4,9,22,89,96,14,1,0,1,82,59,16,20,5,25,14,11,4,0,0,1,26,47,23,4,0,0,4,38,83,30,14,9,4,9,17,23,41,0,0,2,8,19,25,23,1]
 
 statement ok
-CREATE TABLE t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 # ============================================
 # Compressed join keys in release builds too: DuckDB compresses the key of a subquery of at least 1,048,576 rows.
@@ -47,89 +47,89 @@ CREATE INDEX t_big_idx ON t_big USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', qu
 
 # The search reads the compressed integer key through its decompression (a cast back to BIGINT).
 query II
-EXPLAIN SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*CAST\(#0 AS BIGINT\).*SEMI.*
 
 query I rowsort compressed_integral_key
-SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort compressed_integral_key
-SELECT id FROM t_big_bf WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_big_bf WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # A BIGINT key whose values (from 3,000,000,000) do not fit an INTEGER but fit a UINTEGER: DuckDB casts it to the
 # unsigned type of the same width instead, and back to BIGINT above the join.
 query II
-EXPLAIN SELECT id_u32 FROM t_big WHERE id_u32 IN (SELECT id_u32 FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id_u32 FROM t_big WHERE id_u32 IN (SELECT id_u32 FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*CAST\(#0 AS BIGINT\).*SEMI.*CAST\(#0 AS UINTEGER\).*
 
 query I rowsort compressed_unsigned_cast_key
-SELECT id_u32 FROM t_big WHERE id_u32 IN (SELECT id_u32 FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id_u32 FROM t_big WHERE id_u32 IN (SELECT id_u32 FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort compressed_unsigned_cast_key
-SELECT id_u32 FROM t_big_bf WHERE id_u32 IN (SELECT id_u32 FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id_u32 FROM t_big_bf WHERE id_u32 IN (SELECT id_u32 FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # A BIGINT key whose values (from 1,000,000,000,000) fit no 4-byte type, but whose range (max - min) does: DuckDB
 # subtracts the minimum (`__internal_compress_integral_*`) and adds it back above the join (`__internal_decompress_*`).
 # The search follows the key through the pair only when both use the same minimum.
 query II
-EXPLAIN SELECT id_offset FROM t_big WHERE id_offset IN (SELECT id_offset FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id_offset FROM t_big WHERE id_offset IN (SELECT id_offset FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*__internal_decompress_integral_bigint.*SEMI.*__internal_compress_integral_uinteger.*
 
 query I rowsort compressed_integral_offset_key
-SELECT id_offset FROM t_big WHERE id_offset IN (SELECT id_offset FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id_offset FROM t_big WHERE id_offset IN (SELECT id_offset FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort compressed_integral_offset_key
-SELECT id_offset FROM t_big_bf WHERE id_offset IN (SELECT id_offset FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id_offset FROM t_big_bf WHERE id_offset IN (SELECT id_offset FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # A HUGEINT key: DuckDB casts it to INTEGER below the join, and back to HUGEINT above it.
 query II
-EXPLAIN SELECT id_huge FROM t_big WHERE id_huge IN (SELECT id_huge FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id_huge FROM t_big WHERE id_huge IN (SELECT id_huge FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*CAST\(#0 AS HUGEINT\).*SEMI.*CAST\(#0 AS INTEGER\).*
 
 query I rowsort compressed_hugeint_key
-SELECT id_huge FROM t_big WHERE id_huge IN (SELECT id_huge FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id_huge FROM t_big WHERE id_huge IN (SELECT id_huge FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort compressed_hugeint_key
-SELECT id_huge FROM t_big_bf WHERE id_huge IN (SELECT id_huge FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id_huge FROM t_big_bf WHERE id_huge IN (SELECT id_huge FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # A short VARCHAR key is compressed too.
 query II
-EXPLAIN SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*__internal_decompress.*SEMI.*
 
 query I rowsort compressed_string_key
-SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT k FROM t_big WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort compressed_string_key
-SELECT k FROM t_big_bf WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT k FROM t_big_bf WHERE k IN (SELECT k FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # A value computed from the decompressed key is not a table column: the search runs without the index.
 query II
-EXPLAIN SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
 query I rowsort computed_from_compressed_key
-SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort computed_from_compressed_key
-SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big_bf WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT x FROM (SELECT id * 2 AS x, emb FROM t_big_bf WHERE id IN (SELECT id FROM big_ids)) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 # ============================================
@@ -143,19 +143,19 @@ statement ok
 SET debug_force_external = true;
 
 query I rowsort spilled_in_subquery
-SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort spilled_in_subquery
-SELECT id FROM t_big_bf WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_big_bf WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort spilled_not_exists
-SELECT id FROM t_big WHERE NOT EXISTS (SELECT 1 FROM big_ids b WHERE b.id = t_big.id) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_big WHERE NOT EXISTS (SELECT 1 FROM big_ids b WHERE b.id = t_big.id) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 query I rowsort spilled_not_exists
-SELECT id FROM t_big_bf WHERE NOT EXISTS (SELECT 1 FROM big_ids b WHERE b.id = t_big_bf.id) ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+SELECT id FROM t_big_bf WHERE NOT EXISTS (SELECT 1 FROM big_ids b WHERE b.id = t_big_bf.id) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 
 statement ok

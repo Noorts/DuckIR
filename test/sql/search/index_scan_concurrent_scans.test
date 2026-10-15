@@ -25,13 +25,13 @@ test-env QUERY_EMB_B [1,23,25,19,8,2,0,0,41,23,17,9,4,9,14,30,83,38,4,0,0,4,23,4
 
 # Set up the table and rows.
 statement ok
-CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[${DIMS}]);
+CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT ${NUM_ROWS};
+INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT {NUM_ROWS};
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', seed = {INDEX_SEED});
 
 statement ok
 SET duckir_vss_n_probe = 16;
@@ -42,19 +42,19 @@ SET duckir_vss_n_probe = 16;
 
 # Each KNN query on its own.
 statement ok
-CREATE OR REPLACE TABLE res_a AS SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE res_a AS SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB_A}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE res_b AS SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE res_b AS SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB_B}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 # Both KNN queries in one statement must use two index scans.
 query II
-EXPLAIN (SELECT 'a' AS q, id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT});
+EXPLAIN (SELECT 'a' AS q, id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB_A}::FLOAT[{DIMS}]) LIMIT {LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB_B}::FLOAT[{DIMS}]) LIMIT {LIMIT});
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
-CREATE OR REPLACE TABLE res_union AS (SELECT 'a' AS q, id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT});
+CREATE OR REPLACE TABLE res_union AS (SELECT 'a' AS q, id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB_A}::FLOAT[{DIMS}]) LIMIT {LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB_B}::FLOAT[{DIMS}]) LIMIT {LIMIT});
 
 query I
 SELECT COUNT(*) FROM res_union;
@@ -74,18 +74,18 @@ SELECT
 # ============================================
 
 statement ok
-CREATE OR REPLACE TABLE res_a AS SELECT id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE res_a AS SELECT id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, {QUERY_EMB_A}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE res_b AS SELECT id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE res_b AS SELECT id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, {QUERY_EMB_B}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query II
-EXPLAIN (SELECT 'a' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT});
+EXPLAIN (SELECT 'a' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, {QUERY_EMB_A}::FLOAT[{DIMS}]) LIMIT {LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, {QUERY_EMB_B}::FLOAT[{DIMS}]) LIMIT {LIMIT});
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 statement ok
-CREATE OR REPLACE TABLE res_union AS (SELECT 'a' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_A}::FLOAT[${DIMS}]) LIMIT ${LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, ${QUERY_EMB_B}::FLOAT[${DIMS}]) LIMIT ${LIMIT});
+CREATE OR REPLACE TABLE res_union AS (SELECT 'a' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, {QUERY_EMB_A}::FLOAT[{DIMS}]) LIMIT {LIMIT}) UNION ALL (SELECT 'b' AS q, id FROM t1 WHERE id > 1000 ORDER BY array_distance(emb, {QUERY_EMB_B}::FLOAT[{DIMS}]) LIMIT {LIMIT});
 
 query I
 SELECT COUNT(*) FROM res_union;

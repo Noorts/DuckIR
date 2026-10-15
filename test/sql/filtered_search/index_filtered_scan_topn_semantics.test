@@ -17,7 +17,7 @@ test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20
 # t1 is indexed; t1_bf is an unindexed copy whose searches give the brute-force result. Rows -1 and -2 have no
 # embedding.
 statement ok
-CREATE TABLE t1 AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 20000;
+CREATE TABLE t1 AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 20000;
 
 statement ok
 INSERT INTO t1 VALUES (-1, NULL), (-2, NULL);
@@ -34,52 +34,52 @@ CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantiza
 
 # Without an OFFSET the TopN is replaced entirely.
 query II
-EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10;
+EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 ----
 physical_plan	<!REGEX>:.*TOP_N.*
 
 query II
-EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 5;
+EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10 OFFSET 5;
 ----
 physical_plan	<REGEX>:.*TOP_N.*DUCKIR_VSS_INDEX_SCAN.*
 
 query I nosort offset_unfiltered
-SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 5;
+SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10 OFFSET 5;
 ----
 
 query I nosort offset_unfiltered
-SELECT id FROM t1_bf ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 5;
+SELECT id FROM t1_bf ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10 OFFSET 5;
 ----
 
 query II
-EXPLAIN SELECT id FROM t1 WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 20;
+EXPLAIN SELECT id FROM t1 WHERE id % 3 = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10 OFFSET 20;
 ----
 physical_plan	<REGEX>:.*TOP_N.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I nosort offset_filtered
-SELECT id FROM t1 WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 20;
+SELECT id FROM t1 WHERE id % 3 = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10 OFFSET 20;
 ----
 
 query I nosort offset_filtered
-SELECT id FROM t1_bf WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 10 OFFSET 20;
+SELECT id FROM t1_bf WHERE id % 3 = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10 OFFSET 20;
 ----
 
 # 12 rows pass the filter: LIMIT 5 OFFSET 8 returns the 9th to the 12th nearest, OFFSET 20 returns nothing.
 query I nosort offset_past_passing_rows
-SELECT id FROM t1 WHERE id BETWEEN 0 AND 11 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5 OFFSET 8;
+SELECT id FROM t1 WHERE id BETWEEN 0 AND 11 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5 OFFSET 8;
 ----
 
 query I nosort offset_past_passing_rows
-SELECT id FROM t1_bf WHERE id BETWEEN 0 AND 11 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5 OFFSET 8;
+SELECT id FROM t1_bf WHERE id BETWEEN 0 AND 11 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5 OFFSET 8;
 ----
 
 query I
-SELECT COUNT(*) FROM (SELECT id FROM t1 WHERE id BETWEEN 0 AND 11 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5 OFFSET 8);
+SELECT COUNT(*) FROM (SELECT id FROM t1 WHERE id BETWEEN 0 AND 11 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5 OFFSET 8);
 ----
 4
 
 query I
-SELECT COUNT(*) FROM (SELECT id FROM t1 WHERE id BETWEEN 0 AND 11 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5 OFFSET 20);
+SELECT COUNT(*) FROM (SELECT id FROM t1 WHERE id BETWEEN 0 AND 11 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5 OFFSET 20);
 ----
 0
 
@@ -89,17 +89,17 @@ SELECT COUNT(*) FROM (SELECT id FROM t1 WHERE id BETWEEN 0 AND 11 ORDER BY array
 # ============================================
 
 query II
-EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) NULLS FIRST LIMIT 5;
+EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) NULLS FIRST LIMIT 5;
 ----
 physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
 query I
-SELECT COUNT(*) FILTER (WHERE id < 0) FROM (SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) NULLS FIRST LIMIT 5);
+SELECT COUNT(*) FILTER (WHERE id < 0) FROM (SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) NULLS FIRST LIMIT 5);
 ----
 2
 
 query II
-EXPLAIN SELECT id FROM t1 WHERE id % 3 = 0 OR id < 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) NULLS FIRST LIMIT 5;
+EXPLAIN SELECT id FROM t1 WHERE id % 3 = 0 OR id < 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) NULLS FIRST LIMIT 5;
 ----
 physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
@@ -108,12 +108,12 @@ statement ok
 SET default_null_order = 'nulls_first';
 
 query II
-EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 physical_plan	<!REGEX>:.*DUCKIR_VSS.*
 
 query I
-SELECT COUNT(*) FILTER (WHERE id < 0) FROM (SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5);
+SELECT COUNT(*) FILTER (WHERE id < 0) FROM (SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5);
 ----
 2
 
@@ -121,12 +121,12 @@ statement ok
 RESET default_null_order;
 
 query II
-EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 # An explicit NULLS LAST is the default order and keeps using the index.
 query II
-EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) NULLS LAST LIMIT 5;
+EXPLAIN SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) NULLS LAST LIMIT 5;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*

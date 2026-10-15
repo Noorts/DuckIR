@@ -11,7 +11,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 # Row groups of 8192 rows (4 in the table).
 statement ok
-ATTACH '__TEST_DIR__/index_join_lateral.db' AS index_join_lateral (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_join_lateral.db' AS index_join_lateral (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE index_join_lateral;
@@ -27,11 +27,11 @@ statement ok
 SET duckir_vss_n_probe = 0;
 
 statement ok
-CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 # The query rows: 10 SIFT vectors that are not in t, as FLOAT arrays and as BLOBs.
 statement ok
-CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[${DIMS}] AS vec, duckir_vss_encode_blob(emb::FLOAT[]) AS blob_vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
+CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[{DIMS}] AS vec, duckir_vss_encode_blob(emb::FLOAT[]) AS blob_vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
 
 # The same query rows, the first three twice (qid + 100), and a row without a query vector.
 statement ok
@@ -46,18 +46,18 @@ statement ok
 DROP INDEX IF EXISTS t_idx;
 
 statement ok
-CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', seed = 0);
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', seed = 0);
 
 statement ok
 DROP INDEX IF EXISTS t_cosine_idx;
 
 statement ok
-CREATE INDEX t_cosine_idx ON t_cosine USING DUCKIR_VSS (emb) WITH (metric = 'cosine', quantization = '${quantization}', seed = 0);
+CREATE INDEX t_cosine_idx ON t_cosine USING DUCKIR_VSS (emb) WITH (metric = 'cosine', quantization = '{quantization}', seed = 0);
 
 foreach threads 1 4
 
 statement ok
-SET threads = ${threads};
+SET threads = {threads};
 
 # The reference: the single-query index search, inserted into single_result.
 statement ok
@@ -95,10 +95,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -134,10 +134,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 1;
+INSERT INTO single_result SELECT {i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 1;
 
 endloop
 
@@ -169,10 +169,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 2
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 2048;
+INSERT INTO single_result SELECT {i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 2048;
 
 endloop
 
@@ -204,10 +204,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10 OFFSET 5;
+INSERT INTO single_result SELECT {i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10 OFFSET 5;
 
 endloop
 
@@ -234,10 +234,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id, cat, array_distance(emb, getvariable('query_vector')) AS d FROM t ORDER BY d LIMIT 10;
+INSERT INTO single_result SELECT {i}, id, cat, array_distance(emb, getvariable('query_vector')) AS d FROM t ORDER BY d LIMIT 10;
 
 endloop
 
@@ -260,10 +260,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, * FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 3;
+INSERT INTO single_result SELECT {i}, * FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 3;
 
 endloop
 
@@ -286,10 +286,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, array_distance(emb, getvariable('query_vector')) AS d FROM t ORDER BY d LIMIT 10;
+INSERT INTO single_result SELECT {i}, array_distance(emb, getvariable('query_vector')) AS d FROM t ORDER BY d LIMIT 10;
 
 endloop
 
@@ -366,10 +366,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT emb FROM t WHERE id = ${i});
+SET VARIABLE query_vector = (SELECT emb FROM t WHERE id = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 5;
+INSERT INTO single_result SELECT {i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 5;
 
 endloop
 
@@ -401,10 +401,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT blob_vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT blob_vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -436,10 +436,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t_cosine ORDER BY array_cosine_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t_cosine ORDER BY array_cosine_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -476,10 +476,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
