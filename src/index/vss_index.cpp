@@ -385,12 +385,21 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		if (!TryGetPhysicalRowGroup(table, stale.row_start, bounds)) {
 			continue;
 		}
-		auto embeddings_buffer = allocate_embeddings(bounds.count);
-		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
-		const idx_t count = FetchRows(table, bounds.row_start, bounds.row_start + static_cast<row_t>(bounds.count),
-		                              row_ids.get(), embeddings, rows_returned, &executor);
-		if (count > 0) {
-			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
+		const row_t bounds_end = bounds.row_start + static_cast<row_t>(bounds.count);
+		try {
+			auto embeddings_buffer = allocate_embeddings(bounds.count);
+			const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
+			const idx_t count =
+			    FetchRows(table, bounds.row_start, bounds_end, row_ids.get(), embeddings, rows_returned, &executor);
+			if (count > 0) {
+				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
+			}
+		} catch (...) {
+			// A failed rebuild leaves no mirror, and its rows staged: the next sync builds them.
+			RemoveRowGroupsOverlapping(bounds.row_start, bounds_end);
+			StageUnindexedRange({bounds.row_start, bounds_end});
+			has_unindexed_rows = true;
+			throw;
 		}
 	}
 
@@ -417,39 +426,51 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			const auto &range = unindexed_row_ranges[i];
 			num_unindexed_rows += static_cast<idx_t>(MinValue<row_t>(range.end, bounds_end) - range.start);
 		}
-		auto embeddings_buffer = allocate_embeddings(num_unindexed_rows);
-		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
-		idx_t count = 0;
-		while (range_idx < unindexed_row_ranges.size() && unindexed_row_ranges[range_idx].start < bounds_end) {
-			auto &range = unindexed_row_ranges[range_idx];
-			const row_t sub_end = MinValue<row_t>(range.end, bounds_end);
-			const idx_t range_count = FetchRows(table, range.start, sub_end, row_ids.get() + count,
-			                                    embeddings + count * num_dimensions, rows_returned, &executor);
-			if (rows_returned == 0) {
-				// Not committed yet: a later sync indexes them.
-				still_unindexed.push_back({range.start, sub_end});
-			}
-			count += range_count;
-			if (sub_end < range.end) {
-				range.start = sub_end;
-				break;
-			}
-			range_idx++;
-		}
-		if (count == 0) {
-			continue;
-		}
 		const auto row_group_idx = LookupRowGroup(bounds.row_start);
-		if (row_group_idx.IsValid()) {
-			// The appends load a paged row group fully: the end of the sync frees what it does not keep.
-			if (cluster_paging) {
-				const auto range = GetRowGroupRange(row_group_idx.GetIndex());
-				UpdateReservedMemory(
-				    static_cast<int64_t>(EstimateBuildHeapBytes(static_cast<idx_t>(range.end - range.start))));
+		const row_t first_staged_row = unindexed_row_ranges[range_idx].start;
+		try {
+			auto embeddings_buffer = allocate_embeddings(num_unindexed_rows);
+			const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
+			idx_t count = 0;
+			while (range_idx < unindexed_row_ranges.size() && unindexed_row_ranges[range_idx].start < bounds_end) {
+				auto &range = unindexed_row_ranges[range_idx];
+				const row_t sub_end = MinValue<row_t>(range.end, bounds_end);
+				const idx_t range_count = FetchRows(table, range.start, sub_end, row_ids.get() + count,
+				                                    embeddings + count * num_dimensions, rows_returned, &executor);
+				if (rows_returned == 0) {
+					// Not committed yet: a later sync indexes them.
+					still_unindexed.push_back({range.start, sub_end});
+				}
+				count += range_count;
+				if (sub_end < range.end) {
+					range.start = sub_end;
+					break;
+				}
+				range_idx++;
 			}
-			AppendRows(row_group_idx.GetIndex(), row_ids.get(), embeddings, count, &executor);
-		} else {
-			SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
+			if (count == 0) {
+				continue;
+			}
+			if (row_group_idx.IsValid()) {
+				// The appends load a paged row group fully: the end of the sync frees what it does not keep.
+				if (cluster_paging) {
+					const auto range = GetRowGroupRange(row_group_idx.GetIndex());
+					UpdateReservedMemory(
+					    static_cast<int64_t>(EstimateBuildHeapBytes(static_cast<idx_t>(range.end - range.start))));
+				}
+				AppendRows(row_group_idx.GetIndex(), row_ids.get(), embeddings, count, &executor);
+			} else {
+				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
+			}
+		} catch (...) {
+			// The row group's staged rows stay staged: the next sync appends them again (rows already appended are
+			// skipped) or builds them. A failed build leaves no mirror.
+			if (!row_group_idx.IsValid()) {
+				RemoveRowGroupsOverlapping(bounds.row_start, bounds_end);
+			}
+			StageUnindexedRange({first_staged_row, bounds_end});
+			has_unindexed_rows = true;
+			throw;
 		}
 	}
 	unindexed_row_ranges = std::move(still_unindexed);
