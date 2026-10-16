@@ -255,8 +255,7 @@ public:
 		return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetTotalNumClusters();
 	}
 
-	// Upper bound on the per-row-group cluster count, computed from a full row group. Useful for sizing scan-wide
-	// quantities that must apply uniformly across row groups (the searcher clamps to each row group's actual count).
+	// The clusters a full row group is built with. This is not an upper bound, SPFresh can grow a row group past it.
 	static constexpr idx_t GetNumClustersForFullRowGroup() {
 		return VSSWrapperF32::ComputeNumClustersForRowGroup(DEFAULT_ROW_GROUP_SIZE);
 	}
@@ -273,6 +272,15 @@ public:
 			return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->GetRowGroupIndex(row_group_idx);
 		}
 		return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetRowGroupIndex(row_group_idx);
+	}
+
+	// The most clusters a row group has: the bound n_probe is clamped to.
+	idx_t GetMaxNumClusters() const {
+		idx_t max_num_clusters = 0;
+		for (idx_t row_group_idx = 0; row_group_idx < GetNumRowGroups(); row_group_idx++) {
+			max_num_clusters = MaxValue<idx_t>(max_num_clusters, GetRowGroupIndex(row_group_idx).GetNumClusters());
+		}
+		return max_num_clusters;
 	}
 
 	string GetQuantization() const;

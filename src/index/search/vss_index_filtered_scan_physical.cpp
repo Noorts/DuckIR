@@ -45,16 +45,12 @@ public:
 
 		auto n_probe = index.GetEffectiveNProbe(context);
 		// The cluster count varies per row group, but the iteration loop uses a single value across all row groups. We
-		// use the count for a full row group as the upper bound: for full row groups it matches exactly, and for
-		// smaller row groups (e.g., the last one) the per-row-group searcher clamps internally.
-		const idx_t num_clusters_for_full_row_group = VSSIndex::GetNumClustersForFullRowGroup();
+		// use the largest row group's count as the upper bound: for smaller row groups the per-row-group searcher
+		// clamps internally.
+		const idx_t max_num_clusters = index.GetMaxNumClusters();
 		partitions_to_probe_per_row_group_on_first_iteration =
-		    (n_probe == 0 || n_probe > num_clusters_for_full_row_group) ? num_clusters_for_full_row_group : n_probe;
+		    (n_probe == 0 || n_probe > max_num_clusters) ? max_num_clusters : n_probe;
 
-		uint32_t max_num_clusters = 0;
-		for (idx_t row_group_idx = 0; row_group_idx < index.GetNumRowGroups(); row_group_idx++) {
-			max_num_clusters = MaxValue(max_num_clusters, index.GetRowGroupIndex(row_group_idx).GetNumClusters());
-		}
 		identity_clusters_access_order.resize(max_num_clusters);
 		std::iota(identity_clusters_access_order.begin(), identity_clusters_access_order.end(), 0);
 
