@@ -6,10 +6,13 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
 statement ok
-ATTACH '__TEST_DIR__/incr.db' AS incr (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/incr.db' AS incr (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE incr;
@@ -29,19 +32,19 @@ test-env MARKER_A [200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,2
 test-env MARKER_B [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
 
 statement ok
-CREATE TABLE sift AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE sift AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 foreach quantization f32
 
 # An index built on a one-row table (the smallest allowed): the first commits grow its single Flat row group.
 statement ok
-CREATE OR REPLACE TABLE t1 AS SELECT -1 AS id, ${MARKER_A}::FLOAT[${DIMS}] AS emb;
+CREATE OR REPLACE TABLE t1 AS SELECT -1 AS id, {MARKER_A}::FLOAT[{DIMS}] AS emb;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 query II
-EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 1[^0-9].*Row Groups: 1[^0-9].*
 
@@ -49,15 +52,15 @@ statement ok
 INSERT INTO t1 SELECT * FROM sift WHERE id < 100;
 
 query I
-SELECT id FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t1 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 
 statement ok
-INSERT INTO t1 SELECT * FROM sift WHERE id >= 100 AND id < 200 UNION ALL SELECT -2, ${MARKER_B}::FLOAT[${DIMS}];
+INSERT INTO t1 SELECT * FROM sift WHERE id >= 100 AND id < 200 UNION ALL SELECT -2, {MARKER_B}::FLOAT[{DIMS}];
 
 query I
-SELECT id FROM t1 ORDER BY array_distance(emb, ${MARKER_B}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t1 ORDER BY array_distance(emb, {MARKER_B}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -2
 
@@ -67,7 +70,7 @@ SELECT COUNT(*) FROM t1;
 202
 
 query II
-EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 1[^0-9].*Row Groups: 1[^0-9].*
 
@@ -77,10 +80,10 @@ statement ok
 CREATE OR REPLACE TABLE t2 AS SELECT * FROM sift WHERE id < 8100;
 
 statement ok
-CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 statement ok
-INSERT INTO t2 SELECT * FROM sift WHERE id >= 8100 AND id < 8191 UNION ALL SELECT -2, ${MARKER_B}::FLOAT[${DIMS}] UNION ALL SELECT * FROM sift WHERE id >= 8191 AND id < 8300 UNION ALL SELECT -1, ${MARKER_A}::FLOAT[${DIMS}];
+INSERT INTO t2 SELECT * FROM sift WHERE id >= 8100 AND id < 8191 UNION ALL SELECT -2, {MARKER_B}::FLOAT[{DIMS}] UNION ALL SELECT * FROM sift WHERE id >= 8191 AND id < 8300 UNION ALL SELECT -1, {MARKER_A}::FLOAT[{DIMS}];
 
 query II
 SELECT row_group_id, sum(count) FROM pragma_storage_info('t2') WHERE column_name = 'id' AND segment_type <> 'VALIDITY' GROUP BY 1 ORDER BY 1;
@@ -89,17 +92,17 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t2') WHERE column_name
 1	110
 
 query I
-SELECT id FROM t2 ORDER BY array_distance(emb, ${MARKER_B}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t2 ORDER BY array_distance(emb, {MARKER_B}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -2
 
 query I
-SELECT id FROM t2 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t2 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 121[^0-9].*Row Groups: 2[^0-9].*
 
@@ -107,13 +110,13 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t2;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
@@ -122,13 +125,13 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t2;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy WHERE id >= 8100 OR id < 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy WHERE id >= 8100 OR id < 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t2 WHERE id >= 8100 OR id < 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t2 WHERE id >= 8100 OR id < 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
@@ -137,25 +140,25 @@ statement ok
 CREATE OR REPLACE TABLE t3 AS SELECT * FROM sift WHERE id < 100;
 
 statement ok
-CREATE INDEX t3_idx ON t3 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t3_idx ON t3 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 loop i 1 30
 
 statement ok
-INSERT INTO t3 SELECT * FROM sift WHERE id >= 100 * ${i} AND id < 100 * (${i} + 1);
+INSERT INTO t3 SELECT * FROM sift WHERE id >= 100 * {i} AND id < 100 * ({i} + 1);
 
 query I
-SELECT COUNT(*) FROM (SELECT id FROM t3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5);
+SELECT COUNT(*) FROM (SELECT id FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5);
 ----
 5
 
 endloop
 
 statement ok
-INSERT INTO t3 VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
+INSERT INTO t3 VALUES (-1, {MARKER_A}::FLOAT[{DIMS}]);
 
 query I
-SELECT id FROM t3 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t3 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 
@@ -165,7 +168,7 @@ SELECT COUNT(*) FROM t3;
 3001
 
 query II
-EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 1[^0-9].*
 
@@ -173,13 +176,13 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t3;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 

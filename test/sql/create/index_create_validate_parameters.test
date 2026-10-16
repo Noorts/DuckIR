@@ -39,7 +39,7 @@ Binder Error: DuckIR VSS index 'metric' must be one of: 'cosine', 'l2sq'
 foreach metric l2sq
 
 statement ok
-CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric}');
+CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '{metric}');
 
 statement ok
 DROP INDEX IF EXISTS idx;
@@ -63,7 +63,7 @@ Binder Error: DuckIR VSS index 'quantization' must be one of: 'f32', 'u8'
 foreach quantization f32 u8
 
 statement ok
-CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (quantization = '${quantization}');
+CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (quantization = '{quantization}');
 
 statement ok
 DROP INDEX IF EXISTS idx;
@@ -82,7 +82,7 @@ Binder Error: DuckIR VSS index 'n_probe' must be an integer
 foreach invalid_n_probe -1 -100
 
 statement error
-CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (n_probe = ${invalid_n_probe});
+CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (n_probe = {invalid_n_probe});
 ----
 <REGEX>:Binder Error: DuckIR VSS index 'n_probe' must be at least 0, default is .*
 
@@ -91,7 +91,7 @@ endloop
 foreach valid_n_probe 0 1 10000
 
 statement ok
-CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (n_probe = ${valid_n_probe});
+CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (n_probe = {valid_n_probe});
 
 statement ok
 DROP INDEX IF EXISTS idx;
@@ -102,23 +102,21 @@ endloop
 # Parameter: seed
 # ============================================
 
-# int32 ranges from -2147483647 to 2147483647.
-# Why not -2147483648? Because the number is first parsed without the negation
-# sign, so it would be parsed as a positive number, where the max is 2147483647.
+# int32 ranges from -2147483648 to 2147483647.
 
-foreach invalid_seed 'test' -2147483649 -2147483648 2147483648
+foreach invalid_seed 'test' -2147483649 2147483648
 
 statement error
-CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (seed = ${invalid_seed});
+CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (seed = {invalid_seed});
 ----
-Binder Error: DuckIR VSS index 'seed' must be between -2147483647 and 2147483647, inclusive
+Binder Error: DuckIR VSS index 'seed' must be between -2147483648 and 2147483647, inclusive
 
 endloop
 
-foreach valid_seed -2147483647 -1 0 1 2147483647
+foreach valid_seed -2147483648 -2147483647 -1 0 1 2147483647
 
 statement ok
-CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (seed = ${valid_seed});
+CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (seed = {valid_seed});
 
 statement ok
 DROP INDEX IF EXISTS idx;

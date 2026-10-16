@@ -6,9 +6,12 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # Row groups of 8192 rows (4 in the table).
 statement ok
-ATTACH '__TEST_DIR__/index_join_filtered.db' AS index_join_filtered (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_join_filtered.db' AS index_join_filtered (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE index_join_filtered;
@@ -24,11 +27,11 @@ statement ok
 SET duckir_vss_n_probe = 0;
 
 statement ok
-CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 # The query rows: 10 SIFT vectors that are not in t.
 statement ok
-CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
+CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
 
 # small is smaller than t, so DuckDB builds the hash table of the IN / EXISTS subqueries on small.
 statement ok
@@ -43,12 +46,12 @@ statement ok
 DROP INDEX IF EXISTS t_idx;
 
 statement ok
-CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', seed = 0);
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', seed = 0);
 
 foreach threads 1 4
 
 statement ok
-SET threads = ${threads};
+SET threads = {threads};
 
 # The reference: the filtered single-query index search, inserted into single_result.
 statement ok
@@ -69,7 +72,7 @@ physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = 3 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*DELIM_SCAN.*SEQ_SCAN.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*SEQ_SCAN.*CTE_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.cat = 3 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
@@ -80,10 +83,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -115,10 +118,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE id % 7 = 0 OR cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE id % 7 = 0 OR cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -150,10 +153,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE cat = 3 OR id IN (1, 5, 9, 200, 4000, 30000) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE cat = 3 OR id IN (1, 5, 9, 200, 4000, 30000) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -187,10 +190,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE id IN (SELECT x FROM small) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -218,10 +221,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE NOT EXISTS (SELECT 1 FROM small WHERE small.x = t.id) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE NOT EXISTS (SELECT 1 FROM small WHERE small.x = t.id) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -249,10 +252,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE id NOT IN (SELECT x FROM small) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE id NOT IN (SELECT x FROM small) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -279,10 +282,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE emb[1] > 10 OR cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE emb[1] > 10 OR cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -314,10 +317,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM v ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM v ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -340,10 +343,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM (SELECT * FROM t WHERE cat = 3) sub ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM (SELECT * FROM t WHERE cat = 3) sub ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -398,10 +401,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10 OFFSET 5;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10 OFFSET 5;
 
 endloop
 
@@ -424,10 +427,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE cat = 3 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -464,10 +467,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE id % 100 = 0 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE id % 100 = 0 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -491,10 +494,10 @@ CREATE OR REPLACE TABLE single_result (qid INTEGER, id INTEGER);
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t WHERE id % 2 = 0 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t WHERE id % 2 = 0 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 
@@ -504,7 +507,7 @@ SET duckir_vss_experimental_on_the_fly_indexing = 'always';
 foreach max_row_groups 0 2
 
 statement ok
-SET duckir_vss_on_the_fly_indexing_max_row_groups = ${max_row_groups};
+SET duckir_vss_on_the_fly_indexing_max_row_groups = {max_row_groups};
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t WHERE t.id % 2 = 0 ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;

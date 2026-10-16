@@ -6,6 +6,7 @@
 
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/operator/filter/physical_filter.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 
 #include "index/vss_index.hpp"
 #include "index/create/vss_index_create.hpp"
@@ -61,7 +62,7 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 			}
 		} else if (StringUtil::CIEquals(k, "seed")) {
 			if (v.type() != LogicalType::INTEGER) {
-				throw BinderException("DuckIR VSS index 'seed' must be between -2147483647 and 2147483647, inclusive");
+				throw BinderException("DuckIR VSS index 'seed' must be between -2147483648 and 2147483647, inclusive");
 			}
 		} else {
 			throw BinderException("Unknown option for DuckIR VSS index: '%s'", k);
@@ -71,7 +72,7 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 	if (create_index.expressions.size() != 1) {
 		throw BinderException("DuckIR VSS indexes can only be created over a single column of keys.");
 	}
-	const auto &arr_type = create_index.expressions[0]->return_type;
+	const auto &arr_type = create_index.expressions[0]->GetReturnType();
 	if (arr_type.id() != LogicalTypeId::ARRAY) {
 		throw BinderException("DuckIR VSS index keys must be of type FLOAT[N]");
 	}
@@ -92,7 +93,7 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 	vector<LogicalType> new_column_types;
 	vector<unique_ptr<Expression>> select_list;
 	for (auto &expression : create_index.expressions) {
-		new_column_types.push_back(expression->return_type);
+		new_column_types.push_back(expression->GetReturnType());
 		select_list.push_back(std::move(expression));
 	}
 	new_column_types.emplace_back(LogicalType::ROW_TYPE);
@@ -114,7 +115,7 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 		auto is_not_null_expr =
 		    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
 		auto bound_ref = make_uniq<BoundReferenceExpression>(new_column_types[i], i);
-		is_not_null_expr->children.push_back(std::move(bound_ref));
+		is_not_null_expr->GetChildrenMutable().push_back(std::move(bound_ref));
 		filter_select_list.push_back(std::move(is_not_null_expr));
 	}
 

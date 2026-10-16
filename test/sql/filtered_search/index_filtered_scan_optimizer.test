@@ -6,6 +6,9 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # Variables
 test-env INDEX_SEED 0
 
@@ -17,10 +20,10 @@ test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20
 
 # Set up the table and rows.
 statement ok
-CREATE TABLE t1 (id INTEGER, emb FLOAT[${DIMS}]);
+CREATE TABLE t1 (id INTEGER, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT ${NUM_ROWS};
+INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT {NUM_ROWS};
 
 foreach distance_func array_distance
 
@@ -29,7 +32,7 @@ foreach distance_func array_distance
 # ============================================
 
 query II
-EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
+EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 50;
 ----
 physical_plan	<!REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
@@ -41,17 +44,17 @@ endloop
 # ============================================
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (seed = {INDEX_SEED});
 
 foreach distance_func array_distance
 
 query II
-EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
+EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 50;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*SEQ_SCAN.*Filters.*
 
 query II
-EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
+EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 50;
 ----
 physical_plan	<!REGEX>:.*HASH_JOIN.*
 
@@ -62,12 +65,12 @@ physical_plan	<!REGEX>:.*HASH_JOIN.*
 
 # id
 query II
-EXPLAIN SELECT id FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+EXPLAIN SELECT id FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I rowsort
-SELECT id FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+SELECT id FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 10336
 10686
@@ -77,12 +80,12 @@ SELECT id FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::F
 
 # emb
 query II
-EXPLAIN SELECT emb FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+EXPLAIN SELECT emb FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I rowsort
-SELECT emb FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+SELECT emb FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 [0.0, 0.0, 4.0, 8.0, 40.0, 40.0, 3.0, 0.0, 85.0, 36.0, 15.0, 9.0, 35.0, 37.0, 14.0, 9.0, 55.0, 92.0, 95.0, 23.0, 21.0, 17.0, 1.0, 5.0, 31.0, 11.0, 28.0, 21.0, 31.0, 24.0, 7.0, 21.0, 40.0, 26.0, 16.0, 4.0, 21.0, 39.0, 48.0, 17.0, 67.0, 119.0, 119.0, 6.0, 17.0, 8.0, 0.0, 9.0, 25.0, 119.0, 73.0, 56.0, 42.0, 17.0, 1.0, 2.0, 21.0, 0.0, 13.0, 119.0, 73.0, 17.0, 7.0, 15.0, 119.0, 16.0, 0.0, 0.0, 2.0, 4.0, 40.0, 77.0, 79.0, 55.0, 23.0, 0.0, 0.0, 8.0, 119.0, 119.0, 16.0, 17.0, 14.0, 6.0, 24.0, 65.0, 119.0, 61.0, 0.0, 11.0, 12.0, 28.0, 97.0, 63.0, 7.0, 0.0, 31.0, 26.0, 13.0, 3.0, 0.0, 5.0, 26.0, 27.0, 48.0, 52.0, 28.0, 3.0, 6.0, 9.0, 70.0, 53.0, 78.0, 5.0, 3.0, 3.0, 5.0, 8.0, 30.0, 87.0, 4.0, 19.0, 18.0, 4.0, 10.0, 14.0, 5.0, 5.0]
 [0.0, 1.0, 40.0, 48.0, 23.0, 14.0, 6.0, 3.0, 38.0, 118.0, 84.0, 36.0, 28.0, 30.0, 8.0, 3.0, 11.0, 85.0, 118.0, 66.0, 25.0, 2.0, 0.0, 0.0, 36.0, 70.0, 24.0, 26.0, 28.0, 7.0, 0.0, 1.0, 39.0, 36.0, 33.0, 36.0, 14.0, 5.0, 89.0, 58.0, 77.0, 118.0, 113.0, 27.0, 8.0, 0.0, 3.0, 18.0, 13.0, 83.0, 59.0, 118.0, 99.0, 7.0, 1.0, 1.0, 29.0, 32.0, 48.0, 73.0, 49.0, 7.0, 8.0, 22.0, 114.0, 10.0, 19.0, 0.0, 0.0, 3.0, 20.0, 56.0, 118.0, 34.0, 5.0, 0.0, 0.0, 3.0, 50.0, 117.0, 10.0, 14.0, 17.0, 25.0, 47.0, 56.0, 78.0, 24.0, 8.0, 7.0, 64.0, 56.0, 40.0, 15.0, 17.0, 13.0, 43.0, 14.0, 3.0, 3.0, 0.0, 1.0, 7.0, 20.0, 98.0, 20.0, 5.0, 0.0, 0.0, 3.0, 16.0, 92.0, 10.0, 8.0, 11.0, 11.0, 9.0, 22.0, 29.0, 19.0, 13.0, 9.0, 10.0, 10.0, 15.0, 17.0, 30.0, 22.0]
@@ -92,12 +95,12 @@ SELECT emb FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::
 
 # *
 query II
-EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+EXPLAIN SELECT * FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query II rowsort
-SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+SELECT * FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 10336	[0.0, 1.0, 40.0, 48.0, 23.0, 14.0, 6.0, 3.0, 38.0, 118.0, 84.0, 36.0, 28.0, 30.0, 8.0, 3.0, 11.0, 85.0, 118.0, 66.0, 25.0, 2.0, 0.0, 0.0, 36.0, 70.0, 24.0, 26.0, 28.0, 7.0, 0.0, 1.0, 39.0, 36.0, 33.0, 36.0, 14.0, 5.0, 89.0, 58.0, 77.0, 118.0, 113.0, 27.0, 8.0, 0.0, 3.0, 18.0, 13.0, 83.0, 59.0, 118.0, 99.0, 7.0, 1.0, 1.0, 29.0, 32.0, 48.0, 73.0, 49.0, 7.0, 8.0, 22.0, 114.0, 10.0, 19.0, 0.0, 0.0, 3.0, 20.0, 56.0, 118.0, 34.0, 5.0, 0.0, 0.0, 3.0, 50.0, 117.0, 10.0, 14.0, 17.0, 25.0, 47.0, 56.0, 78.0, 24.0, 8.0, 7.0, 64.0, 56.0, 40.0, 15.0, 17.0, 13.0, 43.0, 14.0, 3.0, 3.0, 0.0, 1.0, 7.0, 20.0, 98.0, 20.0, 5.0, 0.0, 0.0, 3.0, 16.0, 92.0, 10.0, 8.0, 11.0, 11.0, 9.0, 22.0, 29.0, 19.0, 13.0, 9.0, 10.0, 10.0, 15.0, 17.0, 30.0, 22.0]
 10686	[0.0, 8.0, 45.0, 53.0, 39.0, 13.0, 10.0, 4.0, 31.0, 117.0, 97.0, 41.0, 26.0, 15.0, 18.0, 1.0, 8.0, 62.0, 117.0, 66.0, 26.0, 2.0, 0.0, 0.0, 23.0, 71.0, 35.0, 18.0, 26.0, 6.0, 0.0, 0.0, 54.0, 42.0, 44.0, 39.0, 28.0, 1.0, 62.0, 86.0, 54.0, 117.0, 117.0, 23.0, 10.0, 0.0, 0.0, 8.0, 8.0, 53.0, 78.0, 117.0, 117.0, 5.0, 0.0, 0.0, 52.0, 44.0, 43.0, 51.0, 38.0, 8.0, 7.0, 19.0, 117.0, 12.0, 5.0, 2.0, 0.0, 0.0, 8.0, 71.0, 117.0, 38.0, 11.0, 1.0, 2.0, 9.0, 63.0, 94.0, 8.0, 12.0, 26.0, 44.0, 71.0, 64.0, 52.0, 24.0, 9.0, 10.0, 58.0, 72.0, 32.0, 13.0, 8.0, 15.0, 60.0, 16.0, 7.0, 0.0, 0.0, 0.0, 1.0, 35.0, 62.0, 17.0, 5.0, 0.0, 0.0, 8.0, 18.0, 84.0, 8.0, 7.0, 12.0, 13.0, 16.0, 25.0, 31.0, 30.0, 11.0, 6.0, 16.0, 7.0, 20.0, 19.0, 20.0, 23.0]
@@ -107,12 +110,12 @@ SELECT * FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FL
 
 # rowid
 query II
-EXPLAIN SELECT rowid FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+EXPLAIN SELECT rowid FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I rowsort
-SELECT rowid FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+SELECT rowid FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 10336
 10686
@@ -122,12 +125,12 @@ SELECT rowid FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}
 
 # array_distance
 query II
-EXPLAIN SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+EXPLAIN SELECT array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 query I rowsort
-SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+SELECT array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) FROM t1 WHERE id > 1000 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 ----
 218.88124
 245.28758
@@ -138,12 +141,12 @@ SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000
 # TODO: Re-enable. Initial idea is that this has to do with the DuckIR VSS WHERE id=1 bug.
 # rowid (with rowid in pushed down filter)
 # query II
-# EXPLAIN SELECT rowid FROM t1 WHERE id > 1000 AND rowid > 1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+# EXPLAIN SELECT rowid FROM t1 WHERE id > 1000 AND rowid > 1 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 # ----
 # physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*
 
 # query I rowsort
-# SELECT rowid FROM t1 WHERE id > 1000 AND rowid > 1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5;
+# SELECT rowid FROM t1 WHERE id > 1000 AND rowid > 1 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
 # ----
 # 1000
 # 1001
@@ -162,12 +165,12 @@ SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000
 # ============================================
 
 # query II
-# EXPLAIN SELECT * FROM t1 WHERE id > 1000 OR emb = ${QUERY_EMB}::FLOAT[${DIMS}] ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
+# EXPLAIN SELECT * FROM t1 WHERE id > 1000 OR emb = {QUERY_EMB}::FLOAT[{DIMS}] ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 50;
 # ----
 # physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*
 
 # query II
-# EXPLAIN SELECT * FROM t1 WHERE id > 1000 OR emb = ${QUERY_EMB}::FLOAT[${DIMS}] ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
+# EXPLAIN SELECT * FROM t1 WHERE id > 1000 OR emb = {QUERY_EMB}::FLOAT[{DIMS}] ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 50;
 # ----
 # physical_plan	<!REGEX>:.*SEQ_SCAN.*Filters.*
 
@@ -177,7 +180,7 @@ SELECT array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) FROM t1 WHERE id > 1000
 # ============================================
 
 # query II
-# EXPLAIN SELECT * FROM t1 WHERE id > 1500 AND (id > 1000 OR emb = ${QUERY_EMB}::FLOAT[${DIMS}]) ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 50;
+# EXPLAIN SELECT * FROM t1 WHERE id > 1500 AND (id > 1000 OR emb = {QUERY_EMB}::FLOAT[{DIMS}]) ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 50;
 # ----
 # physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_FILT_SCAN.*FILTER.*SEQ_SCAN.*Filters.*
 

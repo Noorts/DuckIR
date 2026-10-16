@@ -6,6 +6,9 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # ============================================
 # 1. Encode/decode round-trip (within quantization tolerance)
 # ============================================
@@ -92,10 +95,10 @@ test-env NUM_ROWS 20000
 test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20,8,3,5,67,17,19,26,5,0,1,22,60,26,7,1,18,22,84,53,85,119,119,4,24,18,7,7,1,81,106,102,72,30,6,0,9,1,9,119,72,1,4,33,119,29,6,1,0,1,14,52,119,30,3,0,0,55,92,111,2,5,4,9,22,89,96,14,1,0,1,82,59,16,20,5,25,14,11,4,0,0,1,26,47,23,4,0,0,4,38,83,30,14,9,4,9,17,23,41,0,0,2,8,19,25,23,1]
 
 statement ok
-CREATE TABLE t2 (id INTEGER, emb FLOAT[${DIMS}]);
+CREATE TABLE t2 (id INTEGER, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t2 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT ${NUM_ROWS};
+INSERT INTO t2 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT {NUM_ROWS};
 
 foreach metric_name,distance_func l2sq,array_distance cosine,array_cosine_distance
 
@@ -103,11 +106,11 @@ statement ok
 DROP INDEX IF EXISTS t2_idx;
 
 statement ok
-CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}');
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = '{metric_name}');
 
 # Index scan is used with blob query
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY ${distance_func}(emb, duckir_vss_encode_blob(${QUERY_EMB}::FLOAT[])) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY {distance_func}(emb, duckir_vss_encode_blob({QUERY_EMB}::FLOAT[])) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
@@ -124,7 +127,7 @@ statement ok
 CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq');
 
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY emb <-> duckir_vss_encode_blob(${QUERY_EMB}::FLOAT[]) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY emb <-> duckir_vss_encode_blob({QUERY_EMB}::FLOAT[]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
@@ -135,7 +138,7 @@ statement ok
 CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'cosine');
 
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY emb <=> duckir_vss_encode_blob(${QUERY_EMB}::FLOAT[]) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY emb <=> duckir_vss_encode_blob({QUERY_EMB}::FLOAT[]) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 

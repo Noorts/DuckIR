@@ -6,9 +6,12 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # Row groups of 8192 rows.
 statement ok
-ATTACH '__TEST_DIR__/index_join_filtered_slow.db' AS index_join_filtered_slow (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_join_filtered_slow.db' AS index_join_filtered_slow (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE index_join_filtered_slow;
@@ -20,11 +23,11 @@ SET checkpoint_threshold = '10GB';
 test-env DIMS 128
 
 statement ok
-CREATE TABLE t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 # The query rows: 10 SIFT vectors that are not in t.
 statement ok
-CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
+CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
 
 # ============================================
 # A compressed join key in release builds too: DuckDB compresses the key of a subquery of at least 1,048,576 rows.
@@ -40,11 +43,11 @@ CREATE TABLE big_ids AS SELECT (range + 16384)::BIGINT AS id FROM range(1100000)
 statement ok
 CREATE INDEX t_big_idx ON t_big USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = 'f32', n_probe = 0, seed = 0);
 
-# The index join reads the compressed key through its decompression.
+# The index join reads the compressed key through its decompression (a cast back to BIGINT).
 query II
 EXPLAIN SELECT q.qid, s.id FROM q, LATERAL (SELECT t_big.id FROM t_big WHERE t_big.id IN (SELECT id FROM big_ids) ORDER BY array_distance(t_big.emb, q.vec) LIMIT 10) s;
 ----
-physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*__internal_decompress.*SEMI.*
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*CAST\(#0 AS BIGINT\).*SEMI.*
 
 statement ok
 CREATE OR REPLACE TABLE join_result AS SELECT q.qid, s.id FROM q, LATERAL (SELECT t_big.id FROM t_big WHERE t_big.id IN (SELECT id FROM big_ids) ORDER BY array_distance(t_big.emb, q.vec) LIMIT 10) s;
@@ -55,10 +58,10 @@ CREATE OR REPLACE TABLE single_result AS FROM join_result LIMIT 0;
 loop i 0 10
 
 statement ok
-SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = ${i});
+SET VARIABLE query_vector = (SELECT vec FROM q WHERE qid = {i});
 
 statement ok
-INSERT INTO single_result SELECT ${i}, id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+INSERT INTO single_result SELECT {i}, id FROM t_big WHERE id IN (SELECT id FROM big_ids) ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
 
 endloop
 

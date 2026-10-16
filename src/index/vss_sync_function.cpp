@@ -21,7 +21,7 @@ struct VSSSyncIndexGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> VSSSyncIndexBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<VSSSyncIndexBindData>();
 	result->index_name = input.inputs[0].GetValue<string>();
 	names.emplace_back("index_name");
@@ -36,7 +36,8 @@ static unique_ptr<GlobalTableFunctionState> VSSSyncIndexInitGlobal(ClientContext
 	return make_uniq<VSSSyncIndexGlobalState>();
 }
 
-static VSSIndex &FindVSSIndex(ClientContext &context, const string &index_name, optional_ptr<DataTable> &table) {
+static shared_ptr<IndexEntry> FindVSSIndex(ClientContext &context, const string &index_name,
+                                           optional_ptr<DataTable> &table) {
 	optional_ptr<IndexCatalogEntry> index_entry;
 	for (auto &schema : Catalog::GetAllSchemas(context)) {
 		schema.get().Scan(context, CatalogType::INDEX_ENTRY, [&](CatalogEntry &entry) {
@@ -50,14 +51,16 @@ static VSSIndex &FindVSSIndex(ClientContext &context, const string &index_name, 
 		throw BinderException("DuckIR VSS index '%s' not found", index_name);
 	}
 
-	auto &table_entry = index_entry->schema.catalog.GetEntry<TableCatalogEntry>(context, index_entry->GetSchemaName(),
-	                                                                            index_entry->GetTableName());
+	auto &table_entry = Catalog::GetEntry<TableCatalogEntry>(
+	    context, QualifiedName(index_entry->schema.catalog.GetName(), index_entry->GetSchemaName(),
+	                           index_entry->GetTableName()));
 	table = &table_entry.GetStorage();
 	auto &table_info = *table_entry.GetStorage().GetDataTableInfo();
 	table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
-	for (auto &index : table_info.GetIndexes().Indexes()) {
-		if (index.IsBound() && index.GetIndexType() == VSSIndex::TYPE_NAME && index.GetIndexName() == index_name) {
-			return index.Cast<VSSIndex>();
+	for (auto entry : table_info.GetIndexes().IndexEntries()) {
+		if (entry->GetBindState() == IndexBindState::BOUND && entry->GetIndexType() == VSSIndex::TYPE_NAME &&
+		    entry->GetName() == index_name) {
+			return entry;
 		}
 	}
 	throw BinderException("DuckIR VSS index '%s' is not bound", index_name);
@@ -70,13 +73,15 @@ static void VSSSyncIndexExecute(ClientContext &context, TableFunctionInput &data
 	}
 	auto &bind_data = data_p.bind_data->Cast<VSSSyncIndexBindData>();
 	optional_ptr<DataTable> table;
-	auto &index = FindVSSIndex(context, bind_data.index_name, table);
-	const bool had_unindexed_rows = index.HasUnindexedRows();
-	index.SyncWithTable(context, *table);
+	auto entry = FindVSSIndex(context, bind_data.index_name, table);
+	// Exclusive access while the sync rebuilds row groups. A checkpoint serializes the index under this same lock.
+	auto index = entry->GetWriteHandle<VSSIndex>();
+	const bool had_unindexed_rows = index->HasUnindexedRows();
+	index->SyncWithTable(context, *table);
 
-	output.SetValue(0, 0, Value(bind_data.index_name));
-	output.SetValue(1, 0, Value::BOOLEAN(had_unindexed_rows));
-	output.SetCardinality(1);
+	output.data[0].Append(Value(bind_data.index_name));
+	output.data[1].Append(Value::BOOLEAN(had_unindexed_rows));
+	output.CheckCardinality(1);
 	state.done = true;
 }
 

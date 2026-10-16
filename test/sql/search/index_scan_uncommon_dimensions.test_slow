@@ -4,6 +4,9 @@
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # Variables
 test-env INDEX_SEED 0
 
@@ -29,14 +32,14 @@ statement ok
 CREATE OR REPLACE TABLE t1 AS
 SELECT
     i AS id,
-    repeat([CAST(i AS FLOAT)], ${DIMS})::FLOAT[${DIMS}] AS emb
-FROM range(${NUM_ROWS_LARGE_DIMS}) t(i);
+    repeat([CAST(i AS FLOAT)], {DIMS})::FLOAT[{DIMS}] AS emb
+FROM range({NUM_ROWS_LARGE_DIMS}) t(i);
 
 statement ok
 CREATE OR REPLACE TABLE t_gt AS
 SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 
 foreach quantization f32 u8
 
@@ -44,7 +47,7 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', seed = {INDEX_SEED});
 
 # Probe all clusters for maximum recall.
 statement ok
@@ -53,20 +56,20 @@ SET duckir_vss_n_probe = 0;
 # Verify the optimizer uses the index scan.
 query II
 EXPLAIN SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE t_idx_res AS
 SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 
 # Verify recall higher than RECALL_THRESHOLD
 query I
-SELECT CAST(COUNT(*) AS FLOAT) / ${LIMIT} >= ${RECALL_THRESHOLD}
+SELECT CAST(COUNT(*) AS FLOAT) / {LIMIT} >= {RECALL_THRESHOLD}
 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true

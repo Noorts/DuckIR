@@ -4,6 +4,9 @@
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # Variables
 test-env INDEX_SEED 0
 
@@ -31,17 +34,17 @@ statement ok
 CREATE OR REPLACE TABLE t1 AS
 SELECT
     CAST(e.i AS INTEGER) AS id,
-    list_transform(range(${DIMS}), lambda d: CAST(
-        (e.i % ${NUM_CLUSTERS}) * 0.05
+    list_transform(range({DIMS}), lambda d: CAST(
+        (e.i % {NUM_CLUSTERS}) * 0.05
         + sqrt(-2.0 * ln(greatest(random(), 1e-30))) * cos(2.0 * pi() * random()) * 5.0
-    AS FLOAT))::FLOAT[${DIMS}] AS emb
-FROM range(${NUM_ROWS}) e(i);
+    AS FLOAT))::FLOAT[{DIMS}] AS emb
+FROM range({NUM_ROWS}) e(i);
 
 statement ok
 CREATE OR REPLACE TABLE t_gt AS
 SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 
 foreach quantization f32
 
@@ -49,27 +52,27 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', seed = {INDEX_SEED});
 
 statement ok
 SET duckir_vss_n_probe = 0;
 
 query II
 EXPLAIN SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE t_idx_res AS
 SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 
 # Verify recall higher than RECALL_THRESHOLD
 query I
-SELECT CAST(COUNT(*) AS FLOAT) / ${LIMIT} >= ${RECALL_THRESHOLD}
+SELECT CAST(COUNT(*) AS FLOAT) / {LIMIT} >= {RECALL_THRESHOLD}
 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
@@ -87,17 +90,17 @@ statement ok
 CREATE OR REPLACE TABLE t1 AS
 SELECT
     CAST(e.i AS INTEGER) AS id,
-    list_transform(range(${DIMS}), lambda d: CAST(
-        (e.i % ${NUM_CLUSTERS}) * 0.05
+    list_transform(range({DIMS}), lambda d: CAST(
+        (e.i % {NUM_CLUSTERS}) * 0.05
         + sqrt(-2.0 * ln(greatest(random(), 1e-30))) * cos(2.0 * pi() * random()) * 5.0
-    AS FLOAT))::FLOAT[${DIMS}] AS emb
-FROM range(${NUM_ROWS}) e(i);
+    AS FLOAT))::FLOAT[{DIMS}] AS emb
+FROM range({NUM_ROWS}) e(i);
 
 statement ok
 CREATE OR REPLACE TABLE t_gt AS
 SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 
 foreach quantization f32 u8
 
@@ -105,7 +108,7 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', seed = {INDEX_SEED});
 
 # Probe all clusters for maximum recall.
 statement ok
@@ -114,20 +117,20 @@ SET duckir_vss_n_probe = 0;
 # Verify the optimizer uses the index scan.
 query II
 EXPLAIN SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
 CREATE OR REPLACE TABLE t_idx_res AS
 SELECT * FROM t1
-ORDER BY array_distance(emb, list_resize([1.0], ${DIMS}, 1.0)::FLOAT[${DIMS}])
-LIMIT ${LIMIT};
+ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
+LIMIT {LIMIT};
 
 # Verify recall higher than RECALL_THRESHOLD
 query I
-SELECT CAST(COUNT(*) AS FLOAT) / ${LIMIT} >= ${RECALL_THRESHOLD}
+SELECT CAST(COUNT(*) AS FLOAT) / {LIMIT} >= {RECALL_THRESHOLD}
 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true

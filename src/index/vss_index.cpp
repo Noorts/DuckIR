@@ -1,6 +1,9 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/storage/table/row_group_collection.hpp"
 #include "duckdb/storage/table/row_group_segment_tree.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
@@ -18,9 +21,10 @@
 
 namespace duckdb {
 
-VSSIndex::VSSIndex(const string &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
-                   TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
-                   AttachedDatabase &db, const case_insensitive_map_t<Value> &index_creation_options,
+VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_type,
+                   const vector<column_t> &column_ids, TableIOManager &table_io_manager,
+                   const vector<unique_ptr<Expression>> &unbound_expressions, AttachedDatabase &db,
+                   const case_insensitive_map_t<Value> &index_creation_options,
                    const IndexStorageInfo &persistence_info)
     : BoundIndex(name, TYPE_NAME, index_constraint_type, column_ids, table_io_manager, unbound_expressions, db),
       buffer_manager(BufferManager::GetBufferManager(db)) {
@@ -254,12 +258,13 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 	rows_returned = 0;
 	// Fetches every committed row, whatever the calling transaction's snapshot. The mirror
 	// holds the committed state, and rows a query must not see are dropped when it fetches its results.
-	const TransactionData committed(MAX_TRANSACTION_ID, DuckTransactionManager::Get(db).GetLastCommit() + 1);
+	const TransactionData committed(MAX_TRANSACTION_ID,
+	                                VisibilityBound::Through(DuckTransactionManager::Get(db).GetLastCommit()));
 	const vector<StorageIndex> fetch_column_ids {StorageIndex(GetColumnIds()[0]), StorageIndex()};
 	DataChunk fetched;
 	fetched.Initialize(Allocator::Get(db), {logical_types[0], LogicalType::ROW_TYPE});
 	Vector fetch_row_ids(LogicalType::ROW_TYPE, STANDARD_VECTOR_SIZE);
-	const auto fetch_row_ids_data = FlatVector::GetData<row_t>(fetch_row_ids);
+	const auto fetch_row_ids_data = FlatVector::GetDataMutable<row_t>(fetch_row_ids);
 	ColumnFetchState fetch_state;
 	const auto num_dimensions = GetNumDimensions();
 	auto raw_embeddings = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
@@ -280,10 +285,10 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 			continue;
 		}
 		auto &embedding_column = fetched.data[0];
-		embedding_column.Flatten(fetched_count);
-		fetched.data[1].Flatten(fetched_count);
+		embedding_column.Flatten();
+		fetched.data[1].Flatten();
 		const auto &validity = FlatVector::Validity(embedding_column);
-		const auto fetched_embeddings = FlatVector::GetData<float>(ArrayVector::GetEntry(embedding_column));
+		const auto fetched_embeddings = FlatVector::GetData<float>(ArrayVector::GetChild(embedding_column));
 		const auto fetched_row_ids = FlatVector::GetData<row_t>(fetched.data[1]);
 		idx_t batch_count = 0;
 		for (idx_t i = 0; i < fetched_count; i++) {
@@ -319,7 +324,7 @@ idx_t VSSIndex::FetchCommittedRowIds(DataTable &table, const row_t start, const 
 		if (chunk.size() == 0) {
 			break;
 		}
-		chunk.data[0].Flatten(chunk.size());
+		chunk.data[0].Flatten();
 		memcpy(row_ids + count, FlatVector::GetData<row_t>(chunk.data[0]), chunk.size() * sizeof(row_t));
 		count += chunk.size();
 	}
@@ -380,7 +385,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			continue;
 		}
 		auto embeddings_buffer = allocate_embeddings(bounds.count);
-		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.Ptr());
+		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
 		const idx_t count = FetchRows(table, bounds.row_start, bounds.row_start + static_cast<row_t>(bounds.count),
 		                              row_ids.get(), embeddings, rows_returned, &executor);
 		if (count > 0) {
@@ -412,7 +417,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			num_unindexed_rows += static_cast<idx_t>(MinValue<row_t>(range.end, bounds_end) - range.start);
 		}
 		auto embeddings_buffer = allocate_embeddings(num_unindexed_rows);
-		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.Ptr());
+		const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
 		idx_t count = 0;
 		while (range_idx < unindexed_row_ranges.size() && unindexed_row_ranges[range_idx].start < bounds_end) {
 			auto &range = unindexed_row_ranges[range_idx];
@@ -535,7 +540,7 @@ ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
 	if (count == 0) {
 		return ErrorData();
 	}
-	row_ids.Flatten(count);
+	row_ids.Flatten();
 	const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
 	// Determine consecutive ranges of row ids.
 	// For example: `1, 2, 3, 5, 6 --> [1, 3] + [5, 6]`
@@ -559,7 +564,7 @@ void VSSIndex::Delete(IndexLock &lock, DataChunk &entries, Vector &row_ids) {
 	auto _lock = rwlock.GetExclusiveLock();
 
 	const idx_t count = entries.size();
-	row_ids.Flatten(count);
+	row_ids.Flatten();
 	const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
 	for (idx_t i = 0; i < count; i++) {
 		// PDX Delete is idempotent: if the row was never indexed, it is a no-op
@@ -654,7 +659,7 @@ void VSSIndex::VerifyBuffers(IndexLock &state) {
 	allocator->VerifyBuffers();
 }
 
-idx_t VSSIndex::GetInMemorySize(IndexLock &state) {
+idx_t VSSIndex::GetInMemorySize(IndexLock &state) const {
 	auto _lock = rwlock.GetSharedLock();
 
 	// The allocator only holds the buffers that were not written to disk yet.
@@ -907,19 +912,20 @@ bool VSSIndex::TryMatchDistanceFunction(const unique_ptr<Expression> &expr,
 	return function_matcher->Match(*expr, bindings);
 }
 
-static void TryBindIndexExpressionInternal(Expression &expr, idx_t table_idx, const vector<column_t> &index_columns,
+static void TryBindIndexExpressionInternal(Expression &expr, TableIndex table_idx,
+                                           const vector<column_t> &index_columns,
                                            const vector<ColumnIndex> &table_columns, bool &success, bool &found) {
-	if (expr.type == ExpressionType::BOUND_COLUMN_REF) {
+	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 		found = true;
 		auto &ref = expr.Cast<BoundColumnRefExpression>();
 
 		// Rewrite the column reference to fit in the current set of bound column ids
-		ref.binding.table_index = table_idx;
+		ref.BindingMutable().table_index = table_idx;
 
-		const auto referenced_column = index_columns[ref.binding.column_index];
+		const auto referenced_column = index_columns[ref.Binding().column_index];
 		for (idx_t i = 0; i < table_columns.size(); i++) {
 			if (table_columns[i].GetPrimaryIndex() == referenced_column) {
-				ref.binding.column_index = i;
+				ref.BindingMutable().column_index = ProjectionIndex(i);
 				return;
 			}
 		}
@@ -985,7 +991,7 @@ const case_insensitive_map_t<PDX::DistanceMetric> VSSIndex::DISTANCE_METRIC_MAP 
 };
 
 unique_ptr<ExpressionMatcher> VSSIndex::MakeFunctionMatcher(const VSSWrapper &vss_wrapper) {
-	unordered_set<string> distance_functions;
+	identifier_set_t distance_functions;
 
 	switch (vss_wrapper.GetDistanceMetric()) {
 	case PDX::DistanceMetric::L2SQ:

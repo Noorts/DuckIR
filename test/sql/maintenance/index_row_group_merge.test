@@ -6,10 +6,13 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
 statement ok
-ATTACH '__TEST_DIR__/merge.db' AS merge (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/merge.db' AS merge (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE merge;
@@ -29,7 +32,7 @@ test-env ROW_4113 [15,1,1,24,44,9,8,21,48,12,5,49,67,1,0,23,5,8,45,123,112,6,6,2
 test-env MARKER_A [200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200]
 
 statement ok
-CREATE TABLE sift AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 49152;
+CREATE TABLE sift AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 49152;
 
 foreach quantization f32
 
@@ -50,16 +53,16 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t1') WHERE column_name
 4	8192
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 query II
-EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 600[^0-9].*Row Groups: 5[^0-9].*
 
 # Rows committed but not yet indexed when the checkpoint runs land in a new row group of their own.
 statement ok
-INSERT INTO t1 VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
+INSERT INTO t1 VALUES (-1, {MARKER_A}::FLOAT[{DIMS}]);
 
 statement ok
 CHECKPOINT;
@@ -75,18 +78,18 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t1') WHERE column_name
 
 # The first search rebuilds the merged row group's mirror from the table and indexes the staged row.
 query I
-SELECT id FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t1 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 
 query II
-EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 481[^0-9].*Row Groups: 5[^0-9].*
 
 # A row from the second half of the merged row group is still found exactly.
 query I
-SELECT id FROM t1 ORDER BY array_distance(emb, ${ROW_4113}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t1 ORDER BY array_distance(emb, {ROW_4113}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 4113
 
@@ -94,25 +97,25 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t1;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
 # Filtered search restricted to the merged row group.
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy WHERE id < 8192 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy WHERE id < 8192 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 WHERE id < 8192 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 WHERE id < 8192 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
@@ -121,7 +124,7 @@ statement ok
 DELETE FROM t1 WHERE id = 4113;
 
 query I
-SELECT id <> 4113 FROM t1 ORDER BY array_distance(emb, ${ROW_4113}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id <> 4113 FROM t1 ORDER BY array_distance(emb, {ROW_4113}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 true
 
@@ -129,7 +132,7 @@ statement ok
 DELETE FROM t1 WHERE id = -1;
 
 query I
-SELECT id <> -1 FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id <> -1 FROM t1 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 true
 
@@ -139,7 +142,7 @@ statement ok
 CREATE OR REPLACE TABLE t2 AS SELECT * FROM sift WHERE id < 4096;
 
 statement ok
-CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 statement ok
 INSERT INTO t2 SELECT * FROM sift WHERE id >= 4096 AND id < 16384;
@@ -154,12 +157,12 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t2') WHERE column_name
 1	8192
 
 query I
-SELECT id FROM t2 ORDER BY array_distance(emb, ${ROW_4113}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t2 ORDER BY array_distance(emb, {ROW_4113}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 4113
 
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
 
@@ -167,25 +170,25 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t2;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t2 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
 # A trailing row group whose rows are all deleted is dropped by the checkpoint; its mirror goes with it.
 statement ok
-CREATE OR REPLACE TABLE t3 AS SELECT * FROM sift WHERE id < 8192 UNION ALL SELECT -1, ${MARKER_A}::FLOAT[${DIMS}];
+CREATE OR REPLACE TABLE t3 AS SELECT * FROM sift WHERE id < 8192 UNION ALL SELECT -1, {MARKER_A}::FLOAT[{DIMS}];
 
 statement ok
-CREATE INDEX t3_idx ON t3 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t3_idx ON t3 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 query II
-EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
 
@@ -201,19 +204,19 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t3') WHERE column_name
 0	8192
 
 query I
-SELECT id <> -1 FROM t3 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id <> -1 FROM t3 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 true
 
 query II
-EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 1[^0-9].*
 
 # A row group whose embeddings are all NULL (no mirror) merged with a mirrored partial one: the mirror no longer
 # starts with its row group and is rebuilt. Observable through a filter whose DuckDB chunk starts in the NULL rows.
 statement ok
-CREATE OR REPLACE TABLE t4 AS SELECT id, NULL::FLOAT[${DIMS}] AS emb FROM range(2000) r(id);
+CREATE OR REPLACE TABLE t4 AS SELECT id, NULL::FLOAT[{DIMS}] AS emb FROM range(2000) r(id);
 
 statement ok
 INSERT INTO t4 SELECT * FROM sift WHERE id >= 5000 AND id < 32768;
@@ -228,10 +231,10 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t4') WHERE column_name
 4	8192
 
 statement ok
-CREATE INDEX t4_idx ON t4 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t4_idx ON t4 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 query II
-EXPLAIN SELECT * FROM t4 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t4 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 480[^0-9].*Row Groups: 4[^0-9].*
 
@@ -247,12 +250,12 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t4') WHERE column_name
 3	8192
 
 query I
-SELECT COUNT(*) FROM (SELECT id FROM t4 WHERE id < 5048 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 5) WHERE id >= 5000 AND id < 5048;
+SELECT COUNT(*) FROM (SELECT id FROM t4 WHERE id < 5048 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5) WHERE id >= 5000 AND id < 5048;
 ----
 5
 
 query II
-EXPLAIN SELECT * FROM t4 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t4 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 480[^0-9].*Row Groups: 4[^0-9].*
 
@@ -260,13 +263,13 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t4;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t4 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t4 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
@@ -292,10 +295,10 @@ SELECT row_group_id, sum(count) FROM pragma_storage_info('t5') WHERE column_name
 5	8192
 
 statement ok
-CREATE INDEX t5_idx ON t5 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t5_idx ON t5 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 query II
-EXPLAIN SELECT * FROM t5 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t5 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 720[^0-9].*Row Groups: 6[^0-9].*
 
@@ -315,18 +318,18 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t5;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t5 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t5 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
 query II
-EXPLAIN SELECT * FROM t5 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t5 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 600[^0-9].*Row Groups: 5[^0-9].*
 
@@ -335,13 +338,13 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t5;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy WHERE id >= 11384 AND id < 29576 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy WHERE id >= 11384 AND id < 29576 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t5 WHERE id >= 11384 AND id < 29576 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t5 WHERE id >= 11384 AND id < 29576 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 

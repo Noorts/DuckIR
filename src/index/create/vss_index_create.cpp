@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog_entry/duck_index_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
@@ -31,10 +32,10 @@ PhysicalCreateVSSIndex::PhysicalCreateVSSIndex(PhysicalPlan &physical_plan, cons
 class CreateVSSIndexGlobalSinkState : public GlobalSinkState {
 public:
 	CreateVSSIndexGlobalSinkState(const PhysicalCreateVSSIndex &op, ClientContext &context)
-	    : global_index(make_uniq<VSSIndex>(op.info->index_name, op.info->constraint_type, op.storage_ids,
+	    : global_index(make_uniq<VSSIndex>(op.info->GetIndexName(), op.info->constraint_type, op.storage_ids,
 	                                       TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
 	                                       op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
-	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->return_type)),
+	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->GetReturnType())),
 	      embedding_preprocessor(
 	          make_uniq<EmbeddingPreprocessor>(num_dimensions, global_index->Cast<VSSIndex>().GetRotationMatrix())),
 	      is_normalized(global_index->Cast<VSSIndex>().IsNormalized()) {
@@ -96,15 +97,15 @@ static void FlushRowGroup(CreateVSSIndexGlobalSinkState &g_sink, CreateVSSIndexL
 	if (l_sink.row_group_embeddings_count > 0) {
 		DuckDBParallelExecutor executor(context, g_sink.default_threads_per_build);
 		g_sink.global_index->Cast<VSSIndex>().SetUpIndexForRowGroup(
-		    l_sink.row_group_row_ids.data(), reinterpret_cast<float *>(l_sink.row_group_embeddings.Ptr()),
+		    l_sink.row_group_row_ids.data(), reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()),
 		    l_sink.row_group_embeddings_count, l_sink.row_group.row_start, l_sink.row_group.count, &executor);
 		l_sink.row_group_embeddings_count = 0;
 	}
 	l_sink.row_group_embeddings.Destroy();
 	l_sink.has_row_group = false;
-	auto guard = g_sink.Lock();
+	annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	g_sink.running_builds--;
-	g_sink.UnblockTasks(guard);
+	g_sink.UnblockTasks();
 }
 
 unique_ptr<LocalSinkState> PhysicalCreateVSSIndex::GetLocalSinkState(ExecutionContext &context) const {
@@ -133,8 +134,8 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 
 	// Chunks arrive with a selection vector when the scan skipped deleted rows or the filter dropped NULL embeddings.
 	const idx_t num_embeddings = input_chunk.size();
-	embedding_column.Flatten(num_embeddings);
-	row_id_column.Flatten(num_embeddings);
+	embedding_column.Flatten();
+	row_id_column.Flatten();
 	const auto row_id_data = FlatVector::GetData<row_t>(row_id_column);
 
 	// A chunk never spans two DuckDB row groups, so the first row id tells which one this chunk belongs to.
@@ -151,9 +152,9 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 	if (!l_sink.has_row_group) {
 		// Without a free build slot, DuckDB runs this chunk again once a build gives its slot back.
 		{
-			auto guard = g_sink.Lock();
+			annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 			if (g_sink.running_builds == g_sink.max_concurrent_builds) {
-				return g_sink.BlockSink(guard, input.interrupt_state);
+				return g_sink.BlockSink(input.interrupt_state);
 			}
 			g_sink.running_builds++;
 		}
@@ -169,8 +170,8 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 	D_ASSERT(l_sink.row_group_embeddings_count + num_embeddings <= row_group.count);
 
 	g_sink.embedding_preprocessor->PreprocessEmbeddings(
-	    FlatVector::GetData<float>(ArrayVector::GetEntry(embedding_column)),
-	    reinterpret_cast<float *>(l_sink.row_group_embeddings.Ptr()) +
+	    FlatVector::GetDataMutable<float>(ArrayVector::GetChildMutable(embedding_column)),
+	    reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()) +
 	        (l_sink.row_group_embeddings_count * g_sink.num_dimensions),
 	    num_embeddings, g_sink.is_normalized);
 
@@ -207,10 +208,10 @@ SinkFinalizeType PhysicalCreateVSSIndex::Finalize(Pipeline &pipeline, Event &eve
 	info->column_ids = storage_ids;
 
 	// Ensure that the index does not yet exist in the catalog.
-	auto entry = schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::INDEX_ENTRY, info->index_name);
+	auto entry = schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::INDEX_ENTRY, info->GetIndexName());
 	if (entry) {
 		if (info->on_conflict != OnCreateConflict::IGNORE_ON_CONFLICT) {
-			throw CatalogException("Index with name \"%s\" already exists!", info->index_name);
+			throw CatalogException("Index with name \"%s\" already exists!", info->GetIndexName());
 		}
 		// IF NOT EXISTS on existing index. We are done.
 		return SinkFinalizeType::READY;
@@ -223,7 +224,7 @@ SinkFinalizeType PhysicalCreateVSSIndex::Finalize(Pipeline &pipeline, Event &eve
 	index.initial_index_size = g_sink.global_index->GetInMemorySize();
 
 	// Add the index to the storage.
-	storage.AddIndex(std::move(g_sink.global_index));
+	storage.AddIndex(std::move(g_sink.global_index), index.oid);
 	return SinkFinalizeType::READY;
 }
 

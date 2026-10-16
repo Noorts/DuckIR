@@ -1,5 +1,6 @@
 #include "index/search/vss_index_join_physical.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
+#include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
@@ -189,7 +190,7 @@ SinkResultType PhysicalVSSIndexJoin::Sink(ExecutionContext &context, DataChunk &
 	D_ASSERT(chunk.ColumnCount() == 1);
 	D_ASSERT(chunk.data[0].GetType() == LogicalType::ROW_TYPE);
 
-	chunk.data[0].Flatten(chunk.size());
+	chunk.data[0].Flatten();
 	const auto row_ids = FlatVector::GetData<row_t>(chunk.data[0]);
 	// No search starts here (the queries come later), so the rows only go to their row group's list
 	for (idx_t i = 0; i < chunk.size(); i++) {
@@ -212,7 +213,7 @@ SinkCombineResultType PhysicalVSSIndexJoin::Combine(ExecutionContext &context, O
 	auto &g_sink = input.global_state.Cast<VSSIndexJoinGlobalSinkState>();
 	auto &l_sink = input.local_state.Cast<VSSIndexJoinLocalSinkState>();
 
-	const auto guard = g_sink.Lock();
+	const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	for (idx_t row_group_idx = 0; row_group_idx < l_sink.passing_row_ids_per_row_group.size(); row_group_idx++) {
 		auto &local_row_ids = l_sink.passing_row_ids_per_row_group[row_group_idx];
 		auto &global_row_ids = g_sink.search.passing_row_ids_per_row_group[row_group_idx];
@@ -525,7 +526,7 @@ static bool TryReadQuery(const PhysicalVSSIndexJoin &op, DataChunk &input, const
 		DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), raw_query);
 		return true;
 	}
-	auto &query_elements = ArrayVector::GetEntry(query_vector);
+	auto &query_elements = ArrayVector::GetChild(query_vector);
 	const auto query_data = FlatVector::GetData<float>(query_elements);
 	const auto &query_validity = FlatVector::Validity(query_elements);
 	const auto offset = query_idx * num_dimensions;
@@ -669,7 +670,7 @@ static idx_t SearchQuery(const VSSIndexJoinSearch &search, VSSIndexJoinOperatorS
 	}
 
 	const auto nearest = PDX::BuildResultSetFromHeap(search.limit, state.heap.heap);
-	const auto row_ids = FlatVector::GetData<row_t>(state.row_ids);
+	const auto row_ids = FlatVector::GetDataMutable<row_t>(state.row_ids);
 	for (size_t i = 0; i < nearest.size(); i++) {
 		row_ids[i] =
 		    search.on_the_fly_indexes.empty() ? nearest[i].index : search.on_the_fly_indexes_row_ids[nearest[i].index];
@@ -718,7 +719,7 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 	}
 
 	if (!state.input_started) {
-		input.data[query_column].ToUnifiedFormat(input.size(), state.query_format);
+		input.data[query_column].ToUnifiedFormat(state.query_format);
 		state.next_input_row = 0;
 		state.input_started = true;
 		// Why we need to guard this?
@@ -740,7 +741,7 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 		// Here we only need to copy the row ids of the neighbors to state.row_ids, and then fetch them.
 		if (search.search_flat_index_in_bulk) {
 			const auto &nearest = state.chunk_nearest[row];
-			const auto row_ids = FlatVector::GetData<row_t>(state.row_ids);
+			const auto row_ids = FlatVector::GetDataMutable<row_t>(state.row_ids);
 			for (size_t i = 0; i < nearest.size(); i++) {
 				row_ids[i] = search.on_the_fly_indexes_row_ids[nearest[i].index];
 			}
@@ -764,12 +765,13 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 		// The input row's columns, then the fetched table columns.
 		const auto num_query_columns = input.ColumnCount();
 		for (idx_t col = 0; col < num_query_columns; col++) {
-			ConstantVector::Reference(chunk.data[col], input.data[col], row, input.size());
+			ConstantVector::Reference(chunk.data[col], count_t(state.fetched.size()), input.data[col], row,
+			                          input.size());
 		}
 		for (idx_t col = 0; col < state.fetched.ColumnCount(); col++) {
 			chunk.data[num_query_columns + col].Reference(state.fetched.data[col]);
 		}
-		chunk.SetCardinality(state.fetched.size());
+		chunk.CheckCardinality(state.fetched.size());
 		break;
 	}
 
@@ -811,8 +813,8 @@ vector<const_reference<PhysicalOperator>> PhysicalVSSIndexJoin::GetSources() con
 // Defines this operator's details shown in the query plan.
 InsertionOrderPreservingMap<string> PhysicalVSSIndexJoin::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table"] = table.name;
-	result["DuckIR VSS Index"] = index.GetIndexName();
+	result["Table"] = table.name.GetIdentifierName();
+	result["DuckIR VSS Index"] = index.GetIndexName().GetIdentifierName();
 	result["Projections"] = ColumnNamesToString(table, column_ids);
 	result["K"] = StringUtil::Format("%llu", limit);
 	SetEstimatedCardinality(result, estimated_cardinality);

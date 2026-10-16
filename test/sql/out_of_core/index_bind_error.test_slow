@@ -4,14 +4,14 @@
 
 require duckir
 
-load __TEST_DIR__/index_bind_error_main.db
+load {TEST_DIR}/index_bind_error_main.db
 
 statement ok
-ATTACH '__TEST_DIR__/index_bind_error.db' AS b;
+ATTACH '{TEST_DIR}/index_bind_error.db' AS b;
 
 # Its rotation and pruner (2 x 4096 x 4096 floats, 128 MB) do not fit in the limit below.
 statement ok
-CREATE TABLE b.t AS SELECT range AS id, list_transform(range(4096), x -> random())::FLOAT[4096] AS emb FROM range(1000);
+CREATE TABLE b.t AS SELECT range AS id, list_transform(range(4096), lambda x: random())::FLOAT[4096] AS emb FROM range(1000);
 
 statement ok
 CREATE INDEX t_idx ON b.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
@@ -25,7 +25,7 @@ statement ok
 SET memory_limit = '128MB';
 
 statement ok
-ATTACH '__TEST_DIR__/index_bind_error.db' AS b;
+ATTACH '{TEST_DIR}/index_bind_error.db' AS b;
 
 statement ok
 SET VARIABLE query_emb = (SELECT emb FROM b.t WHERE id = 0);
@@ -50,7 +50,7 @@ SET memory_limit = '1GB';
 restart
 
 statement ok
-ATTACH '__TEST_DIR__/index_bind_error.db' AS b;
+ATTACH '{TEST_DIR}/index_bind_error.db' AS b;
 
 statement ok
 SET VARIABLE query_emb = (SELECT emb FROM b.t WHERE id = 0);

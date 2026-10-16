@@ -9,7 +9,7 @@ require duckir
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
 statement ok
-ATTACH '__TEST_DIR__/nullonly.db' AS nullonly (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/nullonly.db' AS nullonly (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE nullonly;
@@ -27,7 +27,7 @@ test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20
 test-env MARKER_A [200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200]
 
 statement ok
-CREATE TABLE sift AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE sift AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 foreach quantization f32
 
@@ -35,7 +35,7 @@ statement ok
 CREATE OR REPLACE TABLE t1 AS SELECT * FROM sift WHERE id < 8192;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 statement ok
 INSERT INTO t1 (id) VALUES (-5), (-6);
@@ -44,7 +44,7 @@ statement ok
 INSERT INTO t1 SELECT id, NULL FROM range(100) r(id);
 
 query I
-SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 0
 
@@ -55,13 +55,13 @@ t1_idx	false
 
 # The same for a NULL commit that arrives together with real rows.
 statement ok
-INSERT INTO t1 VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
+INSERT INTO t1 VALUES (-1, {MARKER_A}::FLOAT[{DIMS}]);
 
 statement ok
 INSERT INTO t1 (id) VALUES (-7);
 
 query I
-SELECT id FROM t1 ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM t1 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 
@@ -79,13 +79,13 @@ statement ok
 CREATE OR REPLACE TABLE t_copy AS FROM t1;
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy WHERE emb IS NOT NULL ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t_copy WHERE emb IS NOT NULL ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t1 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 

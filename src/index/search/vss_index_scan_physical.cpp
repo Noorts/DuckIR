@@ -159,8 +159,8 @@ public:
 
 		g_state.search_completed = true;
 
-		const auto guard = g_state.Lock();
-		g_state.UnblockTasks(guard);
+		const annotated_lock_guard<annotated_mutex> guard(g_state.lock);
+		g_state.UnblockTasks();
 	}
 };
 
@@ -188,9 +188,9 @@ SourceResultType PhysicalVSSIndexScan::GetDataInternal(ExecutionContext &context
 	}
 
 	// Block until the search is done.
-	const auto guard = g_state.Lock();
+	const annotated_lock_guard<annotated_mutex> guard(g_state.lock);
 	if (!g_state.search_completed) {
-		return g_state.BlockSource(guard, input.interrupt_state);
+		return g_state.BlockSource(input.interrupt_state);
 	}
 
 	// Search is done, now fetch and emit results. Note that if K > STANDARD_VECTOR_SIZE, then GetData will be called
@@ -207,7 +207,7 @@ SourceResultType PhysicalVSSIndexScan::GetDataInternal(ExecutionContext &context
 
 	// Create vector of row ids that are part of the current output chunk.
 	Vector row_ids_vector(LogicalType::ROW_TYPE, num_results_to_emit);
-	auto row_ids_data = FlatVector::GetData<row_t>(row_ids_vector);
+	auto row_ids_data = FlatVector::GetDataMutable<row_t>(row_ids_vector);
 	for (idx_t i = 0; i < num_results_to_emit; i++) {
 		row_ids_data[i] = g_state.vss_row_ids->at(g_state.vss_row_ids_idx + i);
 	}
@@ -223,8 +223,8 @@ SourceResultType PhysicalVSSIndexScan::GetDataInternal(ExecutionContext &context
 
 InsertionOrderPreservingMap<string> PhysicalVSSIndexScan::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table"] = bind_data->table.name;
-	result["DuckIR VSS Index"] = bind_data->index.GetIndexName();
+	result["Table"] = bind_data->table.name.GetIdentifierName();
+	result["DuckIR VSS Index"] = bind_data->index.GetIndexName().GetIdentifierName();
 	result["Projections"] = ColumnNamesToString(bind_data->table, column_ids);
 	result["Total Clusters"] = StringUtil::Format("%zu", bind_data->index.Cast<VSSIndex>().GetTotalNumClusters());
 	result["Row Groups"] = StringUtil::Format("%zu", bind_data->index.Cast<VSSIndex>().GetNumRowGroups());

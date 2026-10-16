@@ -6,10 +6,13 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # A database with small row groups keeps the multi-row-group layouts cheap; no automatic checkpoint may merge
 # row groups halfway through the test.
 statement ok
-ATTACH '__TEST_DIR__/deg.db' AS deg (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/deg.db' AS deg (ROW_GROUP_SIZE 8192);
 
 statement ok
 USE deg;
@@ -27,25 +30,25 @@ test-env QUERY_EMB [0,16,35,5,32,31,14,10,11,78,55,10,45,83,11,6,14,57,102,75,20
 test-env MARKER_A [200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200]
 
 statement ok
-CREATE TABLE sift AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
+CREATE TABLE sift AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
 # One full row group, then a row group with a single row.
 statement ok
-CREATE TABLE t_last_one (id BIGINT, emb FLOAT[${DIMS}]);
+CREATE TABLE t_last_one (id BIGINT, emb FLOAT[{DIMS}]);
 
 statement ok
 INSERT INTO t_last_one SELECT * FROM sift WHERE id < 8192;
 
 statement ok
-INSERT INTO t_last_one VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
+INSERT INTO t_last_one VALUES (-1, {MARKER_A}::FLOAT[{DIMS}]);
 
 # A single row, then an unordered load of exactly one full row group: the full collection is moved as its own row
 # group, so the first row group keeps its single row.
 statement ok
-CREATE TABLE t_first_one (id BIGINT, emb FLOAT[${DIMS}]);
+CREATE TABLE t_first_one (id BIGINT, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t_first_one VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
+INSERT INTO t_first_one VALUES (-1, {MARKER_A}::FLOAT[{DIMS}]);
 
 statement ok
 SET preserve_insertion_order = false;
@@ -59,21 +62,21 @@ SET preserve_insertion_order = true;
 # Last row group with 2047 rows: below the clustering threshold, exact Flat index. Loaded in one statement: a
 # single-row INSERT that would complete a 2048-row vector opens a new row group instead.
 statement ok
-CREATE TABLE t_last_2047 (id BIGINT, emb FLOAT[${DIMS}]);
+CREATE TABLE t_last_2047 (id BIGINT, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t_last_2047 SELECT * FROM sift WHERE id < 8192 + 2046 UNION ALL SELECT -1, ${MARKER_A}::FLOAT[${DIMS}];
+INSERT INTO t_last_2047 SELECT * FROM sift WHERE id < 8192 + 2046 UNION ALL SELECT -1, {MARKER_A}::FLOAT[{DIMS}];
 
 # Last row group with 2048 rows: the smallest clustered row group.
 statement ok
-CREATE TABLE t_last_2048 (id BIGINT, emb FLOAT[${DIMS}]);
+CREATE TABLE t_last_2048 (id BIGINT, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t_last_2048 SELECT * FROM sift WHERE id < 8192 + 2047 UNION ALL SELECT -1, ${MARKER_A}::FLOAT[${DIMS}];
+INSERT INTO t_last_2048 SELECT * FROM sift WHERE id < 8192 + 2047 UNION ALL SELECT -1, {MARKER_A}::FLOAT[{DIMS}];
 
 # Last row group of 1000 rows of which only one has an embedding.
 statement ok
-CREATE TABLE t_last_nulls (id BIGINT, emb FLOAT[${DIMS}]);
+CREATE TABLE t_last_nulls (id BIGINT, emb FLOAT[{DIMS}]);
 
 statement ok
 INSERT INTO t_last_nulls SELECT * FROM sift WHERE id < 8192;
@@ -82,15 +85,15 @@ statement ok
 INSERT INTO t_last_nulls SELECT i, NULL FROM range(8192, 8192 + 999) r(i);
 
 statement ok
-INSERT INTO t_last_nulls VALUES (-1, ${MARKER_A}::FLOAT[${DIMS}]);
+INSERT INTO t_last_nulls VALUES (-1, {MARKER_A}::FLOAT[{DIMS}]);
 
 # Last row group of 5001 rows of which only the one in the middle is still live (deleted rows at the end of a row
 # group are dropped from storage, deleted rows before a live row stay as tombstones).
 statement ok
-CREATE TABLE t_deleted (id BIGINT, emb FLOAT[${DIMS}]);
+CREATE TABLE t_deleted (id BIGINT, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t_deleted SELECT * FROM sift WHERE id < 8192 + 2500 UNION ALL SELECT -1, ${MARKER_A}::FLOAT[${DIMS}] UNION ALL SELECT * FROM sift WHERE id >= 8192 + 2500 AND id < 8192 + 5000;
+INSERT INTO t_deleted SELECT * FROM sift WHERE id < 8192 + 2500 UNION ALL SELECT -1, {MARKER_A}::FLOAT[{DIMS}] UNION ALL SELECT * FROM sift WHERE id >= 8192 + 2500 AND id < 8192 + 5000;
 
 statement ok
 DELETE FROM t_deleted WHERE id >= 8192;
@@ -116,53 +119,53 @@ foreach tbl t_last_one t_first_one t_last_2047 t_last_2048 t_last_nulls t_delete
 
 # Copy of the table without an index for verification.
 statement ok
-CREATE TABLE ${tbl}_copy AS FROM ${tbl};
+CREATE TABLE {tbl}_copy AS FROM {tbl};
 
 foreach quantization f32
 
 statement ok
-DROP INDEX IF EXISTS ${tbl}_idx;
+DROP INDEX IF EXISTS {tbl}_idx;
 
 statement ok
-CREATE INDEX ${tbl}_idx ON ${tbl} USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '${quantization}', n_probe = 0, seed = 0);
+CREATE INDEX {tbl}_idx ON {tbl} USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
 
 query II
-EXPLAIN SELECT * FROM ${tbl} ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM {tbl} ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
 
 # The degenerate row is the nearest neighbor of its own marker embedding.
 query I
-SELECT id FROM ${tbl} ORDER BY array_distance(emb, ${MARKER_A}::FLOAT[${DIMS}]) LIMIT 1;
+SELECT id FROM {tbl} ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
 ----
 -1
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM ${tbl}_copy WHERE emb IS NOT NULL ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM {tbl}_copy WHERE emb IS NOT NULL ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM ${tbl} ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM {tbl} ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
 # Filtered search over the same rows.
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT id FROM ${tbl}_copy WHERE emb IS NOT NULL AND id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM {tbl}_copy WHERE emb IS NOT NULL AND id % 3 = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM ${tbl} WHERE id % 3 = 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM {tbl} WHERE id % 3 = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT COUNT(*) >= ${LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
 # A filter that passes only the degenerate row.
 query I
-SELECT id FROM ${tbl} WHERE id < 0 ORDER BY array_distance(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+SELECT id FROM {tbl} WHERE id < 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 -1
 

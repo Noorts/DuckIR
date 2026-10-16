@@ -6,10 +6,10 @@ require parquet
 
 require duckir
 
-load __TEST_DIR__/index_unwritten_deletes_main.db
+load {TEST_DIR}/index_unwritten_deletes_main.db
 
 statement ok
-ATTACH '__TEST_DIR__/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
 
 statement ok
 SET checkpoint_threshold = '10GB';
@@ -18,10 +18,10 @@ SET checkpoint_threshold = '10GB';
 test-env DIMS 128
 
 statement ok
-CREATE TABLE p.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 22000;
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 22000;
 
 statement ok
-CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[${DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
+CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
 
 statement ok
 CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
@@ -43,7 +43,7 @@ CHECKPOINT p;
 restart
 
 statement ok
-ATTACH '__TEST_DIR__/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
+ATTACH '{TEST_DIR}/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
 
 # The chains still hold the deleted rows: the first search reconciles them away.
 query II nosort deleted

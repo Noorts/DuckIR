@@ -176,7 +176,7 @@ static void BeginSearchForRowGroupOrBufferRowIds(VSSIndex &index, PhysicalFilter
 		l_sink.search_cursors.push_back(BeginSearchForStagedRowGroup(index, g_sink, row_group_idx, passing_rowids));
 		return;
 	}
-	const auto guard = g_sink.Lock();
+	const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	auto &late_passing_rowids = g_sink.late_passing_rowids[row_group_idx];
 	late_passing_rowids.insert(late_passing_rowids.end(), passing_rowids.begin(), passing_rowids.end());
 }
@@ -195,7 +195,7 @@ SinkResultType PhysicalVSSIndexFilteredScan::Sink(ExecutionContext &context, Dat
 	D_ASSERT(input_chunk.ColumnCount() == 1);
 	D_ASSERT(input_chunk.data[0].GetType() == LogicalType::ROW_TYPE);
 
-	input_chunk.data[0].Flatten(input_chunk.size());
+	input_chunk.data[0].Flatten();
 	const auto input_chunk_row_ids = FlatVector::GetData<row_t>(input_chunk.data[0]);
 	// A table scan morsel is one whole DuckDB row group, and each thread receives its morsels in increasing order, so
 	// a row group reaches this sink as one run of rows on one thread (the debug setting verify_parallelism hands out
@@ -242,7 +242,7 @@ SinkCombineResultType PhysicalVSSIndexFilteredScan::Combine(ExecutionContext &co
 	}
 
 	// Merge this thread's search cursors into the global sink state.
-	const auto guard = g_sink.Lock();
+	const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	for (auto &search_cursor : l_sink.search_cursors) {
 		g_sink.search_cursors.push_back(std::move(search_cursor));
 	}
@@ -325,7 +325,7 @@ public:
 		// The search keeps its own copy of the filter.
 		std::vector<size_t>().swap(late_passing_rowids);
 		{
-			const auto guard = g_sink.Lock();
+			const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 			g_sink.search_cursors.push_back(std::move(search_cursor));
 		}
 		event->FinishTask();
@@ -475,7 +475,7 @@ SourceResultType PhysicalVSSIndexFilteredScan::GetDataInternal(ExecutionContext 
 
 	// Create vector of row ids that are part of the current output chunk.
 	Vector row_ids_vector(LogicalType::ROW_TYPE, num_results_to_emit);
-	auto row_ids_data = FlatVector::GetData<row_t>(row_ids_vector);
+	auto row_ids_data = FlatVector::GetDataMutable<row_t>(row_ids_vector);
 	for (idx_t i = 0; i < num_results_to_emit; i++) {
 		row_ids_data[i] = g_sink.vss_row_ids->at(g_sink.vss_row_ids_idx + i);
 	}
@@ -494,8 +494,8 @@ SourceResultType PhysicalVSSIndexFilteredScan::GetDataInternal(ExecutionContext 
 InsertionOrderPreservingMap<string> PhysicalVSSIndexFilteredScan::ParamsToString() const {
 	auto &index = bind_data->index.Cast<VSSIndex>();
 	InsertionOrderPreservingMap<string> result;
-	result["Table"] = bind_data->table.name;
-	result["DuckIR VSS Index"] = bind_data->index.GetIndexName();
+	result["Table"] = bind_data->table.name.GetIdentifierName();
+	result["DuckIR VSS Index"] = bind_data->index.GetIndexName().GetIdentifierName();
 	result["Projections"] = ColumnNamesToString(bind_data->table, column_ids);
 	result["Total Clusters"] = StringUtil::Format("%zu", index.GetTotalNumClusters());
 	result["Row Groups"] = StringUtil::Format("%zu", index.GetNumRowGroups());

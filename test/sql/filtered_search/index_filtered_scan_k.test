@@ -23,10 +23,10 @@ test-env LIMIT 50
 
 # Set up the table and rows.
 statement ok
-CREATE TABLE t1 (id INTEGER, emb FLOAT[${DIMS}]);
+CREATE TABLE t1 (id INTEGER, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT ${NUM_ROWS};
+INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT {NUM_ROWS};
 
 # Create copy of table without index for verification.
 statement ok
@@ -40,7 +40,7 @@ statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', n_probe = ${N_PROBE});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '{metric_name}', quantization = '{quantization}', n_probe = {N_PROBE});
 
 # ============================================
 # LIMIT <= NUM_ROWS_THAT_PASS_FILTER.
@@ -49,11 +49,11 @@ CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}'
 foreach predicate_threshold 50 51 100 500
 
 statement ok
-CREATE OR REPLACE TABLE t2 AS SELECT * FROM t1 WHERE id < ${predicate_threshold}
-    ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t2 AS SELECT * FROM t1 WHERE id < {predicate_threshold}
+    ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT (SELECT COUNT(*) FROM t2) = ${LIMIT};
+SELECT (SELECT COUNT(*) FROM t2) = {LIMIT};
 ----
 true
 
@@ -66,11 +66,11 @@ endloop
 foreach predicate_threshold 0 1 5 25 49
 
 statement ok
-CREATE OR REPLACE TABLE t2 AS SELECT * FROM t1 WHERE id < ${predicate_threshold}
-   ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t2 AS SELECT * FROM t1 WHERE id < {predicate_threshold}
+   ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 query I
-SELECT (SELECT COUNT(*) FROM t2) = ${predicate_threshold};
+SELECT (SELECT COUNT(*) FROM t2) = {predicate_threshold};
 ----
 true
 

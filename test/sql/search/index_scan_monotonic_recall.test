@@ -6,6 +6,9 @@ require parquet
 
 require duckir
 
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
 # Variables
 test-env INDEX_SEED 0
 
@@ -20,23 +23,23 @@ test-env LIMIT 50
 
 # Set up the table and rows.
 statement ok
-CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[${DIMS}]);
+CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[{DIMS}]);
 
 statement ok
-INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT ${NUM_ROWS};
+INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT {NUM_ROWS};
 
 foreach quantization f32 u8
 
 foreach metric_name,distance_func l2sq,array_distance cosine,array_cosine_distance
 
 statement ok
-CREATE OR REPLACE TABLE t_gt AS SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_gt AS SELECT * FROM t1 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 statement ok
 DROP INDEX IF EXISTS t1_idx;
 
 statement ok
-CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '${metric_name}', quantization = '${quantization}', seed = ${INDEX_SEED});
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb) WITH (metric = '{metric_name}', quantization = '{quantization}', seed = {INDEX_SEED});
 
 statement ok
 CREATE OR REPLACE TABLE results (n_probe INTEGER, recall FLOAT);
@@ -46,28 +49,28 @@ CREATE OR REPLACE TABLE results (n_probe INTEGER, recall FLOAT);
 foreach n_probe 1 2 3 4 5 15 50 70 100 0
 
 statement ok
-SET duckir_vss_n_probe = ${n_probe};
+SET duckir_vss_n_probe = {n_probe};
 
 query II
-EXPLAIN SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+EXPLAIN SELECT * FROM t1 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
 statement ok
-CREATE OR REPLACE TABLE t_idx_res AS SELECT * FROM t1 ORDER BY ${distance_func}(emb, ${QUERY_EMB}::FLOAT[${DIMS}]) LIMIT ${LIMIT};
+CREATE OR REPLACE TABLE t_idx_res AS SELECT * FROM t1 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
 
 # Verify that the index scan returns the correct number of rows. A low n_probe
 # value paired with a low LIMIT can result in less than LIMIT rows being
 # returned.
 query I
-SELECT COUNT(*) > 0 AND COUNT(*) <= ${LIMIT} FROM t_idx_res;
+SELECT COUNT(*) > 0 AND COUNT(*) <= {LIMIT} FROM t_idx_res;
 ----
 true
 
 # Compute recall for this n_probe.
 statement ok
-INSERT INTO results (n_probe, recall) VALUES (${n_probe},
-    (SELECT COUNT(*) FROM t_gt JOIN t_idx_res USING (id)) / ${LIMIT});
+INSERT INTO results (n_probe, recall) VALUES ({n_probe},
+    (SELECT COUNT(*) FROM t_gt JOIN t_idx_res USING (id)) / {LIMIT});
 
 endloop
 

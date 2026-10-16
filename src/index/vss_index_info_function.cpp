@@ -90,7 +90,7 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
 };
 
 static unique_ptr<FunctionData> VSSIndexInfoBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
 	for (const auto &col : INDEX_INFO_COLUMNS) {
 		names.emplace_back(col.name);
 		return_types.push_back(col.type);
@@ -129,40 +129,36 @@ static void VSSIndexInfoExecute(ClientContext &context, TableFunctionInput &data
 	idx_t row = 0;
 	while (data.offset < data.entries.size() && row < STANDARD_VECTOR_SIZE) {
 		auto &index_entry = data.entries[data.offset++].get();
-		auto &table_entry = index_entry.schema.catalog.GetEntry<TableCatalogEntry>(context, index_entry.GetSchemaName(),
-		                                                                           index_entry.GetTableName());
+		auto &table_entry = Catalog::GetEntry<TableCatalogEntry>(
+		    context, QualifiedName(index_entry.schema.catalog.GetName(), index_entry.GetSchemaName(),
+		                           index_entry.GetTableName()));
 		auto &storage = table_entry.GetStorage();
-		VSSIndex *vss_index = nullptr;
-
 		auto &table_info = *storage.GetDataTableInfo();
 
 		table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
-		for (auto &index : table_info.GetIndexes().Indexes()) {
-			if (!index.IsBound() || VSSIndex::TYPE_NAME != index.GetIndexType()) {
+		unique_ptr<VSSIndexStats> stats;
+		for (auto entry : table_info.GetIndexes().IndexEntries()) {
+			if (entry->GetBindState() != IndexBindState::BOUND || entry->GetIndexType() != VSSIndex::TYPE_NAME ||
+			    entry->GetName() != index_entry.name) {
 				continue;
 			}
-			auto &cast_index = index.Cast<VSSIndex>();
-			if (cast_index.name == index_entry.name) {
-				vss_index = &cast_index;
-				break;
-			}
-			continue;
-		};
-
-		if (!vss_index) {
-			throw BinderException("Index %s not found", index_entry.name);
+			auto index = entry->GetReadHandle<VSSIndex>();
+			stats = index->GetStats(context);
+			break;
 		}
 
-		auto stats = vss_index->GetStats(context);
+		if (!stats) {
+			throw BinderException("Index %s not found", index_entry.name);
+		}
 		IndexInfoColumnInput col_input {index_entry, table_entry, *stats};
 
 		for (idx_t col = 0; col < sizeof(INDEX_INFO_COLUMNS) / sizeof(INDEX_INFO_COLUMNS[0]); col++) {
-			output.data[col].SetValue(row, INDEX_INFO_COLUMNS[col].get_value(col_input));
+			output.data[col].Append(INDEX_INFO_COLUMNS[col].get_value(col_input));
 		}
 
 		row++;
 	}
-	output.SetCardinality(row);
+	output.CheckCardinality(row);
 }
 
 void VSSModule::RegisterIndexInfo(ExtensionLoader &loader) {

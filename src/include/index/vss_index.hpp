@@ -2,6 +2,7 @@
 
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/execution/index/index_pointer.hpp"
+#include "duckdb/execution/index/index_type.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
@@ -138,10 +139,10 @@ private:
 	// maintenance operations. Hence, we add this rwlock.
 	//
 	// See the pull request this was introduced in for more context.
-	StorageLock rwlock;
+	mutable StorageLock rwlock;
 
 public:
-	VSSIndex(const string &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
+	VSSIndex(const Identifier &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
 	         TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
 	         AttachedDatabase &db, const case_insensitive_map_t<Value> &options,
 	         const IndexStorageInfo &info = IndexStorageInfo());
@@ -215,7 +216,7 @@ public:
 
 	void VerifyBuffers(IndexLock &state) override;
 
-	idx_t GetInMemorySize(IndexLock &state) override;
+	idx_t GetInMemorySize(IndexLock &state) const override;
 
 	unique_ptr<VSSIndexStats> GetStats(const ClientContext &context) const;
 
@@ -232,7 +233,7 @@ public:
 	 ******************************************************************/
 
 	string GetConstraintViolationMessage(VerifyExistenceType verify_type, idx_t failed_index,
-	                                     DataChunk &input) override {
+	                                     DataChunk &input) const override {
 		return "Constraint violation in DuckIR VSS index";
 	}
 
