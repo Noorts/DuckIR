@@ -55,8 +55,6 @@ private:
 protected:
 	PDX::MemoryAllocator &memory_allocator;
 	const unique_ptr<float[]> rotation_matrix;
-	// Shared by every PDX index of the wrapper. Created by CreatePruner: a persisted index's constructor must not
-	// throw (TableIndexList::Bind), so it creates it where an error becomes its bind_error.
 	unique_ptr<PDX::ADSamplingPruner> pruner;
 
 public:
@@ -149,7 +147,6 @@ struct PDXRowGroup {
 		       (index ? index->GetInMemorySizeInBytes() : 0);
 	}
 
-	// What the index reserves: the rest comes from its memory allocator, which DuckDB already counts.
 	uint64_t GetHeapSizeInBytes() const {
 		return sizeof(*this) + (cluster_cache ? cluster_cache->GetInMemorySizeInBytes() : 0) +
 		       (index ? index->GetHeapSizeInBytes() : 0);
