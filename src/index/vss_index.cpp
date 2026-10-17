@@ -27,7 +27,7 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
                    const case_insensitive_map_t<Value> &index_creation_options,
                    const IndexStorageInfo &persistence_info)
     : BoundIndex(name, TYPE_NAME, index_constraint_type, column_ids, table_io_manager, unbound_expressions, db),
-      memory_allocator(Allocator::Get(db.GetDatabase())), buffer_manager(BufferManager::GetBufferManager(db)) {
+      memory_allocator(BufferAllocator::Get(db.GetDatabase())), buffer_manager(BufferManager::GetBufferManager(db)) {
 	if (index_constraint_type != IndexConstraintType::NONE) {
 		throw NotImplementedException("DuckIR VSS indexes do not support unique or primary key constraints");
 	}
@@ -104,9 +104,13 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
-	// The rotation matrix and the pruner, before any row group. A persisted index reserves them as it loads, below.
+	// The rotation matrix and the pruner, before any row group. A persisted index creates and reserves them as it
+	// loads, below.
 	if (!persistence_info.IsValid()) {
-		UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes()));
+		vss_wrapper->CreatePruner();
+		embedding_preprocessor =
+		    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
+		UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetHeapSizeInBytes()));
 	}
 	Value cluster_paging_setting;
 	db.GetDatabase().TryGetCurrentSetting("duckir_vss_cluster_paging", cluster_paging_setting);
@@ -127,7 +131,10 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	}
 	if (persistence_info.IsValid() && !bind_error.HasError()) {
 		try {
-			UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes()));
+			vss_wrapper->CreatePruner();
+			embedding_preprocessor =
+			    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
+			UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetHeapSizeInBytes()));
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
 			needs_reconciliation = true;
 		} catch (std::exception &ex) {
@@ -136,8 +143,6 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	}
 
 	function_matcher = MakeFunctionMatcher(*vss_wrapper.get());
-	embedding_preprocessor =
-	    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
 }
 
 // Indexes are destroyed before DuckDB's buffer manager (DatabaseInstance::~DatabaseInstance).
@@ -452,12 +457,6 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 				continue;
 			}
 			if (row_group_idx.IsValid()) {
-				// The appends load a paged row group fully: the end of the sync frees what it does not keep.
-				if (cluster_paging) {
-					const auto range = GetRowGroupRange(row_group_idx.GetIndex());
-					UpdateReservedMemory(
-					    static_cast<int64_t>(EstimateBuildHeapBytes(static_cast<idx_t>(range.end - range.start))));
-				}
 				AppendRows(row_group_idx.GetIndex(), row_ids.get(), embeddings, count, &executor);
 			} else {
 				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
@@ -481,36 +480,29 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		WriteTemporaryChains();
 	}
 
-	// The sync's appends, deletes and removed row groups changed the size without reserving it. Reserving the
+	// The sync's appends, deletes and removed row groups changed the heap size without reserving it. Reserving the
 	// difference between the size now and what is reserved makes the two equal (it frees when the index shrank).
-	const auto in_memory_size = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
-	UpdateReservedMemory(in_memory_size - static_cast<int64_t>(reserved_memory_bytes.load()));
+	const auto heap_size = static_cast<int64_t>(vss_wrapper->GetHeapSizeInBytes());
+	UpdateReservedMemory(heap_size - static_cast<int64_t>(reserved_memory_bytes.load()));
 }
 
-// Called by CREATE INDEX's threads in parallel: each reserves its build's memory while it runs, then the memory its row
-// group grew by.
+// Called by CREATE INDEX's threads in parallel: each reserves the heap memory its row group grew by. PDX's buffers are
+// charged as it allocates them.
 void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors, const idx_t num_vectors,
                                      const row_t row_start, const idx_t count, PDX::ParallelExecutor *const executor) {
-	// Without paging, the row groups stay on the heap.
+	// Without paging, the row groups stay in memory.
 	const auto reader = cluster_paging ? storage_reader.get() : nullptr;
-	const auto build_heap_bytes = static_cast<int64_t>(EstimateBuildHeapBytes(count));
-	UpdateReservedMemory(build_heap_bytes);
-	int64_t memory_growth_bytes;
-	try {
-		if (vss_wrapper->GetQuantization() == PDX::U8) {
-			memory_growth_bytes = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-			                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, executor,
-			                                                  reader, buffer_manager);
-		} else {
-			memory_growth_bytes = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-			                          ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, executor,
-			                                                  reader, buffer_manager);
-		}
-	} catch (...) {
-		UpdateReservedMemory(-build_heap_bytes);
-		throw;
+	int64_t heap_growth_bytes;
+	if (vss_wrapper->GetQuantization() == PDX::U8) {
+		heap_growth_bytes = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
+		                        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, executor,
+		                                                reader, buffer_manager);
+	} else {
+		heap_growth_bytes = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
+		                        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, executor,
+		                                                reader, buffer_manager);
 	}
-	UpdateReservedMemory(memory_growth_bytes - build_heap_bytes);
+	UpdateReservedMemory(heap_growth_bytes);
 }
 
 uint64_t VSSIndex::EstimateBuildHeapBytes(const idx_t num_embeddings) const {
@@ -698,7 +690,11 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 	result->n_probe = static_cast<int64_t>(vss_wrapper->GetNProbe());
 	result->seed = static_cast<int64_t>(vss_wrapper->GetSeed());
 	result->is_normalized = IsNormalized();
-	result->approximate_lower_bound_memory_usage_bytes = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
+	// The wrapper and the query preprocessor's copy of the rotation matrix.
+	const uint64_t preprocessor_bytes =
+	    embedding_preprocessor ? static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float) : 0;
+	result->approximate_lower_bound_memory_usage_bytes =
+	    static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes() + preprocessor_bytes);
 	if (storage_reader) {
 		const auto &counters = storage_reader->counters;
 		result->cluster_acquires = static_cast<int64_t>(counters.cluster_acquires.load());
@@ -755,25 +751,19 @@ unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &in
 	return reader;
 }
 
-// Reserves each row group's memory as it loads, so DuckDB evicts other data while the index grows. A row group loaded
-// fully is reserved before it is read.
+// Reserves each row group's heap memory as it loads, so DuckDB evicts other data while the index grows. PDX's buffers
+// are charged as it allocates them.
 void VSSIndex::LoadRowGroups(VSSBlockChainReader &reader, const VSSDirectory &directory, const bool page_clusters) {
 	for (const auto &entry : directory.row_groups) {
-		int64_t load_bytes = 0;
-		if (!page_clusters) {
-			load_bytes =
-			    static_cast<int64_t>(EstimateBuildHeapBytes(static_cast<idx_t>(entry.row_end - entry.row_start)));
-			UpdateReservedMemory(load_bytes);
-		}
-		uint64_t in_memory_size;
+		uint64_t heap_size;
 		if (vss_wrapper->GetQuantization() == PDX::U8) {
-			in_memory_size = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-			                     ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
+			heap_size = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
+			                ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
 		} else {
-			in_memory_size = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-			                     ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
+			heap_size = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
+			                ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
 		}
-		UpdateReservedMemory(static_cast<int64_t>(in_memory_size) - load_bytes);
+		UpdateReservedMemory(static_cast<int64_t>(heap_size));
 	}
 }
 
@@ -787,31 +777,16 @@ IndexStorageInfo VSSIndex::CopyStorageInfo(const IndexStorageInfo &info) {
 	return copy;
 }
 
-// A checkpoint may load a dirty row group fully to rewrite it, one row group at a time, so one full row group is
-// reserved for its duration. If DuckDB cannot provide that memory, the checkpoint goes on without the reservation:
-// failing a checkpoint is worse than briefly exceeding memory_limit by one row group.
 void VSSIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
-	auto materialize_bytes = static_cast<int64_t>(EstimateBuildHeapBytes(GetRowGroupSize()));
-	try {
-		UpdateReservedMemory(materialize_bytes);
-	} catch (OutOfMemoryException &) {
-		materialize_bytes = 0;
+	if (vss_wrapper->GetQuantization() == PDX::U8) {
+		static_cast<VSSWrapperU8 *>(vss_wrapper.get())
+		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
+		                            cluster_paging);
+	} else {
+		static_cast<VSSWrapperF32 *>(vss_wrapper.get())
+		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
+		                            cluster_paging);
 	}
-	try {
-		if (vss_wrapper->GetQuantization() == PDX::U8) {
-			static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-			    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
-			                            cluster_paging);
-		} else {
-			static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-			    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
-			                            cluster_paging);
-		}
-	} catch (...) {
-		UpdateReservedMemory(-materialize_bytes);
-		throw;
-	}
-	UpdateReservedMemory(-materialize_bytes);
 }
 
 void VSSIndex::WriteTemporaryChains() {
@@ -901,10 +876,10 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 	}
 	// The rewritten row groups were paged again: free what they no longer use. Reserving more could throw, which a
 	// checkpoint must not: the next sync reserves any growth.
-	const auto in_memory_size = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
+	const auto heap_size = static_cast<int64_t>(vss_wrapper->GetHeapSizeInBytes());
 	const auto reserved = static_cast<int64_t>(reserved_memory_bytes.load());
-	if (in_memory_size < reserved) {
-		UpdateReservedMemory(in_memory_size - reserved);
+	if (heap_size < reserved) {
+		UpdateReservedMemory(heap_size - reserved);
 	}
 	return MakeStorageInfo();
 }

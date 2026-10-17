@@ -8,6 +8,10 @@ require duckir
 
 load {TEST_DIR}/index_temporary_chains_main.db
 
+# DuckDB v1.5.6 debug builds deadlock when an eviction deletes a cached parquet range (its destructor pins the block).
+statement ok
+SET enable_external_file_cache = false;
+
 statement ok
 ATTACH '{TEST_DIR}/index_temporary_chains.db' AS p (ROW_GROUP_SIZE 8192);
 
@@ -17,23 +21,23 @@ SET checkpoint_threshold = '10GB';
 # Variables
 test-env DIMS 128
 
-# Two full row groups and a partial one (IVF, 5,616 rows).
+# Nine full row groups and a partial one (IVF, 6,272 rows).
 statement ok
-CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 22000;
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 80000;
 
 statement ok
 CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
 
 statement ok
-SET threads = 2;
+SET threads = 1;
 
 statement ok
-SET memory_limit = '32MB';
+SET memory_limit = '48MB';
 
 statement ok
 SET duckir_vss_cluster_paging = false;
 
-# Without paging, the index stays on the heap: it does not fit (about 47 MB).
+# Without paging, the index stays in memory: it does not fit (about 68 MB).
 statement error
 CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 ----
@@ -47,7 +51,7 @@ CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
 # An insert into the partial row group, which the next search loads fully and moves to a new temporary chain.
 statement ok
-INSERT INTO p.t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 22000 AND id < 23500;
+INSERT INTO p.t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 80000 AND id < 81500;
 
 query II nosort homed
 SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;

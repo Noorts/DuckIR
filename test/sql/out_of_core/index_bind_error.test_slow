@@ -33,7 +33,7 @@ SET VARIABLE query_emb = (SELECT emb FROM b.t WHERE id = 0);
 statement error
 SELECT id FROM b.t ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 1;
 ----
-Out of Memory Error: failed to reserve memory
+Out of Memory Error: failed to allocate data
 
 # The table stays usable: binding its indexes again does not wait for the failed bind.
 statement ok
@@ -42,7 +42,7 @@ DELETE FROM b.t WHERE id = 1;
 statement error
 SELECT id FROM b.t ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 1;
 ----
-Out of Memory Error: failed to reserve memory
+Out of Memory Error: failed to allocate data
 
 statement ok
 SET memory_limit = '1GB';
