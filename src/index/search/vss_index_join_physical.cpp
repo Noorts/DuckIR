@@ -127,7 +127,7 @@ public:
 	vector<row_t> on_the_fly_indexes_row_ids;
 	idx_t on_the_fly_indexes_clusters_to_probe {0};
 	bool search_flat_index_in_bulk {false};
-	// The join's own reservation for on-the-fly indexes construction.
+	// The join's own reservation, for the on-the-fly indexes' heap memory.
 	BufferManager &buffer_manager;
 	idx_t reserved_memory_bytes {0};
 };
@@ -255,8 +255,8 @@ static double EstimateOnTheFlyBuildPeakBytes(const idx_t num_passing_rows, const
 // into windows of row_groups_per_window consecutive ones, and the passing rows of each window are gathered from their
 // row groups' indexes into one index (Flat when build_flat or when too few to cluster; else an IVF with PDX's default
 // number of clusters). One window after another, so that only one window's gathered embeddings are held at a time.
-// The rows are numbered by position in on_the_fly_indexes_row_ids. Returns false only when DuckDB cannot reserve the
-// build's memory (the join then searches the row groups); true otherwise, even when there was nothing to build.
+// The rows are numbered by position in on_the_fly_indexes_row_ids. Returns false only when DuckDB runs out of memory
+// for the build (the join then searches the row groups); true otherwise, even when there was nothing to build.
 // TODO(@MSc): We need ot analyze the tradeoffs and decisions taken here for IVF with actual benchmarks.
 static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_groups_per_window, const bool build_flat,
                                  PDX::ParallelExecutor *const executor) {
@@ -281,86 +281,76 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 	}
 	const idx_t max_rows_per_window =
 	    CountMaxRowsPerOnTheFlyIndex(passing_row_ids_per_row_group, row_groups_per_window);
-	const auto peak_bytes =
-	    static_cast<idx_t>(EstimateOnTheFlyBuildPeakBytes(num_rows, max_rows_per_window, num_dimensions));
+	// The build's buffers come from the index's memory allocator, which DuckDB charges, and the indexes' heap memory is
+	// reserved once they are built. Without the memory for either, the join searches row group by row group instead.
 	try {
-		search.buffer_manager.ReserveMemory(peak_bytes);
+		auto embeddings =
+		    skmeans::AllocateBuffer<float>(search.index.GetMemoryAllocator(), max_rows_per_window * num_dimensions);
+		std::vector<size_t> positions(max_rows_per_window);
+
+		search.on_the_fly_indexes_pruner = std::make_unique<PDX::ADSamplingPruner>(
+		    num_dimensions, search.index.GetRotationMatrix(), &search.index.GetMemoryAllocator());
+
+		// A window of C clusters probes n_probe x sqrt(C / (clusters of a full row group)) of them, which keeps the
+		// recall of n_probe in the row groups; n_probe 0 (or all of a row group's clusters) probes all of them.
+		const idx_t num_clusters_for_full_row_group = VSSIndex::GetNumClustersForFullRowGroup();
+		const bool probe_all_clusters = search.clusters_to_probe_on_first_iteration >= num_clusters_for_full_row_group;
+		const double clusters_to_probe_per_sqrt_cluster =
+		    static_cast<double>(search.clusters_to_probe_on_first_iteration) /
+		    std::sqrt(static_cast<double>(num_clusters_for_full_row_group));
+		auto &on_the_fly_indexes_row_ids = search.on_the_fly_indexes_row_ids;
+		on_the_fly_indexes_row_ids.reserve(num_rows);
+
+		// Create an on-the-fly index per window
+		for (idx_t first = 0; first < row_groups_with_passing_rows.size(); first += row_groups_per_window) {
+			const idx_t end = MinValue<idx_t>(first + row_groups_per_window, row_groups_with_passing_rows.size());
+			const idx_t window_offset = on_the_fly_indexes_row_ids.size();
+			for (idx_t i = first; i < end; i++) {
+				const auto &row_ids = passing_row_ids_per_row_group[row_groups_with_passing_rows[i]];
+				search.index.GetRowGroupIndex(row_groups_with_passing_rows[i])
+				    .GetEmbeddingsFromIndexByRowIds(
+				        row_ids,
+				        embeddings.get() + (on_the_fly_indexes_row_ids.size() - window_offset) * num_dimensions);
+				on_the_fly_indexes_row_ids.insert(on_the_fly_indexes_row_ids.end(), row_ids.begin(), row_ids.end());
+			}
+			const idx_t window_rows = on_the_fly_indexes_row_ids.size() - window_offset;
+			std::iota(positions.begin(), positions.begin() + static_cast<std::ptrdiff_t>(window_rows), window_offset);
+			// PDX's default number of clusters.
+			const auto config = search.index.MakePDXIndexConfig(/*num_clusters=*/0, executor, window_offset);
+			std::unique_ptr<PDX::IPDXIndex> on_the_fly_index;
+			if (build_flat || window_rows < VSSWrapperF32::MIN_EMBEDDINGS_FOR_CLUSTERING) {
+				auto flat_index = std::make_unique<PDX::FlatIndex>(config, *search.on_the_fly_indexes_pruner);
+				flat_index->BuildIndex(positions.data(), embeddings.get(), window_rows);
+				on_the_fly_index = std::move(flat_index);
+			} else {
+				auto ivf_index = std::make_unique<PDX::PDXIndexF32>(config, *search.on_the_fly_indexes_pruner);
+				ivf_index->BuildIndex(positions.data(), embeddings.get(), window_rows);
+				on_the_fly_index = std::move(ivf_index);
+			}
+			// The executor ends with Finalize, the index with the join.
+			on_the_fly_index->SetExecutor(nullptr);
+			const idx_t num_clusters = on_the_fly_index->GetNumClusters();
+			search.on_the_fly_indexes_clusters_to_probe +=
+			    probe_all_clusters
+			        ? num_clusters
+			        : MinValue<idx_t>(num_clusters,
+			                          static_cast<idx_t>(std::ceil(clusters_to_probe_per_sqrt_cluster *
+			                                                       std::sqrt(static_cast<double>(num_clusters)))));
+			search.on_the_fly_indexes.push_back(std::move(on_the_fly_index));
+		}
+		// The indexes stay until the join ends.
+		idx_t heap_bytes = 0;
+		for (const auto &on_the_fly_index : search.on_the_fly_indexes) {
+			heap_bytes += on_the_fly_index->GetHeapSizeInBytes();
+		}
+		search.buffer_manager.ReserveMemory(heap_bytes);
+		search.reserved_memory_bytes = heap_bytes;
 	} catch (OutOfMemoryException &) {
+		search.on_the_fly_indexes.clear();
+		search.on_the_fly_indexes_row_ids.clear();
+		search.on_the_fly_indexes_clusters_to_probe = 0;
+		search.on_the_fly_indexes_pruner.reset();
 		return false;
-	}
-	search.reserved_memory_bytes = peak_bytes;
-	auto embeddings = make_uniq_array_uninitialized<float>(max_rows_per_window * num_dimensions);
-	std::vector<size_t> positions(max_rows_per_window);
-
-	search.on_the_fly_indexes_pruner = std::make_unique<PDX::ADSamplingPruner>(
-	    num_dimensions, search.index.GetRotationMatrix(), &search.index.GetMemoryAllocator());
-
-	// A window of C clusters probes n_probe x sqrt(C / (clusters of a full row group)) of them, which keeps the recall
-	// of n_probe in the row groups; n_probe 0 (or all of a row group's clusters) probes all of them.
-	const idx_t num_clusters_for_full_row_group = VSSIndex::GetNumClustersForFullRowGroup();
-	const bool probe_all_clusters = search.clusters_to_probe_on_first_iteration >= num_clusters_for_full_row_group;
-	const double clusters_to_probe_per_sqrt_cluster = static_cast<double>(search.clusters_to_probe_on_first_iteration) /
-	                                                  std::sqrt(static_cast<double>(num_clusters_for_full_row_group));
-	auto &on_the_fly_indexes_row_ids = search.on_the_fly_indexes_row_ids;
-	on_the_fly_indexes_row_ids.reserve(num_rows);
-
-	// Create an on-the-fly index per window
-	for (idx_t first = 0; first < row_groups_with_passing_rows.size(); first += row_groups_per_window) {
-		const idx_t end = MinValue<idx_t>(first + row_groups_per_window, row_groups_with_passing_rows.size());
-		const idx_t window_offset = on_the_fly_indexes_row_ids.size();
-		for (idx_t i = first; i < end; i++) {
-			const auto &row_ids = passing_row_ids_per_row_group[row_groups_with_passing_rows[i]];
-			search.index.GetRowGroupIndex(row_groups_with_passing_rows[i])
-			    .GetEmbeddingsFromIndexByRowIds(
-			        row_ids, embeddings.get() + (on_the_fly_indexes_row_ids.size() - window_offset) * num_dimensions);
-			on_the_fly_indexes_row_ids.insert(on_the_fly_indexes_row_ids.end(), row_ids.begin(), row_ids.end());
-		}
-		const idx_t window_rows = on_the_fly_indexes_row_ids.size() - window_offset;
-		std::iota(positions.begin(), positions.begin() + static_cast<std::ptrdiff_t>(window_rows), window_offset);
-		// PDX's default number of clusters.
-		const auto config = search.index.MakePDXIndexConfig(/*num_clusters=*/0, executor, window_offset);
-		std::unique_ptr<PDX::IPDXIndex> on_the_fly_index;
-		if (build_flat || window_rows < VSSWrapperF32::MIN_EMBEDDINGS_FOR_CLUSTERING) {
-			auto flat_index = std::make_unique<PDX::FlatIndex>(config, *search.on_the_fly_indexes_pruner);
-			flat_index->BuildIndex(positions.data(), embeddings.get(), window_rows);
-			on_the_fly_index = std::move(flat_index);
-		} else {
-			auto ivf_index = std::make_unique<PDX::PDXIndexF32>(config, *search.on_the_fly_indexes_pruner);
-			ivf_index->BuildIndex(positions.data(), embeddings.get(), window_rows);
-			on_the_fly_index = std::move(ivf_index);
-		}
-		// The executor ends with Finalize, the index with the join.
-		on_the_fly_index->SetExecutor(nullptr);
-		const idx_t num_clusters = on_the_fly_index->GetNumClusters();
-		search.on_the_fly_indexes_clusters_to_probe +=
-		    probe_all_clusters
-		        ? num_clusters
-		        : MinValue<idx_t>(num_clusters,
-		                          static_cast<idx_t>(std::ceil(clusters_to_probe_per_sqrt_cluster *
-		                                                       std::sqrt(static_cast<double>(num_clusters)))));
-		search.on_the_fly_indexes.push_back(std::move(on_the_fly_index));
-	}
-	// The indexes stay until the join ends: the reservation now is properly adjusted to reflect their true size.
-	idx_t indexes_bytes = 0;
-	for (const auto &on_the_fly_index : search.on_the_fly_indexes) {
-		indexes_bytes += on_the_fly_index->GetInMemorySizeInBytes();
-	}
-	if (indexes_bytes < search.reserved_memory_bytes) {
-		search.buffer_manager.FreeReservedMemory(search.reserved_memory_bytes - indexes_bytes);
-		search.reserved_memory_bytes = indexes_bytes;
-	} else {
-		try {
-			search.buffer_manager.ReserveMemory(indexes_bytes - search.reserved_memory_bytes);
-			search.reserved_memory_bytes = indexes_bytes;
-		} catch (OutOfMemoryException &) {
-			// Without the memory for what was built, the join searches row group by row group instead.
-			search.on_the_fly_indexes.clear();
-			search.on_the_fly_indexes_row_ids.clear();
-			search.on_the_fly_indexes_clusters_to_probe = 0;
-			search.buffer_manager.FreeReservedMemory(search.reserved_memory_bytes);
-			search.reserved_memory_bytes = 0;
-			return false;
-		}
 	}
 	return true;
 }

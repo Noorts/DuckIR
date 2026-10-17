@@ -8,6 +8,10 @@ require duckir
 
 load __TEST_DIR__/index_build_memory_main.db
 
+# DuckDB v1.5.6 debug builds deadlock when an eviction deletes a cached parquet range (its destructor pins the block).
+statement ok
+SET enable_external_file_cache = false;
+
 statement ok
 ATTACH '__TEST_DIR__/index_build_memory.db' AS b;
 

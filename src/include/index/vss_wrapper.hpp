@@ -55,7 +55,9 @@ private:
 protected:
 	PDX::MemoryAllocator &memory_allocator;
 	const unique_ptr<float[]> rotation_matrix;
-	const unique_ptr<PDX::ADSamplingPruner> pruner;
+	// Shared by every PDX index of the wrapper. Created by CreatePruner: a persisted index's constructor must not
+	// throw (TableIndexList::Bind), so it creates it where an error becomes its bind_error.
+	unique_ptr<PDX::ADSamplingPruner> pruner;
 
 public:
 	VSSWrapper(PDX::Quantization quantization, PDX::DistanceMetric distance_metric, uint32_t num_dimensions,
@@ -65,10 +67,13 @@ public:
 	      distance_metric(distance_metric), quantization(quantization), n_probe(n_probe), seed(seed),
 	      memory_allocator(memory_allocator),
 	      rotation_matrix(rotation_matrix_p ? std::move(rotation_matrix_p)
-	                                        : GenerateRandomRotationMatrix(num_dimensions, seed)),
-	      pruner(make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get(), &memory_allocator)) {
+	                                        : GenerateRandomRotationMatrix(num_dimensions, seed)) {
 	}
 	virtual ~VSSWrapper() = default;
+
+	void CreatePruner() {
+		pruner = make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get(), &memory_allocator);
+	}
 
 	uint32_t GetNumDimensions() const {
 		return num_dimensions;
@@ -112,6 +117,8 @@ public:
 
 	// An approximate lower bound of the index's size in memory.
 	virtual uint64_t GetInMemorySizeInBytes() const = 0;
+	// The part of it outside the memory allocator, which the index reserves.
+	virtual uint64_t GetHeapSizeInBytes() const = 0;
 };
 
 struct VSSRowGroupBounds {
@@ -140,6 +147,12 @@ struct PDXRowGroup {
 	uint64_t GetInMemorySizeInBytes() const {
 		return sizeof(*this) + (cluster_cache ? cluster_cache->GetInMemorySizeInBytes() : 0) +
 		       (index ? index->GetInMemorySizeInBytes() : 0);
+	}
+
+	// What the index reserves: the rest comes from its memory allocator, which DuckDB already counts.
+	uint64_t GetHeapSizeInBytes() const {
+		return sizeof(*this) + (cluster_cache ? cluster_cache->GetInMemorySizeInBytes() : 0) +
+		       (index ? index->GetHeapSizeInBytes() : 0);
 	}
 };
 
@@ -201,7 +214,7 @@ public:
 	// Builds the index of the row group [row_start, row_start + count) from its (non-NULL) rows. Rows of this row
 	// group that arrive in a later batch are appended to the index that was already built. The build runs on executor
 	// (null: serial). With a reader (duckir_vss_cluster_paging), the index then moves to a temporary chain. Returns how
-	// many bytes the row group's in-memory size grew by.
+	// many bytes the row group's heap size grew by.
 	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
 	                              const row_t row_start, const idx_t count, PDX::ParallelExecutor *const executor,
 	                              optional_ptr<VSSBlockChainReader> reader, BufferManager &buffer_manager) {
@@ -236,7 +249,7 @@ public:
 			if (reader) {
 				WriteTemporaryChain(*row_group, *reader, buffer_manager);
 			}
-			return static_cast<int64_t>(row_group->GetInMemorySizeInBytes());
+			return static_cast<int64_t>(row_group->GetHeapSizeInBytes());
 		}
 		// Rare path
 		// Only reached when DuckDB splits a row group over several scan tasks (e.g. PRAGMA verify_parallelism hands
@@ -246,7 +259,7 @@ public:
 		if (!row_group->index) {
 			throw Exception(ExceptionType::INDEX, "DuckIR VSS: the index build of a row group failed");
 		}
-		const auto size_before = static_cast<int64_t>(row_group->GetInMemorySizeInBytes());
+		const auto size_before = static_cast<int64_t>(row_group->GetHeapSizeInBytes());
 		if (row_group->cluster_cache) {
 			MaterializeRowGroup(*row_group, *reader, buffer_manager);
 		}
@@ -257,7 +270,7 @@ public:
 		if (reader) {
 			WriteTemporaryChain(*row_group, *reader, buffer_manager);
 		}
-		return static_cast<int64_t>(row_group->GetInMemorySizeInBytes()) - size_before;
+		return static_cast<int64_t>(row_group->GetHeapSizeInBytes()) - size_before;
 	}
 
 	unique_ptr<PDX::IIterativeSearch>
@@ -435,11 +448,23 @@ public:
 			if (!row_group->is_dirty) {
 				continue;
 			}
-			const bool copy_temporary_chain =
+			bool copy_temporary_chain =
 			    !row_group->temporary_chain.blocks.empty() && row_group->num_unwritten_deletes == 0;
+			// Without the memory to load it fully, the row group is persisted with its unwritten deletes, which the
+			// next load reconciles with the table: its temporary chain is copied, or its persisted chain stays. It
+			// keeps its home and its tombstones (paging it again would drop them) and stays dirty.
+			bool persist_with_unwritten_deletes = false;
 			// Before its chain is freed: the full index is read from it.
 			if (row_group->cluster_cache && !copy_temporary_chain) {
-				MaterializeRowGroup(*row_group, *reader, buffer_manager);
+				try {
+					MaterializeRowGroup(*row_group, *reader, buffer_manager);
+				} catch (OutOfMemoryException &) {
+					if (row_group->temporary_chain.blocks.empty()) {
+						continue;
+					}
+					copy_temporary_chain = true;
+					persist_with_unwritten_deletes = true;
+				}
 			}
 			row_group->persisted_chain.Free(allocator);
 			VSSBlockChainWriter writer(allocator);
@@ -450,14 +475,18 @@ public:
 				row_group->index->SaveToStream(out);
 			}
 			row_group->persisted_chain = writer.Finish();
-			row_group->temporary_chain = VSSTemporaryChain();
-			row_group->num_unwritten_deletes = 0;
-			row_group->is_dirty = false;
+			if (!persist_with_unwritten_deletes) {
+				row_group->temporary_chain = VSSTemporaryChain();
+				row_group->num_unwritten_deletes = 0;
+				row_group->is_dirty = false;
+			}
 			write_partial_blocks();
 			if (page_clusters) {
 				// The new chain has its blocks now, and writing them can have moved other chains' segments.
 				reader->UpdateBlockPointers(allocator.GetInfo());
-				PageRowGroup(*row_group, *reader, buffer_manager);
+				if (!persist_with_unwritten_deletes) {
+					PageRowGroup(*row_group, *reader, buffer_manager);
+				}
 			}
 		}
 	}
@@ -525,7 +554,7 @@ public:
 
 	// Loads a persisted row group after the ones already loaded: entries come in the directory's (row_start) order.
 	// With page_clusters, only its resident data: its clusters stay in the chain until searches need them. Returns its
-	// in-memory size.
+	// heap size.
 	uint64_t LoadRowGroup(VSSBlockChainReader &reader, const VSSDirectory::RowGroupEntry &entry,
 	                      BufferManager &buffer_manager, const bool page_clusters) {
 		auto row_group = make_uniq<PDXRowGroup>();
@@ -538,9 +567,9 @@ public:
 			MaterializeRowGroup(*row_group, reader, buffer_manager);
 		}
 		row_group->is_dirty = false;
-		const auto in_memory_size = row_group->GetInMemorySizeInBytes();
+		const auto heap_size = row_group->GetHeapSizeInBytes();
 		row_groups.push_back(std::move(row_group));
-		return in_memory_size;
+		return heap_size;
 	}
 
 	idx_t GetTotalNumClusters() const {
@@ -565,6 +594,16 @@ public:
 			in_memory_size_in_bytes += row_group->GetInMemorySizeInBytes();
 		}
 		return in_memory_size_in_bytes;
+	}
+
+	uint64_t GetHeapSizeInBytes() const override {
+		// The rotation matrix. The pruner's copy of it comes from the memory allocator.
+		uint64_t heap_size_in_bytes =
+		    sizeof(*this) + static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float);
+		for (const auto &row_group : row_groups) {
+			heap_size_in_bytes += row_group->GetHeapSizeInBytes();
+		}
+		return heap_size_in_bytes;
 	}
 
 private:
