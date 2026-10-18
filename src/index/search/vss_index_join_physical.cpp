@@ -346,7 +346,10 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 		}
 		search.buffer_manager.ReserveMemory(heap_bytes);
 		search.reserved_memory_bytes = heap_bytes;
-	} catch (OutOfMemoryException &) {
+	} catch (std::exception &ex) {
+		if (ErrorData(ex).Type() != ExceptionType::OUT_OF_MEMORY) {
+			throw;
+		}
 		search.on_the_fly_indexes.clear();
 		search.on_the_fly_indexes_row_ids.clear();
 		search.on_the_fly_indexes_clusters_to_probe = 0;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/optional_idx.hpp"
@@ -455,7 +456,10 @@ public:
 			if (row_group->cluster_cache && !copy_temporary_chain) {
 				try {
 					MaterializeRowGroup(*row_group, *reader, buffer_manager);
-				} catch (OutOfMemoryException &) {
+				} catch (std::exception &ex) {
+					if (ErrorData(ex).Type() != ExceptionType::OUT_OF_MEMORY) {
+						throw;
+					}
 					if (row_group->temporary_chain.blocks.empty()) {
 						continue;
 					}
