@@ -31,6 +31,22 @@ struct VSSBlockChain {
 	void Free(FixedSizeAllocator &allocator);
 };
 
+// Streams over a chain rethrow what its buffer throws (a block it cannot allocate or pin): a plain std::ostream or
+// std::istream would only set badbit, which leaves a truncated chain behind or reads as a short one.
+class VSSChainOutputStream : public std::ostream {
+public:
+	explicit VSSChainOutputStream(std::streambuf &buffer) : std::ostream(&buffer) {
+		exceptions(std::ios::badbit);
+	}
+};
+
+class VSSChainInputStream : public std::istream {
+public:
+	explicit VSSChainInputStream(std::streambuf &buffer) : std::istream(&buffer) {
+		exceptions(std::ios::badbit);
+	}
+};
+
 // Streams bytes into a new chain. Segments are marked modified as they are allocated: SegmentHandle never sets the
 // dirty flag, and the checkpoint only writes dirty buffers.
 class VSSBlockChainWriter : public std::streambuf {

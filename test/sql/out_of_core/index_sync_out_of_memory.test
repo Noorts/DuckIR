@@ -1,0 +1,53 @@
+# name: test/sql/out_of_core/index_sync_out_of_memory.test
+# description: A sync that runs out of memory inside PDX leaves the index usable, and the next sync indexes the rows it could not.
+# group: [out_of_core]
+
+require parquet
+
+require duckir
+
+load __TEST_DIR__/index_sync_out_of_memory_main.db
+
+# DuckDB v1.5.6 debug builds deadlock when an eviction deletes a cached parquet range (its destructor pins the block).
+statement ok
+SET enable_external_file_cache = false;
+
+statement ok
+ATTACH '__TEST_DIR__/index_sync_out_of_memory.db' AS p;
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Variables
+test-env DIMS 128
+
+# One partial row group of 100,000 rows, paged.
+statement ok
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[${DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 100000;
+
+statement ok
+CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+INSERT INTO p.t SELECT id, emb::FLOAT[${DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 100000 AND id < 101500;
+
+statement ok
+SET VARIABLE query_emb = (SELECT emb FROM p.t WHERE id = 100000);
+
+statement ok
+SET memory_limit = '32MB';
+
+# The search's sync loads the row group fully to append to it (about 66 MB).
+statement error
+SELECT id FROM p.t ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 10;
+----
+Out of Memory Error: failed to allocate data
+
+statement ok
+SET memory_limit = '1GB';
+
+# The next sync appends them: each inserted row finds itself.
+query I
+SELECT count(*) FROM p.t q, LATERAL (SELECT array_distance(emb, q.emb) AS distance FROM p.t ORDER BY array_distance(emb, q.emb) LIMIT 1) s WHERE q.id >= 100000 AND s.distance = 0;
+----
+1500

@@ -465,7 +465,7 @@ public:
 			}
 			row_group->persisted_chain.Free(allocator);
 			VSSBlockChainWriter writer(allocator);
-			std::ostream out(&writer);
+			VSSChainOutputStream out(writer);
 			if (copy_temporary_chain) {
 				row_group->temporary_chain.CopyTo(buffer_manager, out);
 			} else {
@@ -647,7 +647,7 @@ private:
 			return;
 		}
 		VSSTemporaryChainWriter writer(buffer_manager);
-		std::ostream out(&writer);
+		VSSChainOutputStream out(writer);
 		row_group.index->SaveToStream(out);
 		row_group.temporary_chain = writer.Finish();
 		row_group.num_unwritten_deletes = 0;
@@ -661,7 +661,7 @@ private:
 		std::unique_ptr<PDX::IPDXIndex> index;
 		if (!row_group.temporary_chain.blocks.empty()) {
 			VSSTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
-			std::istream in(&temporary_reader);
+			VSSChainInputStream in(temporary_reader);
 			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get(), &memory_allocator);
 			// IVF index? The reader stopped where the non-resident data starts.
 			if (temporary_reader.GetBytesRead() < row_group.temporary_chain.num_bytes) {
@@ -671,7 +671,7 @@ private:
 			}
 		} else {
 			reader.Open(row_group.persisted_chain);
-			std::istream in(&reader);
+			VSSChainInputStream in(reader);
 			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get(), &memory_allocator);
 			if (reader.GetBytesRead() < row_group.persisted_chain.num_bytes) {
 				cluster_cache->Bind(*index, row_group.persisted_chain, reader.GetBytesRead());
@@ -694,11 +694,11 @@ private:
 		try {
 			if (!row_group.temporary_chain.blocks.empty()) {
 				VSSTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
-				std::istream in(&temporary_reader);
+				VSSChainInputStream in(temporary_reader);
 				row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner, nullptr, &memory_allocator);
 			} else {
 				reader.Open(row_group.persisted_chain);
-				std::istream in(&reader);
+				VSSChainInputStream in(reader);
 				row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner, nullptr, &memory_allocator);
 				reader.Finish();
 			}
