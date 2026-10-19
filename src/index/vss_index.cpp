@@ -728,7 +728,7 @@ unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &in
 	allocator->Init(allocator_info);
 
 	auto reader = make_uniq<VSSBlockChainReader>(table_io_manager.GetIndexBlockManager(), allocator_info);
-	std::istream in(reader.get());
+	VSSChainInputStream in(*reader);
 	VSSBlockChain root;
 	root.head.Set(info.root);
 	root.num_bytes = info.options.at("directory_bytes").GetValue<idx_t>();
@@ -826,7 +826,7 @@ void VSSIndex::WritePartialBlocks(QueryContext context) {
 void VSSIndex::WriteDirectory(const VSSDirectory &directory) {
 	directory_chain.Free(*allocator);
 	VSSBlockChainWriter writer(*allocator);
-	std::ostream out(&writer);
+	VSSChainOutputStream out(writer);
 	directory.Write(out);
 	directory_chain = writer.Finish();
 }
@@ -858,7 +858,7 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 	if (rotation_chain.segments.empty()) {
 		const auto num_dimensions = GetNumDimensions();
 		VSSBlockChainWriter writer(*allocator);
-		std::ostream out(&writer);
+		VSSChainOutputStream out(writer);
 		out.write(reinterpret_cast<const char *>(GetRotationMatrix()),
 		          static_cast<std::streamsize>(sizeof(float) * num_dimensions * num_dimensions));
 		rotation_chain = writer.Finish();

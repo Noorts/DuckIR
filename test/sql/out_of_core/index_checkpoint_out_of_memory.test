@@ -1,0 +1,56 @@
+# name: test/sql/out_of_core/index_checkpoint_out_of_memory.test
+# description: A checkpoint without the memory to rewrite a dirty row group keeps its persisted index and succeeds, and the next load reconciles that index with the table.
+# group: [out_of_core]
+
+require parquet
+
+require duckir
+
+load {TEST_DIR}/index_checkpoint_out_of_memory_main.db
+
+statement ok
+ATTACH '{TEST_DIR}/index_checkpoint_out_of_memory.db' AS p;
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Variables
+test-env DIMS 128
+
+# One full row group, paged from its persisted chain after the first checkpoint.
+statement ok
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 122880;
+
+# Queries at rows deleted below.
+statement ok
+CREATE TABLE p.q AS SELECT id AS qid, emb AS vec FROM p.t WHERE id < 100;
+
+statement ok
+CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+CHECKPOINT p;
+
+# More than 10% of its rows: the next checkpoint rewrites it, which loads it fully (about 82 MB).
+statement ok
+DELETE FROM p.t WHERE id < 15000;
+
+statement ok
+SET memory_limit = '32MB';
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+SET memory_limit = '1GB';
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_checkpoint_out_of_memory.db' AS p;
+
+# The persisted index still holds the deleted rows: the load tombstones them, so each query gets 10 live neighbours.
+query I
+SELECT count(*) FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
+----
+1000

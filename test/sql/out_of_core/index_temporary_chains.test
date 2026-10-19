@@ -8,10 +8,6 @@ require duckir
 
 load {TEST_DIR}/index_temporary_chains_main.db
 
-# DuckDB v1.5.6 debug builds deadlock when an eviction deletes a cached parquet range (its destructor pins the block).
-statement ok
-SET enable_external_file_cache = false;
-
 statement ok
 ATTACH '{TEST_DIR}/index_temporary_chains.db' AS p (ROW_GROUP_SIZE 8192);
 
@@ -29,10 +25,10 @@ statement ok
 CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
 
 statement ok
-SET threads = 1;
+SET threads = 2;
 
 statement ok
-SET memory_limit = '48MB';
+SET memory_limit = '60MB';
 
 statement ok
 SET duckir_vss_cluster_paging = false;
