@@ -50,6 +50,16 @@ private:
 	bool cluster_paging = true;
 	bool record_paging_counters = false;
 	bool cache_tiers = false;
+	// How the index's memory counts toward memory_limit (the tags of duckdb_memory()):
+	// - ALLOCATOR: every buffer PDX and SuperKMeans allocate, through this allocator on DuckDB's buffer allocator,
+	//   which counts it as it is allocated: cluster data, the pruners' copies of the rotation matrix, build and
+	//   maintenance scratch, the join's on-the-fly indexes.
+	// - EXTENSION: the rest of the index (its heap: the rotation matrix, centroids, the row-id map, tombstones, struct
+	//   sizes), which DuckDB cannot see, reserved by UpdateReservedMemory (and the join's on-the-fly indexes' heap by
+	//   the join); plus the DuckDB buffers allocated with this tag (temporary chains, cached clusters, the row-group
+	//   embeddings of builds and syncs).
+	// In-memory size (GetInMemorySizeInBytes) = allocated (PDX's GetAllocatedSizeInBytes) + heap (GetHeapSizeInBytes).
+	// Only the heap is reserved, so no byte counts twice.
 	// Declared before the wrapper, whose PDX buffers it frees.
 	DuckDBMemoryAllocator memory_allocator;
 	unique_ptr<VSSWrapper> vss_wrapper;
