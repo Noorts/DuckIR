@@ -30,6 +30,9 @@ public:
 	static constexpr PDX::DistanceMetric DEFAULT_DISTANCE_METRIC = PDX::DistanceMetric::L2SQ;
 	static constexpr PDX::Quantization DEFAULT_QUANTIZATION = PDX::Quantization::U8;
 	static constexpr int32_t DEFAULT_N_PROBE = 24; // 5% of the data in a full search
+	// Clusters average about 256 rows, one u8 block
+	static constexpr uint32_t DEFAULT_MAX_CLUSTER_SIZE = 384;
+	static constexpr uint32_t MAX_CLUSTER_SIZE_UPPER_BOUND = 2048;
 
 private:
 	const uint32_t num_dimensions;
@@ -53,6 +56,10 @@ private:
 	// Seed that currently affects the random rotation matrix generation.
 	const int32_t seed;
 
+	// The clusters of a row group that still receives rows split at this size: the
+	// duckir_vss_experimental_max_cluster_size setting when the index was created or loaded.
+	const uint32_t max_cluster_size;
+
 protected:
 	PDX::MemoryAllocator &memory_allocator;
 	const unique_ptr<float[]> rotation_matrix;
@@ -60,11 +67,11 @@ protected:
 
 public:
 	VSSWrapper(PDX::Quantization quantization, PDX::DistanceMetric distance_metric, uint32_t num_dimensions,
-	           uint32_t n_probe, int32_t seed, unique_ptr<float[]> rotation_matrix_p,
+	           uint32_t n_probe, int32_t seed, uint32_t max_cluster_size, unique_ptr<float[]> rotation_matrix_p,
 	           PDX::MemoryAllocator &memory_allocator)
 	    : num_dimensions(num_dimensions), is_normalized(PDX::DistanceMetricRequiresNormalization(distance_metric)),
 	      distance_metric(distance_metric), quantization(quantization), n_probe(n_probe), seed(seed),
-	      memory_allocator(memory_allocator),
+	      max_cluster_size(max_cluster_size), memory_allocator(memory_allocator),
 	      rotation_matrix(rotation_matrix_p ? std::move(rotation_matrix_p)
 	                                        : GenerateRandomRotationMatrix(num_dimensions, seed)) {
 	}
@@ -91,6 +98,9 @@ public:
 	}
 	int32_t GetSeed() const {
 		return seed;
+	}
+	uint32_t GetMaxClusterSize() const {
+		return max_cluster_size;
 	}
 	float *GetRotationMatrix() const {
 		return rotation_matrix.get();
@@ -142,6 +152,8 @@ struct PDXRowGroup {
 	// Deletes since the row group's chain was written. The index bytes still hold these rows.
 	idx_t num_unwritten_deletes = 0;
 	bool is_dirty = true;
+	// DuckDB appends no more rows to the row group (VSSIndex::IsClosedRowGroup).
+	bool is_closed = false;
 
 	uint64_t GetInMemorySizeInBytes() const {
 		return sizeof(*this) + (cluster_cache ? cluster_cache->GetInMemorySizeInBytes() : 0) +
@@ -189,19 +201,20 @@ public:
 		}
 	}
 
-	static constexpr double BUILD_HEAP_FACTOR = 1.5;
+	static constexpr double BUILD_PEAK_FACTOR = 1.1;
 	// Up to 10% of a row group's rows can be deleted since its chain was written without triggering a rewrite.
 	static constexpr double MAX_UNWRITTEN_DELETES_RATIO = 0.1;
 
-	uint64_t EstimateBuildHeapBytes(const idx_t num_embeddings) const {
+	uint64_t EstimateBuildPeakBytes(const idx_t num_embeddings) const {
 		const idx_t bytes_per_embedding = GetNumDimensions() * sizeof(PDX::pdx_data_t<Q>) + sizeof(uint32_t);
-		return static_cast<uint64_t>(BUILD_HEAP_FACTOR * static_cast<double>(num_embeddings * bytes_per_embedding));
+		return static_cast<uint64_t>(BUILD_PEAK_FACTOR * static_cast<double>(num_embeddings * bytes_per_embedding));
 	}
 
 	VSSWrapperParallel(PDX::DistanceMetric distance_metric, uint32_t num_dimensions, uint32_t n_probe, int32_t seed,
-	                   idx_t row_group_size, unique_ptr<float[]> rotation_matrix,
+	                   uint32_t max_cluster_size, idx_t row_group_size, unique_ptr<float[]> rotation_matrix,
 	                   PDX::MemoryAllocator &memory_allocator)
-	    : VSSWrapper(Q, distance_metric, num_dimensions, n_probe, seed, std::move(rotation_matrix), memory_allocator),
+	    : VSSWrapper(Q, distance_metric, num_dimensions, n_probe, seed, max_cluster_size, std::move(rotation_matrix),
+	                 memory_allocator),
 	      row_group_size(row_group_size) {
 	}
 
@@ -214,8 +227,9 @@ public:
 	// (null: serial). With a reader (duckir_vss_cluster_paging), the index then moves to a temporary chain. Returns how
 	// many bytes the row group's heap size grew by.
 	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
-	                              const row_t row_start, const idx_t count, PDX::ParallelExecutor *const executor,
-	                              optional_ptr<VSSBlockChainReader> reader, BufferManager &buffer_manager) {
+	                              const row_t row_start, const idx_t count, const bool is_closed,
+	                              PDX::ParallelExecutor *const executor, optional_ptr<VSSBlockChainReader> reader,
+	                              BufferManager &buffer_manager) {
 		D_ASSERT(num_embeddings > 0 && num_embeddings <= count);
 		PDXRowGroup *row_group = nullptr;
 		std::unique_lock<std::mutex> build_lock;
@@ -234,6 +248,7 @@ public:
 				auto new_row_group = make_uniq<PDXRowGroup>();
 				new_row_group->row_start = row_start;
 				new_row_group->row_end = row_start + static_cast<row_t>(count);
+				new_row_group->is_closed = is_closed;
 				row_group = new_row_group.get();
 				build_lock = std::unique_lock<std::mutex>(row_group->mutex);
 				row_groups.insert(it, std::move(new_row_group));
@@ -413,6 +428,20 @@ public:
 			}
 		}
 		return stale;
+	}
+
+	// Marks the row groups DuckDB closed since (is_closed of their row_start), whose clusters then lose their room for
+	// appends: now if they are in memory, else when they are next fully loaded (MaterializeRowGroup).
+	void MarkClosedRowGroups(const std::function<bool(row_t)> &is_closed) {
+		for (auto &row_group : row_groups) {
+			if (row_group->is_closed || !is_closed(row_group->row_start)) {
+				continue;
+			}
+			row_group->is_closed = true;
+			if (!row_group->cluster_cache) {
+				row_group->index->ShrinkToFit();
+			}
+		}
 	}
 
 	void RemoveRowGroupsOverlapping(const row_t start, const row_t end) {
@@ -608,16 +637,22 @@ public:
 	}
 
 private:
-	PDX::PDXIndexConfig MakeRowGroupIndexConfig(const row_t row_start, const idx_t num_embeddings,
+	PDX::PDXIndexConfig MakeRowGroupIndexConfig(const row_t row_start, const idx_t num_embeddings, const bool is_closed,
 	                                            PDX::ParallelExecutor *const executor) const {
-		return MakePDXIndexConfig(ComputeNumClustersForRowGroup(num_embeddings), executor,
-		                          static_cast<idx_t>(row_start));
+		auto config =
+		    MakePDXIndexConfig(ComputeNumClustersForRowGroup(num_embeddings), executor, static_cast<idx_t>(row_start));
+		if (is_closed) {
+			config.expect_appends = false;
+		} else {
+			config.max_cluster_size = GetMaxClusterSize();
+		}
+		return config;
 	}
 
 	unique_ptr<PDX::IPDXIndex> BuildRowGroupIndex(const PDXRowGroup &row_group, const row_t *const row_ids,
 	                                              const float *const embeddings, const idx_t num_embeddings,
 	                                              PDX::ParallelExecutor *const executor) const {
-		const auto config = MakeRowGroupIndexConfig(row_group.row_start, num_embeddings, executor);
+		const auto config = MakeRowGroupIndexConfig(row_group.row_start, num_embeddings, row_group.is_closed, executor);
 		std::vector<size_t> ids(num_embeddings);
 		for (idx_t i = 0; i < num_embeddings; i++) {
 			ids[i] = static_cast<size_t>(row_ids[i]);
@@ -637,7 +672,7 @@ private:
 		const auto row_ids = flat_index.GetRowIds();
 		const auto embeddings = flat_index.GetEmbeddings();
 		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(
-		    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), executor), *pruner);
+		    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), row_group.is_closed, executor), *pruner);
 		ivf_index->BuildIndex(row_ids.data(), embeddings.get(), row_ids.size());
 		// The executor ends with the build: later appends and deletes run serially.
 		ivf_index->SetExecutor(nullptr);
@@ -715,6 +750,9 @@ private:
 						row_group.index->Delete(id);
 					}
 				}
+			}
+			if (row_group.is_closed) {
+				row_group.index->ShrinkToFit();
 			}
 		} catch (...) {
 			// A failed load leaves the row group as it was: paged from its home.

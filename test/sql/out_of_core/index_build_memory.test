@@ -17,7 +17,7 @@ SET checkpoint_threshold = '10GB';
 # Variables
 test-env DIMS 128
 
-# Two row groups of 122,880 rows: a build holds 63 MB of embeddings and about 95 MB of index.
+# Two row groups of 122,880 rows: a build holds 63 MB of embeddings and about 65 MB of index.
 statement ok
 CREATE TABLE b.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet');
 
@@ -25,7 +25,7 @@ statement ok
 SET threads = 4;
 
 statement ok
-SET memory_limit = '128MB';
+SET memory_limit = '96MB';
 
 # A build does not fit.
 statement error

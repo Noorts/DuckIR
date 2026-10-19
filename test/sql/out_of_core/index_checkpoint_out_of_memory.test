@@ -31,7 +31,7 @@ CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 statement ok
 CHECKPOINT p;
 
-# More than 10% of its rows: the next checkpoint rewrites it, which loads it fully (about 82 MB).
+# More than 10% of its rows: the next checkpoint rewrites it, which loads it fully (about 65 MB).
 statement ok
 DELETE FROM p.t WHERE id < 15000;
 

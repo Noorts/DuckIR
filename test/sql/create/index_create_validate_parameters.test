@@ -122,3 +122,32 @@ statement ok
 DROP INDEX IF EXISTS idx;
 
 endloop
+
+# ============================================
+# Setting: duckir_vss_experimental_max_cluster_size
+# ============================================
+
+foreach invalid_max_cluster_size 31 2049
+
+statement error
+SET duckir_vss_experimental_max_cluster_size = {invalid_max_cluster_size};
+----
+<REGEX>:Invalid Input Error: duckir_vss_experimental_max_cluster_size must be between 32 and 2048, not .*
+
+endloop
+
+foreach valid_max_cluster_size 32 2048
+
+statement ok
+SET duckir_vss_experimental_max_cluster_size = {valid_max_cluster_size};
+
+statement ok
+CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb);
+
+statement ok
+DROP INDEX IF EXISTS idx;
+
+endloop
+
+statement ok
+RESET duckir_vss_experimental_max_cluster_size;

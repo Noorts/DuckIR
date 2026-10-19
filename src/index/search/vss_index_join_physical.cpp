@@ -317,7 +317,8 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 			const idx_t window_rows = on_the_fly_indexes_row_ids.size() - window_offset;
 			std::iota(positions.begin(), positions.begin() + static_cast<std::ptrdiff_t>(window_rows), window_offset);
 			// PDX's default number of clusters.
-			const auto config = search.index.MakePDXIndexConfig(/*num_clusters=*/0, executor, window_offset);
+			auto config = search.index.MakePDXIndexConfig(/*num_clusters=*/0, executor, window_offset);
+			config.expect_appends = false;
 			std::unique_ptr<PDX::IPDXIndex> on_the_fly_index;
 			if (build_flat || window_rows < VSSWrapperF32::MIN_EMBEDDINGS_FOR_CLUSTERING) {
 				auto flat_index = std::make_unique<PDX::FlatIndex>(config, *search.on_the_fly_indexes_pruner);

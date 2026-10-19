@@ -75,6 +75,11 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 		seed = seed_opt->second.GetValue<int32_t>();
 	}
 
+	Value max_cluster_size_setting;
+	db.GetDatabase().TryGetCurrentSetting("duckir_vss_experimental_max_cluster_size", max_cluster_size_setting);
+	const auto max_cluster_size = max_cluster_size_setting.IsNull() ? VSSWrapper::DEFAULT_MAX_CLUSTER_SIZE
+	                                                                : max_cluster_size_setting.GetValue<uint32_t>();
+
 	auto &block_manager = table_io_manager.GetIndexBlockManager();
 	allocator = make_uniq<FixedSizeAllocator>(VSSBlockChain::GetSegmentSize(block_manager), block_manager);
 	// A persisted index keeps its rotation. Its row groups are loaded once the wrapper exists. If its storage cannot be
@@ -96,11 +101,11 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	if (quantization == PDX::Quantization::F32) {
 		D_ASSERT(ArrayType::GetChildType(embedding_type).id() == LogicalTypeId::FLOAT);
 
-		vss_wrapper = make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, row_group_size,
-		                                       std::move(rotation_matrix), memory_allocator);
+		vss_wrapper = make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
+		                                       row_group_size, std::move(rotation_matrix), memory_allocator);
 	} else if (quantization == PDX::Quantization::U8) {
-		vss_wrapper = make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, row_group_size,
-		                                      std::move(rotation_matrix), memory_allocator);
+		vss_wrapper = make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
+		                                      row_group_size, std::move(rotation_matrix), memory_allocator);
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
@@ -196,6 +201,12 @@ bool VSSIndex::TryGetPhysicalRowGroup(DataTable &table, const row_t row_id, VSSR
 	return true;
 }
 
+bool VSSIndex::IsClosedRowGroup(DataTable &table, const VSSRowGroupBounds &row_group) const {
+	VSSRowGroupBounds next_row_group;
+	return row_group.count >= GetRowGroupSize() ||
+	       TryGetPhysicalRowGroup(table, row_group.row_start + static_cast<row_t>(row_group.count), next_row_group);
+}
+
 vector<VSSRowGroupBounds> VSSIndex::GetPhysicalRowGroups(DataTable &table) const {
 	vector<VSSRowGroupBounds> result;
 	auto row_groups = table.GetRowGroupCollection()->GetRowGroups();
@@ -249,6 +260,18 @@ vector<VSSRowGroupBounds> VSSIndex::FindStaleRowGroups(DataTable &table) const {
 		return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->FindStaleRowGroups(physical_row_groups);
 	}
 	return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->FindStaleRowGroups(physical_row_groups);
+}
+
+void VSSIndex::MarkClosedRowGroups(DataTable &table) {
+	const auto is_closed = [&](const row_t row_start) {
+		VSSRowGroupBounds row_group;
+		return TryGetPhysicalRowGroup(table, row_start, row_group) && IsClosedRowGroup(table, row_group);
+	};
+	if (vss_wrapper->GetQuantization() == PDX::U8) {
+		static_cast<VSSWrapperU8 *>(vss_wrapper.get())->MarkClosedRowGroups(is_closed);
+	} else {
+		static_cast<VSSWrapperF32 *>(vss_wrapper.get())->MarkClosedRowGroups(is_closed);
+	}
 }
 
 void VSSIndex::RemoveRowGroupsOverlapping(const row_t start, const row_t end) {
@@ -397,7 +420,8 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			const idx_t count =
 			    FetchRows(table, bounds.row_start, bounds_end, row_ids.get(), embeddings, rows_returned, &executor);
 			if (count > 0) {
-				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
+				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
+				                      IsClosedRowGroup(table, bounds), &executor);
 			}
 		} catch (...) {
 			// A failed rebuild leaves no mirror, and its rows staged: the next sync builds them.
@@ -459,7 +483,8 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			if (row_group_idx.IsValid()) {
 				AppendRows(row_group_idx.GetIndex(), row_ids.get(), embeddings, count, &executor);
 			} else {
-				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count, &executor);
+				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
+				                      IsClosedRowGroup(table, bounds), &executor);
 			}
 		} catch (...) {
 			// The row group's staged rows stay staged: the next sync appends them again (rows already appended are
@@ -475,6 +500,10 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 	unindexed_row_ranges = std::move(still_unindexed);
 	has_unindexed_rows = !unindexed_row_ranges.empty();
 
+	// We need to close rowgroups before the temporary chains are written so that they are written without the appends
+	// headroom.
+	MarkClosedRowGroups(table);
+
 	// The appends loaded their row groups fully: they go back to temporary chains.
 	if (cluster_paging) {
 		WriteTemporaryChains();
@@ -489,27 +518,28 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 // Called by CREATE INDEX's threads in parallel: each reserves the heap memory its row group grew by. PDX's buffers are
 // charged as it allocates them.
 void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors, const idx_t num_vectors,
-                                     const row_t row_start, const idx_t count, PDX::ParallelExecutor *const executor) {
+                                     const row_t row_start, const idx_t count, const bool is_closed,
+                                     PDX::ParallelExecutor *const executor) {
 	// Without paging, the row groups stay in memory.
 	const auto reader = cluster_paging ? storage_reader.get() : nullptr;
 	int64_t heap_growth_bytes;
 	if (vss_wrapper->GetQuantization() == PDX::U8) {
 		heap_growth_bytes = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-		                        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, executor,
-		                                                reader, buffer_manager);
+		                        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, is_closed,
+		                                                executor, reader, buffer_manager);
 	} else {
 		heap_growth_bytes = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-		                        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, executor,
-		                                                reader, buffer_manager);
+		                        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, is_closed,
+		                                                executor, reader, buffer_manager);
 	}
 	UpdateReservedMemory(heap_growth_bytes);
 }
 
-uint64_t VSSIndex::EstimateBuildHeapBytes(const idx_t num_embeddings) const {
+uint64_t VSSIndex::EstimateBuildPeakBytes(const idx_t num_embeddings) const {
 	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->EstimateBuildHeapBytes(num_embeddings);
+		return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->EstimateBuildPeakBytes(num_embeddings);
 	}
-	return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->EstimateBuildHeapBytes(num_embeddings);
+	return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->EstimateBuildPeakBytes(num_embeddings);
 }
 
 unique_ptr<PDX::IIterativeSearch>
@@ -1103,6 +1133,20 @@ void VSSModule::RegisterIndex(DatabaseInstance &db) {
 	                             "in indexes loaded with it on, the clusters searches read most often are the last "
 	                             "DuckDB evicts from memory (default: true)",
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
+	db.config.AddExtensionOption(
+	    "duckir_vss_experimental_max_cluster_size",
+	    "incremental maintenance splits clusters when they reach this size, between 32 and 2048 (default: 384)",
+	    LogicalType::UBIGINT, Value::UBIGINT(VSSWrapper::DEFAULT_MAX_CLUSTER_SIZE),
+	    [](ClientContext &, SetScope, Value &parameter) {
+		    const auto max_cluster_size = parameter.GetValue<uint64_t>();
+		    if (max_cluster_size < PDX::MAX_CLUSTER_SIZE_LOWER_BOUND ||
+		        max_cluster_size > VSSWrapper::MAX_CLUSTER_SIZE_UPPER_BOUND) {
+			    throw InvalidInputException(
+			        "duckir_vss_experimental_max_cluster_size must be between %d and %d, not %d",
+			        PDX::MAX_CLUSTER_SIZE_LOWER_BOUND, VSSWrapper::MAX_CLUSTER_SIZE_UPPER_BOUND, max_cluster_size);
+		    }
+	    },
+	    SetScope::GLOBAL);
 
 	// Register the index type
 	db.config.GetIndexTypes().RegisterIndexType(index_type);

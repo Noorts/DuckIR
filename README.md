@@ -176,7 +176,7 @@ See [PR#35](https://github.com/Noorts/DuckIR/pull/35) for a more detailed explan
 
 - **In-Memory Databases**: We recommend using DuckDB with a database file. In an in-memory database (`:memory:`) nothing is ever checkpointed, so an index larger than `memory_limit` writes its parts to the temporary files every time DuckDB evicts them. 
   
-- **Minimum Memory**: Building an index needs room for one DuckDB row group at a time: its float embeddings and about 1.5x its index (about 0.5 GB with `u8` and 0.9 GB with `f32` for 122,880 rows and embeddings of 768 dimensions). Row groups are built as concurrently as `memory_limit` allows. `CREATE INDEX` will fail with an out-of-memory error if not enough memory is available. 
+- **Minimum Memory**: Building an index needs room for one DuckDB row group at a time: its float embeddings and about 1.1x its index (about 0.5 GB with `u8` and 0.8 GB with `f32` for 122,880 rows and embeddings of 768 dimensions). Row groups are built as concurrently as `memory_limit` allows. `CREATE INDEX` will fail with an out-of-memory error if not enough memory is available. 
 
 - **Concurrency**: An index can be searched concurrently. However, maintenance operations exclude all searches while they run. 
 

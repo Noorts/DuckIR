@@ -43,16 +43,23 @@ public:
 		const auto &index = global_index->Cast<VSSIndex>();
 		const idx_t row_group_size = index.GetRowGroupSize();
 		const idx_t build_bytes =
-		    row_group_size * num_dimensions * sizeof(float) + index.EstimateBuildHeapBytes(row_group_size);
+		    row_group_size * num_dimensions * sizeof(float) + index.EstimateBuildPeakBytes(row_group_size);
 		const auto num_threads = NumericCast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads());
+		// SuperKMeans sizes its k-means scratch from an executor's NumWorkers(). This executor runs nothing: it only
+		// asks for the scratch of all the threads, which the concurrent builds split between them.
+		const DuckDBParallelExecutor all_threads(context, num_threads);
+		const idx_t kmeans_tiles_bytes =
+		    skmeans::BatchComputer<skmeans::DistanceFunction::l2, skmeans::Quantization::f32>::ScratchSize(
+		        all_threads) *
+		    sizeof(float);
 		// Note that for a plain table scan, op.estimated_cardinality is exact.
 		const idx_t num_row_groups =
 		    MaxValue<idx_t>(1, (op.estimated_cardinality + row_group_size - 1) / row_group_size);
 		memory_state = TemporaryMemoryManager::Get(context).Register(context);
-		memory_state->SetMinimumReservation(build_bytes);
-		memory_state->SetRemainingSizeAndUpdateReservation(context,
-		                                                   MinValue(num_threads, num_row_groups) * build_bytes);
-		max_concurrent_builds = MaxValue<idx_t>(1, memory_state->GetReservation() / build_bytes);
+		memory_state->SetMinimumReservation(build_bytes + kmeans_tiles_bytes);
+		memory_state->SetRemainingSizeAndUpdateReservation(
+		    context, MinValue(num_threads, num_row_groups) * build_bytes + kmeans_tiles_bytes);
+		max_concurrent_builds = MaxValue<idx_t>(1, (memory_state->GetReservation() - kmeans_tiles_bytes) / build_bytes);
 		default_threads_per_build = MaxValue<idx_t>(1, num_threads / max_concurrent_builds);
 	}
 
@@ -81,6 +88,7 @@ public:
 
 	// The DuckDB row group whose rows are currently buffered.
 	VSSRowGroupBounds row_group {0, 0};
+	bool row_group_is_closed {false};
 	bool has_row_group {false};
 	// Number of embeddings currently buffered in the row group.
 	idx_t row_group_embeddings_count {0};
@@ -99,7 +107,8 @@ static void FlushRowGroup(CreateVSSIndexGlobalSinkState &g_sink, CreateVSSIndexL
 		DuckDBParallelExecutor executor(context, g_sink.default_threads_per_build);
 		g_sink.global_index->Cast<VSSIndex>().SetUpIndexForRowGroup(
 		    l_sink.row_group_row_ids.data(), reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()),
-		    l_sink.row_group_embeddings_count, l_sink.row_group.row_start, l_sink.row_group.count, &executor);
+		    l_sink.row_group_embeddings_count, l_sink.row_group.row_start, l_sink.row_group.count,
+		    l_sink.row_group_is_closed, &executor);
 		l_sink.row_group_embeddings_count = 0;
 	}
 	l_sink.row_group_embeddings.Destroy();
@@ -164,6 +173,7 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 		        .Allocate(MemoryTag::EXTENSION, row_group.count * g_sink.num_dimensions * sizeof(float),
 		                  /*can_destroy=*/false);
 		l_sink.row_group = row_group;
+		l_sink.row_group_is_closed = vss_index.IsClosedRowGroup(table.GetStorage(), row_group);
 		l_sink.has_row_group = true;
 	}
 
