@@ -47,7 +47,7 @@ public:
 	VSSIndexJoinSearch(ClientContext &context, const PhysicalVSSIndexJoin &op)
 	    : search_lock(op.index.Cast<VSSIndex>().SyncAndLockForSearch(context, op.table.GetStorage())),
 	      index(op.index.Cast<VSSIndex>()), limit(op.limit),
-	      preprocessor(index.GetNumDimensions(), index.GetRotationMatrix()),
+	      preprocessor(index.GetNumDimensions(), index.GetRotationMatrix(), index.GetMemoryAllocator()),
 	      buffer_manager(BufferManager::GetBufferManager(context)) {
 		auto n_probe = index.GetEffectiveNProbe(context);
 		const idx_t max_num_clusters = index.GetMaxNumClusters();
@@ -293,8 +293,8 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 	auto embeddings = make_uniq_array_uninitialized<float>(max_rows_per_window * num_dimensions);
 	std::vector<size_t> positions(max_rows_per_window);
 
-	search.on_the_fly_indexes_pruner =
-	    std::make_unique<PDX::ADSamplingPruner>(num_dimensions, search.index.GetRotationMatrix());
+	search.on_the_fly_indexes_pruner = std::make_unique<PDX::ADSamplingPruner>(
+	    num_dimensions, search.index.GetRotationMatrix(), &search.index.GetMemoryAllocator());
 
 	// A window of C clusters probes n_probe x sqrt(C / (clusters of a full row group)) of them, which keeps the recall
 	// of n_probe in the row groups; n_probe 0 (or all of a row group's clusters) probes all of them.

@@ -12,6 +12,7 @@
 #include <atomic>
 
 #include "pdx/common.hpp"
+#include "index/vss_memory_allocator.hpp"
 #include "index/vss_storage.hpp"
 #include "index/vss_wrapper.hpp"
 
@@ -49,6 +50,8 @@ private:
 	bool cluster_paging = true;
 	bool record_paging_counters = false;
 	bool cache_tiers = false;
+	// Declared before the wrapper, whose PDX buffers it frees.
+	DuckDBMemoryAllocator memory_allocator;
 	unique_ptr<VSSWrapper> vss_wrapper;
 	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 
@@ -310,6 +313,10 @@ public:
 		}
 
 		return current_n_probe;
+	}
+
+	PDX::MemoryAllocator &GetMemoryAllocator() {
+		return memory_allocator;
 	}
 
 	float *GetRotationMatrix() const {

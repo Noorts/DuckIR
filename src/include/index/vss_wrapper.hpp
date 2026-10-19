@@ -53,17 +53,20 @@ private:
 	const int32_t seed;
 
 protected:
+	PDX::MemoryAllocator &memory_allocator;
 	const unique_ptr<float[]> rotation_matrix;
 	const unique_ptr<PDX::ADSamplingPruner> pruner;
 
 public:
 	VSSWrapper(PDX::Quantization quantization, PDX::DistanceMetric distance_metric, uint32_t num_dimensions,
-	           uint32_t n_probe, int32_t seed, unique_ptr<float[]> rotation_matrix_p = nullptr)
+	           uint32_t n_probe, int32_t seed, unique_ptr<float[]> rotation_matrix_p,
+	           PDX::MemoryAllocator &memory_allocator)
 	    : num_dimensions(num_dimensions), is_normalized(PDX::DistanceMetricRequiresNormalization(distance_metric)),
 	      distance_metric(distance_metric), quantization(quantization), n_probe(n_probe), seed(seed),
+	      memory_allocator(memory_allocator),
 	      rotation_matrix(rotation_matrix_p ? std::move(rotation_matrix_p)
 	                                        : GenerateRandomRotationMatrix(num_dimensions, seed)),
-	      pruner(make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get())) {
+	      pruner(make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get(), &memory_allocator)) {
 	}
 	virtual ~VSSWrapper() = default;
 
@@ -101,6 +104,7 @@ public:
 		config.kmeans_iters = 8;
 		config.hierarchical_indexing = true;
 		config.executor = executor;
+		config.allocator = &memory_allocator;
 		config.is_data_transformed = true;
 		config.base_row_id = static_cast<size_t>(base_row_id);
 		return config;
@@ -184,8 +188,9 @@ public:
 	}
 
 	VSSWrapperParallel(PDX::DistanceMetric distance_metric, uint32_t num_dimensions, uint32_t n_probe, int32_t seed,
-	                   idx_t row_group_size, unique_ptr<float[]> rotation_matrix = nullptr)
-	    : VSSWrapper(Q, distance_metric, num_dimensions, n_probe, seed, std::move(rotation_matrix)),
+	                   idx_t row_group_size, unique_ptr<float[]> rotation_matrix,
+	                   PDX::MemoryAllocator &memory_allocator)
+	    : VSSWrapper(Q, distance_metric, num_dimensions, n_probe, seed, std::move(rotation_matrix), memory_allocator),
 	      row_group_size(row_group_size) {
 	}
 
@@ -616,7 +621,7 @@ private:
 		if (!row_group.temporary_chain.blocks.empty()) {
 			VSSTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
 			std::istream in(&temporary_reader);
-			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get());
+			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get(), &memory_allocator);
 			// IVF index? The reader stopped where the non-resident data starts.
 			if (temporary_reader.GetBytesRead() < row_group.temporary_chain.num_bytes) {
 				cluster_cache->Bind(*index, row_group.temporary_chain, temporary_reader.GetBytesRead());
@@ -626,7 +631,7 @@ private:
 		} else {
 			reader.Open(row_group.persisted_chain);
 			std::istream in(&reader);
-			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get());
+			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get(), &memory_allocator);
 			if (reader.GetBytesRead() < row_group.persisted_chain.num_bytes) {
 				cluster_cache->Bind(*index, row_group.persisted_chain, reader.GetBytesRead());
 				reader.Close();
@@ -648,11 +653,11 @@ private:
 		if (!row_group.temporary_chain.blocks.empty()) {
 			VSSTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
 			std::istream in(&temporary_reader);
-			row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner);
+			row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner, nullptr, &memory_allocator);
 		} else {
 			reader.Open(row_group.persisted_chain);
 			std::istream in(&reader);
-			row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner);
+			row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner, nullptr, &memory_allocator);
 			reader.Finish();
 		}
 		row_group.temporary_chain = VSSTemporaryChain();
