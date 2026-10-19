@@ -639,7 +639,7 @@ static idx_t SearchQuery(const VSSIndexJoinSearch &search, VSSIndexJoinOperatorS
 	// Normalizes raw_query in place for the cosine distance: our copy, not the input the operators above read.
 	search.preprocessor.PreprocessEmbedding(state.raw_query.get(), state.query.get(), search.index.IsNormalized());
 
-	state.heap.heap = PDX::Heap();
+	state.heap.Clear();
 	state.search_cursors.clear();
 	if (!search.on_the_fly_indexes.empty()) {
 		ProbeNearestClustersAcrossOnTheFlyIndexes(search, state);
