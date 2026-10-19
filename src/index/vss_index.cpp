@@ -115,7 +115,7 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 		vss_wrapper->CreatePruner();
 		embedding_preprocessor =
 		    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
-		UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetHeapSizeInBytes()));
+		UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes()));
 	}
 	Value cluster_paging_setting;
 	db.GetDatabase().TryGetCurrentSetting("duckir_vss_cluster_paging", cluster_paging_setting);
@@ -139,7 +139,7 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 			vss_wrapper->CreatePruner();
 			embedding_preprocessor =
 			    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
-			UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetHeapSizeInBytes()));
+			UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes()));
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
 			needs_reconciliation = true;
 		} catch (std::exception &ex) {
@@ -509,30 +509,31 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		WriteTemporaryChains();
 	}
 
-	// The sync's appends, deletes and removed row groups changed the heap size without reserving it. Reserving the
-	// difference between the size now and what is reserved makes the two equal (it frees when the index shrank).
-	const auto heap_size = static_cast<int64_t>(vss_wrapper->GetHeapSizeInBytes());
-	UpdateReservedMemory(heap_size - static_cast<int64_t>(reserved_memory_bytes.load()));
+	// The sync's appends, deletes and removed row groups changed the self-managed memory without reserving it.
+	// Reserving the difference between the size now and what is reserved makes the two equal (it frees when the index
+	// shrank).
+	const auto self_managed_bytes = static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes());
+	UpdateReservedMemory(self_managed_bytes - static_cast<int64_t>(reserved_memory_bytes.load()));
 }
 
-// Called by CREATE INDEX's threads in parallel: each reserves the heap memory its row group grew by. PDX's buffers are
-// charged as it allocates them.
+// Called by CREATE INDEX's threads in parallel: each reserves the self-managed memory its row group grew by. PDX's
+// buffers are charged as it allocates them.
 void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors, const idx_t num_vectors,
                                      const row_t row_start, const idx_t count, const bool is_closed,
                                      PDX::ParallelExecutor *const executor) {
 	// Without paging, the row groups stay in memory.
 	const auto reader = cluster_paging ? storage_reader.get() : nullptr;
-	int64_t heap_growth_bytes;
+	int64_t self_managed_growth_bytes;
 	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		heap_growth_bytes = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-		                        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, is_closed,
-		                                                executor, reader, buffer_manager);
+		self_managed_growth_bytes = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
+		                                ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count,
+		                                                        is_closed, executor, reader, buffer_manager);
 	} else {
-		heap_growth_bytes = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-		                        ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, is_closed,
-		                                                executor, reader, buffer_manager);
+		self_managed_growth_bytes = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
+		                                ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count,
+		                                                        is_closed, executor, reader, buffer_manager);
 	}
-	UpdateReservedMemory(heap_growth_bytes);
+	UpdateReservedMemory(self_managed_growth_bytes);
 }
 
 uint64_t VSSIndex::EstimateBuildPeakBytes(const idx_t num_embeddings) const {
@@ -781,19 +782,19 @@ unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &in
 	return reader;
 }
 
-// Reserves each row group's heap memory as it loads, so DuckDB evicts other data while the index grows. PDX's buffers
-// are charged as it allocates them.
+// Reserves each row group's self-managed memory as it loads, so DuckDB evicts other data while the index grows. PDX's
+// buffers are charged as it allocates them.
 void VSSIndex::LoadRowGroups(VSSBlockChainReader &reader, const VSSDirectory &directory, const bool page_clusters) {
 	for (const auto &entry : directory.row_groups) {
-		uint64_t heap_size;
+		uint64_t self_managed_bytes;
 		if (vss_wrapper->GetQuantization() == PDX::U8) {
-			heap_size = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-			                ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
+			self_managed_bytes = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
+			                         ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
 		} else {
-			heap_size = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-			                ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
+			self_managed_bytes = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
+			                         ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
 		}
-		UpdateReservedMemory(static_cast<int64_t>(heap_size));
+		UpdateReservedMemory(static_cast<int64_t>(self_managed_bytes));
 	}
 }
 
@@ -906,10 +907,10 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 	}
 	// The rewritten row groups were paged again: free what they no longer use. Reserving more could throw, which a
 	// checkpoint must not: the next sync reserves any growth.
-	const auto heap_size = static_cast<int64_t>(vss_wrapper->GetHeapSizeInBytes());
+	const auto self_managed_bytes = static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes());
 	const auto reserved = static_cast<int64_t>(reserved_memory_bytes.load());
-	if (heap_size < reserved) {
-		UpdateReservedMemory(heap_size - reserved);
+	if (self_managed_bytes < reserved) {
+		UpdateReservedMemory(self_managed_bytes - reserved);
 	}
 	return MakeStorageInfo();
 }
