@@ -242,6 +242,10 @@ public:
 		// Only reached when DuckDB splits a row group over several scan tasks (e.g. PRAGMA verify_parallelism hands
 		// out one vector per task): the first batch built the index above, the later ones are appended to it.
 		const std::lock_guard<std::mutex> lock(row_group->mutex);
+		// The first batch's build failed: its error ends CREATE INDEX.
+		if (!row_group->index) {
+			throw Exception(ExceptionType::INDEX, "DuckIR VSS: the index build of a row group failed");
+		}
 		const auto size_before = static_cast<int64_t>(row_group->GetInMemorySizeInBytes());
 		if (row_group->cluster_cache) {
 			MaterializeRowGroup(*row_group, *reader, buffer_manager);
@@ -311,6 +315,9 @@ public:
 		if (row_group.cluster_cache) {
 			MaterializeRowGroup(row_group, *reader, buffer_manager);
 		}
+		// Before the append: a BulkAppend that throws may have appended part of the rows.
+		row_group.row_end = MaxValue<row_t>(row_group.row_end, max_row_id + 1);
+		row_group.is_dirty = true;
 		// The executor ends with the sync: later appends and deletes run serially.
 		row_group.index->SetExecutor(executor);
 		try {
@@ -320,8 +327,6 @@ public:
 			throw;
 		}
 		row_group.index->SetExecutor(nullptr);
-		row_group.row_end = MaxValue<row_t>(row_group.row_end, max_row_id + 1);
-		row_group.is_dirty = true;
 		auto flat_index = dynamic_cast<PDX::FlatIndex *>(row_group.index.get());
 		if (flat_index && flat_index->GetClusterSize(0) >= MIN_EMBEDDINGS_FOR_CLUSTERING) {
 			PromoteToIVF(row_group, *flat_index, executor);
@@ -650,28 +655,35 @@ private:
 		// The resident index points to its cache, so it is destroyed first.
 		auto resident_cache = std::move(row_group.cluster_cache);
 		auto resident_index = std::move(row_group.index);
-		if (!row_group.temporary_chain.blocks.empty()) {
-			VSSTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
-			std::istream in(&temporary_reader);
-			row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner, nullptr, &memory_allocator);
-		} else {
-			reader.Open(row_group.persisted_chain);
-			std::istream in(&reader);
-			row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner, nullptr, &memory_allocator);
-			reader.Finish();
+		try {
+			if (!row_group.temporary_chain.blocks.empty()) {
+				VSSTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
+				std::istream in(&temporary_reader);
+				row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner, nullptr, &memory_allocator);
+			} else {
+				reader.Open(row_group.persisted_chain);
+				std::istream in(&reader);
+				row_group.index = PDX::LoadPDXIndexFromStream(in, *pruner, nullptr, &memory_allocator);
+				reader.Finish();
+			}
+			// A row group loaded with only its resident data took deletes as tombstones since its home was written.
+			// These were never reflected on the index home. Therefore, we must replay them.
+			if (resident_index) {
+				for (row_t row_id = row_group.row_start; row_id < row_group.row_end; row_id++) {
+					const auto id = static_cast<size_t>(row_id);
+					if (row_group.index->Contains(id) && !resident_index->Contains(id)) {
+						row_group.index->Delete(id);
+					}
+				}
+			}
+		} catch (...) {
+			// A failed load leaves the row group as it was: paged from its home.
+			reader.Close();
+			row_group.index = std::move(resident_index);
+			row_group.cluster_cache = std::move(resident_cache);
+			throw;
 		}
 		row_group.temporary_chain = VSSTemporaryChain();
-		if (!resident_index) {
-			return;
-		}
-		// A row group loaded with only its resident data took deletes as tombstones since its home was written.
-		// These were never reflected on the index home. Therefore, we must replay them.
-		for (row_t row_id = row_group.row_start; row_id < row_group.row_end; row_id++) {
-			const auto id = static_cast<size_t>(row_id);
-			if (row_group.index->Contains(id) && !resident_index->Contains(id)) {
-				row_group.index->Delete(id);
-			}
-		}
 	}
 };
 
