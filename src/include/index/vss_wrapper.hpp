@@ -201,6 +201,7 @@ public:
 		}
 	}
 
+	// Headroom for unaccounted scratches (we are being conservative here).
 	static constexpr double BUILD_PEAK_FACTOR = 1.1;
 	// Up to 10% of a row group's rows can be deleted since its chain was written without triggering a rewrite.
 	static constexpr double MAX_UNWRITTEN_DELETES_RATIO = 0.1;
