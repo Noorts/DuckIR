@@ -1,0 +1,89 @@
+# name: test/sql/out_of_core/index_closed_row_groups.test
+# description: The index of a row group DuckDB appends no more rows to (full, or followed by another one) has no room for appends, whether the row group was closed when the index was built or later.
+# group: [out_of_core]
+
+require parquet
+
+require duckir
+
+load {TEST_DIR}/index_closed_row_groups_main.db
+
+statement ok
+ATTACH '{TEST_DIR}/index_closed_row_groups.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+statement ok
+SET duckir_vss_cluster_paging = false;
+
+# Variables
+test-env DIMS 128
+
+statement ok
+CREATE TABLE p.src AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 16382;
+
+statement ok
+SET VARIABLE query_emb = (SELECT emb FROM p.src WHERE id = 0);
+
+# One full row group, and three partial ones (2 rows short).
+statement ok
+CREATE TABLE p.full AS SELECT * FROM p.src WHERE id < 8192;
+
+statement ok
+CREATE TABLE p.partial AS SELECT * FROM p.src WHERE id < 8190;
+
+statement ok
+CREATE TABLE p.filled AS SELECT * FROM p.src WHERE id < 8190;
+
+statement ok
+CREATE TABLE p.followed AS SELECT * FROM p.src WHERE id < 8190;
+
+statement ok
+CREATE INDEX full_idx ON p.full USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+CREATE INDEX partial_idx ON p.partial USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+CREATE INDEX filled_idx ON p.filled USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+CREATE INDEX followed_idx ON p.followed USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+# The full row group's clusters get no room for appends, the partial one's do.
+query I
+SELECT (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 'full_idx') < 0.9 * (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 'partial_idx');
+----
+true
+
+# Two rows fill the row group.
+statement ok
+INSERT INTO p.filled SELECT * FROM p.src WHERE id >= 8190 AND id < 8192;
+
+# A bulk insert adds a row group after the partial one.
+statement ok
+INSERT INTO p.followed SELECT * FROM p.src WHERE id >= 8190;
+
+statement ok
+CREATE TABLE p.followed_reference AS SELECT * FROM p.followed;
+
+statement ok
+CREATE INDEX followed_reference_idx ON p.followed_reference USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+# The searches' syncs index the rows, and the row groups they closed lose their room for appends.
+statement ok
+SELECT id FROM p.filled ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 1;
+
+statement ok
+SELECT id FROM p.followed ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 1;
+
+query I
+SELECT (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 'filled_idx') < 1.05 * (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 'full_idx');
+----
+true
+
+query I
+SELECT (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 'followed_idx') < 1.05 * (SELECT approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 'followed_reference_idx');
+----
+true

@@ -107,6 +107,9 @@ private:
 	// - DuckDB dropped a rowgroup (e.g., VACUUM, CHECKPOINT merging)
 	vector<VSSRowGroupBounds> FindStaleRowGroups(DataTable &table) const;
 
+	// Marks the mirrors of the row groups DuckDB closed since (IsClosedRowGroup).
+	void MarkClosedRowGroups(DataTable &table);
+
 	void RemoveRowGroupsOverlapping(row_t start, row_t end);
 
 	// Adds the rows of one commit to unindexed_row_ranges, which needs to stay sorted and disjoint.
@@ -184,6 +187,10 @@ public:
 	// The DuckDB row group that holds row_id. False if the row is not in the table (yet).
 	bool TryGetPhysicalRowGroup(DataTable &table, row_t row_id, VSSRowGroupBounds &result) const;
 
+	// Whether DuckDB appends no more rows to the row group. It appends only to the last one, until it is full or
+	// another one follows it (a commit that merges its own row groups, or an append that requires a new one).
+	bool IsClosedRowGroup(DataTable &table, const VSSRowGroupBounds &row_group) const;
+
 	vector<VSSRowGroupBounds> GetPhysicalRowGroups(DataTable &table) const;
 
 	// Position of the index's row group that holds row_id (the row_group_idx of the methods below).
@@ -193,8 +200,8 @@ public:
 	VSSRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
 	void SetUpIndexForRowGroup(const row_t *row_ids, const float *embeddings, idx_t num_embeddings, row_t row_start,
-	                           idx_t count, PDX::ParallelExecutor *executor);
-	uint64_t EstimateBuildHeapBytes(idx_t num_embeddings) const;
+	                           idx_t count, bool is_closed, PDX::ParallelExecutor *executor);
+	uint64_t EstimateBuildPeakBytes(idx_t num_embeddings) const;
 
 	// !`passing_row_ids` are size_t because they go straight into PDX's IPDXIndex::BeginIterativeSearch.
 	// `clusters_access_order`: the row group's GetClustersAccessOrderForRowGroup for this query (nullptr: rank).

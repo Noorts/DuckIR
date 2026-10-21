@@ -17,9 +17,9 @@ SET checkpoint_threshold = '10GB';
 # Variables
 test-env DIMS 128
 
-# Two full row groups and a partial one (IVF, 5,616 rows).
+# Ten full row groups and a partial one (IVF, 5,616 rows).
 statement ok
-CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 22000;
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 87536;
 
 statement ok
 CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
@@ -69,7 +69,7 @@ statement ok
 DELETE FROM p.t WHERE id % 7 = 0;
 
 statement ok
-INSERT INTO p.t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 22000 AND id < 23500;
+INSERT INTO p.t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 87536 AND id < 89036;
 
 statement ok
 SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
@@ -94,7 +94,7 @@ restart
 statement ok
 ATTACH '{TEST_DIR}/index_cluster_paging.db' AS p (ROW_GROUP_SIZE 8192);
 
-# Paged, it searches under a limit below its full size (about 47 MB).
+# Paged, it searches under a limit below its full size (about 49 MB).
 query II nosort written
 SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
 ----

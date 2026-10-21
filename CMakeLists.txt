@@ -38,7 +38,7 @@ include(FetchContent)
 FetchContent_Declare(
   pdx
   GIT_REPOSITORY https://github.com/cwida/pdx.git
-  GIT_TAG a2c440889c5fbd469fcfc27c33acb824de38a959)
+  GIT_TAG d9ec37bf7e628c23d3d1318d96f8ffd655a60cc2)
 FetchContent_MakeAvailable(pdx)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
