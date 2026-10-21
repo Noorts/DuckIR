@@ -128,7 +128,7 @@ public:
 	vector<row_t> on_the_fly_indexes_row_ids;
 	idx_t on_the_fly_indexes_clusters_to_probe {0};
 	bool search_flat_index_in_bulk {false};
-	// The join's own reservation, for the on-the-fly indexes' heap memory.
+	// The join's own reservation, for the on-the-fly indexes' self-managed memory.
 	BufferManager &buffer_manager;
 	idx_t reserved_memory_bytes {0};
 };
@@ -282,8 +282,9 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 	}
 	const idx_t max_rows_per_window =
 	    CountMaxRowsPerOnTheFlyIndex(passing_row_ids_per_row_group, row_groups_per_window);
-	// The build's buffers come from the index's memory allocator, which DuckDB charges, and the indexes' heap memory is
-	// reserved once they are built. Without the memory for either, the join searches row group by row group instead.
+	// The build's buffers come from the index's memory allocator, which DuckDB charges, and the indexes' self-managed
+	// memory is reserved once they are built. Without the memory for either, the join searches row group by row group
+	// instead.
 	try {
 		auto embeddings =
 		    skmeans::AllocateBuffer<float>(search.index.GetMemoryAllocator(), max_rows_per_window * num_dimensions);
@@ -341,12 +342,12 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 			search.on_the_fly_indexes.push_back(std::move(on_the_fly_index));
 		}
 		// The indexes stay until the join ends.
-		idx_t heap_bytes = 0;
+		idx_t self_managed_bytes = 0;
 		for (const auto &on_the_fly_index : search.on_the_fly_indexes) {
-			heap_bytes += on_the_fly_index->GetHeapSizeInBytes();
+			self_managed_bytes += on_the_fly_index->GetSelfManagedMemorySizeInBytes();
 		}
-		search.buffer_manager.ReserveMemory(heap_bytes);
-		search.reserved_memory_bytes = heap_bytes;
+		search.buffer_manager.ReserveMemory(self_managed_bytes);
+		search.reserved_memory_bytes = self_managed_bytes;
 	} catch (std::exception &ex) {
 		if (ErrorData(ex).Type() != ExceptionType::OUT_OF_MEMORY) {
 			throw;

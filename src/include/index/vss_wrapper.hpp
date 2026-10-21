@@ -127,7 +127,7 @@ public:
 	// An approximate lower bound of the index's size in memory.
 	virtual uint64_t GetInMemorySizeInBytes() const = 0;
 	// The part of it outside the memory allocator, which the index reserves.
-	virtual uint64_t GetHeapSizeInBytes() const = 0;
+	virtual uint64_t GetSelfManagedMemorySizeInBytes() const = 0;
 };
 
 struct VSSRowGroupBounds {
@@ -160,9 +160,9 @@ struct PDXRowGroup {
 		       (index ? index->GetInMemorySizeInBytes() : 0);
 	}
 
-	uint64_t GetHeapSizeInBytes() const {
+	uint64_t GetSelfManagedMemorySizeInBytes() const {
 		return sizeof(*this) + (cluster_cache ? cluster_cache->GetInMemorySizeInBytes() : 0) +
-		       (index ? index->GetHeapSizeInBytes() : 0);
+		       (index ? index->GetSelfManagedMemorySizeInBytes() : 0);
 	}
 };
 
@@ -226,7 +226,7 @@ public:
 	// Builds the index of the row group [row_start, row_start + count) from its (non-NULL) rows. Rows of this row
 	// group that arrive in a later batch are appended to the index that was already built. The build runs on executor
 	// (null: serial). With a reader (duckir_vss_cluster_paging), the index then moves to a temporary chain. Returns how
-	// many bytes the row group's heap size grew by.
+	// many bytes the row group's self-managed memory grew by.
 	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
 	                              const row_t row_start, const idx_t count, const bool is_closed,
 	                              PDX::ParallelExecutor *const executor, optional_ptr<VSSBlockChainReader> reader,
@@ -263,7 +263,7 @@ public:
 			if (reader) {
 				WriteTemporaryChain(*row_group, *reader, buffer_manager);
 			}
-			return static_cast<int64_t>(row_group->GetHeapSizeInBytes());
+			return static_cast<int64_t>(row_group->GetSelfManagedMemorySizeInBytes());
 		}
 		// Rare path
 		// Only reached when DuckDB splits a row group over several scan tasks (e.g. PRAGMA verify_parallelism hands
@@ -273,7 +273,7 @@ public:
 		if (!row_group->index) {
 			throw Exception(ExceptionType::INDEX, "DuckIR VSS: the index build of a row group failed");
 		}
-		const auto size_before = static_cast<int64_t>(row_group->GetHeapSizeInBytes());
+		const auto size_before = static_cast<int64_t>(row_group->GetSelfManagedMemorySizeInBytes());
 		if (row_group->cluster_cache) {
 			MaterializeRowGroup(*row_group, *reader, buffer_manager);
 		}
@@ -284,7 +284,7 @@ public:
 		if (reader) {
 			WriteTemporaryChain(*row_group, *reader, buffer_manager);
 		}
-		return static_cast<int64_t>(row_group->GetHeapSizeInBytes()) - size_before;
+		return static_cast<int64_t>(row_group->GetSelfManagedMemorySizeInBytes()) - size_before;
 	}
 
 	unique_ptr<PDX::IIterativeSearch>
@@ -585,7 +585,7 @@ public:
 
 	// Loads a persisted row group after the ones already loaded: entries come in the directory's (row_start) order.
 	// With page_clusters, only its resident data: its clusters stay in the chain until searches need them. Returns its
-	// heap size.
+	// self-managed memory size.
 	uint64_t LoadRowGroup(VSSBlockChainReader &reader, const VSSDirectory::RowGroupEntry &entry,
 	                      BufferManager &buffer_manager, const bool page_clusters) {
 		auto row_group = make_uniq<PDXRowGroup>();
@@ -598,9 +598,9 @@ public:
 			MaterializeRowGroup(*row_group, reader, buffer_manager);
 		}
 		row_group->is_dirty = false;
-		const auto heap_size = row_group->GetHeapSizeInBytes();
+		const auto self_managed_bytes = row_group->GetSelfManagedMemorySizeInBytes();
 		row_groups.push_back(std::move(row_group));
-		return heap_size;
+		return self_managed_bytes;
 	}
 
 	idx_t GetTotalNumClusters() const {
@@ -627,14 +627,14 @@ public:
 		return in_memory_size_in_bytes;
 	}
 
-	uint64_t GetHeapSizeInBytes() const override {
+	uint64_t GetSelfManagedMemorySizeInBytes() const override {
 		// The rotation matrix. The pruner's copy of it comes from the memory allocator.
-		uint64_t heap_size_in_bytes =
+		uint64_t self_managed_bytes =
 		    sizeof(*this) + static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float);
 		for (const auto &row_group : row_groups) {
-			heap_size_in_bytes += row_group->GetHeapSizeInBytes();
+			self_managed_bytes += row_group->GetSelfManagedMemorySizeInBytes();
 		}
-		return heap_size_in_bytes;
+		return self_managed_bytes;
 	}
 
 private:
