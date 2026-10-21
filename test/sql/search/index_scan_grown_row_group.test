@@ -1,0 +1,82 @@
+# name: test/sql/search/index_scan_grown_row_group.test
+# description: Regression test for https://github.com/Noorts/DuckIR/pull/47: n_probe = 0 probes every cluster of a row group that SPFresh splits grew past the 480 clusters a full row group is built with. The scan, the filtered scan and the join clamped n_probe to 480, and now to the largest row group's cluster count.
+# group: [search]
+
+require parquet
+
+require duckir
+
+statement ok
+ATTACH '{TEST_DIR}/index_scan_grown_row_group.db' AS p (ROW_GROUP_SIZE 65536);
+
+statement ok
+USE p;
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Read when the index loads: cluster_acquires counts the clusters the searches read.
+statement ok
+SET duckir_vss_paging_counters = true;
+
+statement ok
+SET duckir_vss_n_probe = 0;
+
+# Variables
+test-env DIMS 128
+
+statement ok
+CREATE TABLE t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 4096;
+
+statement ok
+CREATE TABLE q AS SELECT id AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id = 200000;
+
+statement ok
+SET duckir_vss_experimental_max_cluster_size = 32;
+
+statement ok
+CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+# The row group still receives rows: the inserted ones split its clusters at 32 rows, into about 2,500 clusters.
+statement ok
+INSERT INTO t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 4096 AND id < 45056;
+
+statement ok
+SET VARIABLE query_vector = (SELECT vec FROM q);
+
+# The first search syncs the inserted rows.
+statement ok
+SELECT id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+
+statement ok
+CREATE OR REPLACE TABLE acquires_before AS SELECT cluster_acquires FROM duckir_vss_index_info();
+
+statement ok
+SELECT id FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+
+query I
+SELECT (SELECT cluster_acquires FROM duckir_vss_index_info()) - (FROM acquires_before) > 480;
+----
+true
+
+statement ok
+CREATE OR REPLACE TABLE acquires_before AS SELECT cluster_acquires FROM duckir_vss_index_info();
+
+statement ok
+SELECT id FROM t WHERE id % 2 = 0 ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10;
+
+query I
+SELECT (SELECT cluster_acquires FROM duckir_vss_index_info()) - (FROM acquires_before) > 480;
+----
+true
+
+statement ok
+CREATE OR REPLACE TABLE acquires_before AS SELECT cluster_acquires FROM duckir_vss_index_info();
+
+statement ok
+SELECT q.qid, s.id FROM q, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, q.vec) LIMIT 10) s;
+
+query I
+SELECT (SELECT cluster_acquires FROM duckir_vss_index_info()) - (FROM acquires_before) > 480;
+----
+true
