@@ -254,12 +254,14 @@ static void RegisterDistanceOverloads(ExtensionLoader &loader, const Identifier 
 	ScalarFunction blob_array(func_name, {LogicalType::BLOB, array_type}, LogicalType::FLOAT,
 	                          BlobArrayDistanceExecute<OP>, BlobArrayDistanceBind);
 	blob_array.SetResolveTypesCallback(BlobArrayDistanceResolveTypes);
+	blob_array.SetFallible();
 	loader.AddFunctionOverload(blob_array);
 
 	// (ARRAY<FLOAT>[N], BLOB) → FLOAT
 	ScalarFunction array_blob(func_name, {array_type, LogicalType::BLOB}, LogicalType::FLOAT,
 	                          ArrayBlobDistanceExecute<OP>, ArrayBlobDistanceBind);
 	array_blob.SetResolveTypesCallback(ArrayBlobDistanceResolveTypes);
+	array_blob.SetFallible();
 	loader.AddFunctionOverload(array_blob);
 }
 
@@ -269,8 +271,10 @@ static void RegisterDistanceOverloads(ExtensionLoader &loader, const Identifier 
 
 void VSSBlobFunctions::Register(ExtensionLoader &loader) {
 	// Utility functions
-	loader.RegisterFunction(
-	    ScalarFunction("duckir_vss_encode_query", {LogicalType::VARCHAR}, LogicalType::BLOB, EncodeQueryFunction));
+	ScalarFunction encode_query("duckir_vss_encode_query", {LogicalType::VARCHAR}, LogicalType::BLOB,
+	                            EncodeQueryFunction);
+	encode_query.SetFallible();
+	loader.RegisterFunction(encode_query);
 
 	// Distance function overloads
 	RegisterDistanceOverloads<BlobDistanceOp>(loader, "array_distance");
