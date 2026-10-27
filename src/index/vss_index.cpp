@@ -86,6 +86,7 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	// opened (bind_error), the wrapper gets the seed's rotation, only for planning until the error is raised.
 	VSSDirectory directory;
 	unique_ptr<float[]> rotation_matrix;
+	std::optional<PDX::SAQModel> saq_model;
 	if (persistence_info.IsValid()) {
 		persisted_storage_info = CopyStorageInfo(persistence_info);
 		try {
@@ -94,6 +95,7 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 		} catch (std::exception &ex) {
 			bind_error = ErrorData(ex);
 			rotation_matrix.reset();
+			saq_model.reset();
 		}
 	}
 
@@ -102,10 +104,16 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 		D_ASSERT(ArrayType::GetChildType(embedding_type).id() == LogicalTypeId::FLOAT);
 
 		vss_wrapper = make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
-		                                       row_group_size, std::move(rotation_matrix), memory_allocator);
+		                                       row_group_size, std::move(rotation_matrix), std::nullopt,
+		                                       memory_allocator);
 	} else if (quantization == PDX::Quantization::U8) {
 		vss_wrapper = make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
-		                                      row_group_size, std::move(rotation_matrix), memory_allocator);
+		                                      row_group_size, std::move(rotation_matrix), std::nullopt,
+		                                      memory_allocator);
+	} else if (quantization == PDX::Quantization::SAQ) {
+		vss_wrapper = make_uniq<VSSWrapperSAQ>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
+		                                       row_group_size, std::move(rotation_matrix), std::move(saq_model),
+		                                       memory_allocator);
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
@@ -113,8 +121,6 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	// loads, below.
 	if (!persistence_info.IsValid()) {
 		vss_wrapper->CreatePruner();
-		embedding_preprocessor =
-		    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
 		UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes()));
 	}
 	Value cluster_paging_setting;
@@ -137,8 +143,6 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	if (persistence_info.IsValid() && !bind_error.HasError()) {
 		try {
 			vss_wrapper->CreatePruner();
-			embedding_preprocessor =
-			    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
 			UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes()));
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
 			needs_reconciliation = true;
@@ -305,8 +309,8 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 			batch_count++;
 		}
 		if (batch_count > 0) {
-			embedding_preprocessor->PreprocessEmbeddings(raw_embeddings.get(), embeddings + count * num_dimensions,
-			                                             batch_count, IsNormalized(), executor);
+			vss_wrapper->PreprocessEmbeddings(raw_embeddings.get(), embeddings + count * num_dimensions, batch_count,
+			                                  executor);
 			count += batch_count;
 		}
 	}
@@ -489,7 +493,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 
 // Called by CREATE INDEX's threads in parallel: each reserves the self-managed memory its row group grew by. PDX's
 // buffers are charged as it allocates them.
-void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors, const idx_t num_vectors,
+void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, float *const vectors, const idx_t num_vectors,
                                      const row_t row_start, const idx_t count, const bool is_closed,
                                      PDX::ParallelExecutor *const executor) {
 	// Without paging, the row groups stay in memory.
@@ -678,11 +682,7 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 	result->n_probe = static_cast<int64_t>(vss_wrapper->GetNProbe());
 	result->seed = static_cast<int64_t>(vss_wrapper->GetSeed());
 	result->is_normalized = IsNormalized();
-	// The wrapper and the query preprocessor's copy of the rotation matrix.
-	const uint64_t preprocessor_bytes =
-	    embedding_preprocessor ? static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float) : 0;
-	result->approximate_lower_bound_memory_usage_bytes =
-	    static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes() + preprocessor_bytes);
+	result->approximate_lower_bound_memory_usage_bytes = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
 	if (storage_reader) {
 		const auto &counters = storage_reader->counters;
 		result->cluster_acquires = static_cast<int64_t>(counters.cluster_acquires.load());
@@ -924,6 +924,8 @@ string VSSIndex::GetQuantization() const {
 		return "f32";
 	case PDX::Quantization::U8:
 		return "u8";
+	case PDX::Quantization::SAQ:
+		return "u4";
 	default:
 		throw InternalException("Unknown quantization");
 	}
@@ -932,6 +934,7 @@ string VSSIndex::GetQuantization() const {
 const case_insensitive_map_t<PDX::Quantization> VSSIndex::QUANTIZATION_MAP = {
     {"f32", PDX::Quantization::F32},
     {"u8", PDX::Quantization::U8},
+    {"u4", PDX::Quantization::SAQ},
 };
 
 string VSSIndex::GetDistanceMetric() const {

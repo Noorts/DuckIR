@@ -46,9 +46,7 @@ class VSSIndexJoinSearch {
 public:
 	VSSIndexJoinSearch(ClientContext &context, const PhysicalVSSIndexJoin &op)
 	    : search_lock(op.index.Cast<VSSIndex>().SyncAndLockForSearch(context, op.table.GetStorage())),
-	      index(op.index.Cast<VSSIndex>()), limit(op.limit),
-	      preprocessor(index.GetNumDimensions(), index.GetRotationMatrix(), index.GetMemoryAllocator()),
-	      buffer_manager(BufferManager::GetBufferManager(context)) {
+	      index(op.index.Cast<VSSIndex>()), limit(op.limit), buffer_manager(BufferManager::GetBufferManager(context)) {
 		auto n_probe = index.GetEffectiveNProbe(context);
 		const idx_t max_num_clusters = index.GetMaxNumClusters();
 		clusters_to_probe_on_first_iteration =
@@ -104,8 +102,6 @@ public:
 	VSSIndex &index;
 	// The number of nearest rows per query (`k`).
 	const idx_t limit;
-	// Shared by all threads: it holds a copy of the rotation matrix, and preprocessing a query only reads it.
-	const EmbeddingPreprocessor preprocessor;
 
 	idx_t clusters_to_probe_on_first_iteration {0};
 	static constexpr idx_t CLUSTERS_TO_PROBE_PER_FOLLOW_UP_ITERATION = 5;
@@ -643,7 +639,7 @@ static void ProbeNearestClustersPerRowGroup(const VSSIndexJoinSearch &search, VS
 // row_ids. Returns their number, at most K.
 static idx_t SearchQuery(const VSSIndexJoinSearch &search, VSSIndexJoinOperatorState &state) {
 	// Normalizes raw_query in place for the cosine distance: our copy, not the input the operators above read.
-	search.preprocessor.PreprocessEmbedding(state.raw_query.get(), state.query.get(), search.index.IsNormalized());
+	search.index.PreprocessEmbeddings(state.raw_query.get(), state.query.get(), 1);
 	state.ranking_query = search.index.EncodeQueryForRanking(state.query.get());
 
 	state.heap.Clear();
@@ -701,8 +697,7 @@ static void SearchChunkInBulk(const PhysicalVSSIndexJoin &op, const VSSIndexJoin
 	if (num_queries == 0) {
 		return;
 	}
-	search.preprocessor.PreprocessEmbeddings(state.chunk_raw_queries.get(), state.chunk_queries.get(), num_queries,
-	                                         search.index.IsNormalized());
+	search.index.PreprocessEmbeddings(state.chunk_raw_queries.get(), state.chunk_queries.get(), num_queries);
 	auto nearest = search.on_the_fly_indexes[0]->BulkSearch(state.chunk_queries.get(), num_queries, search.limit,
 	                                                        /*is_query_transformed=*/true);
 	for (idx_t i = 0; i < num_queries; i++) {
