@@ -209,7 +209,7 @@ private:
 	atomic<idx_t> acquires_since_decay {0};
 };
 
-static constexpr uint32_t VSS_STORAGE_VERSION = 4;
+static constexpr uint32_t VSS_STORAGE_VERSION = 5;
 
 // The root chain: where the rotation and the row groups are.
 struct VSSDirectory {
