@@ -891,10 +891,9 @@ public:
 		auto query_embedding = make_unsafe_uniq_array<float>(num_dimensions);
 
 		if (query.type().id() == LogicalTypeId::BLOB) {
-			// BLOB path: decode the quantized blob to float array
+			// BLOB path: copy the blob's float32 values
 			auto blob = StringValue::Get(query);
-			auto blob_dims = BlobDimensionCount(blob.size());
-			if (blob_dims != num_dimensions) {
+			if (blob.size() != num_dimensions * sizeof(float)) {
 				return nullptr;
 			}
 			DecodeBlobToFloatArray(const_data_ptr_cast(blob.data()), blob.size(), query_embedding.get());

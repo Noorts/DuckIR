@@ -2,12 +2,10 @@
 #include "index/vss_blob_codec.hpp"
 #include "index/vss_module.hpp"
 
-#include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
-#include "duckdb/common/vector_operations/unary_executor.hpp"
-#include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
@@ -50,15 +48,18 @@ struct BlobCosineDistanceOp {
 // Utility Functions
 //------------------------------------------------------------------------------
 
-static void EncodeBlobFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+// Reads the text of a query vector as '[…]'::FLOAT[] does, and returns its float32 values as a BLOB.
+static void EncodeQueryFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
-	auto &input = args.data[0];
+	Vector input(LogicalType::LIST(LogicalType::FLOAT), count);
+	VectorOperations::Cast(state.GetContext(), args.data[0], input, count);
 
 	UnifiedVectorFormat input_format;
 	input.ToUnifiedFormat(input_format);
 
 	auto &child_vec = ListVector::GetChild(input);
 	auto child_data = FlatVector::GetData<float>(child_vec);
+	auto &child_validity = FlatVector::Validity(child_vec);
 	auto list_entries = UnifiedVectorFormat::GetData<list_entry_t>(input_format);
 
 	for (idx_t i = 0; i < count; i++) {
@@ -68,7 +69,12 @@ static void EncodeBlobFunction(DataChunk &args, ExpressionState &state, Vector &
 			continue;
 		}
 		auto &entry = list_entries[idx];
-		auto blob_size = entry.length * sizeof(int16_t);
+		for (idx_t j = entry.offset; j < entry.offset + entry.length; j++) {
+			if (!child_validity.RowIsValid(j)) {
+				throw InvalidInputException("duckir_vss_encode_query: the query vector can not contain NULL values");
+			}
+		}
+		auto blob_size = entry.length * sizeof(float);
 		auto blob = StringVector::EmptyString(result, blob_size);
 		EncodeFloatArrayToBlob(child_data + entry.offset, entry.length, data_ptr_cast(blob.GetDataWriteable()));
 		blob.Finalize();
@@ -78,71 +84,6 @@ static void EncodeBlobFunction(DataChunk &args, ExpressionState &state, Vector &
 	if (count == 1) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
-}
-
-static void DecodeBlobFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto count = args.size();
-	auto &input = args.data[0];
-
-	UnifiedVectorFormat input_format;
-	input.ToUnifiedFormat(input_format);
-
-	auto input_data = UnifiedVectorFormat::GetData<string_t>(input_format);
-
-	auto &child_vec = ListVector::GetChildMutable(result);
-	idx_t total_elements = 0;
-
-	// First pass: count total elements
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = input_format.sel->get_index(i);
-		if (input_format.validity.RowIsValid(idx)) {
-			total_elements += BlobDimensionCount(input_data[idx].GetSize());
-		}
-	}
-
-	ListVector::Reserve(result, total_elements);
-	auto child_data = FlatVector::GetDataMutable<float>(child_vec);
-	auto list_entries = FlatVector::GetDataMutable<list_entry_t>(result);
-
-	idx_t offset = 0;
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = input_format.sel->get_index(i);
-		if (!input_format.validity.RowIsValid(idx)) {
-			FlatVector::SetNull(result, i, true);
-			continue;
-		}
-		auto &blob = input_data[idx];
-		auto dim_count = BlobDimensionCount(blob.GetSize());
-		list_entries[i].offset = offset;
-		list_entries[i].length = dim_count;
-		DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), child_data + offset);
-		offset += dim_count;
-	}
-	ListVector::SetListSize(result, offset);
-
-	if (count == 1) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-static void BlobToBase64Function(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t blob) {
-		auto base64_size = Blob::ToBase64Size(blob);
-		auto base64 = StringVector::EmptyString(result, base64_size);
-		Blob::ToBase64(blob, base64.GetDataWriteable());
-		base64.Finalize();
-		return base64;
-	});
-}
-
-static void Base64ToBlobFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t str) {
-		auto blob_size = Blob::FromBase64Size(str);
-		auto blob = StringVector::EmptyString(result, blob_size);
-		Blob::FromBase64(str, data_ptr_cast(blob.GetDataWriteable()), blob_size);
-		blob.Finalize();
-		return blob;
-	});
 }
 
 //------------------------------------------------------------------------------
@@ -222,6 +163,7 @@ static void BlobArrayDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 	auto res_data = FlatVector::GetDataMutable<float>(result);
 
 	auto decoded = make_unsafe_uniq_array<float>(array_size);
+	optional_idx decoded_blob_idx;
 
 	for (idx_t i = 0; i < count; i++) {
 		auto blob_idx = blob_format.sel->get_index(i);
@@ -232,13 +174,16 @@ static void BlobArrayDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 			continue;
 		}
 
-		auto &blob = blob_data[blob_idx];
-		if (BlobDimensionCount(blob.GetSize()) != array_size) {
-			throw InvalidInputException("BLOB dimension count (%llu) does not match array size (%llu)",
-			                            BlobDimensionCount(blob.GetSize()), array_size);
+		// A constant query vector is copied once per chunk.
+		if (!decoded_blob_idx.IsValid() || decoded_blob_idx.GetIndex() != blob_idx) {
+			auto &blob = blob_data[blob_idx];
+			if (blob.GetSize() != array_size * sizeof(float)) {
+				throw InvalidInputException("BLOB of %llu bytes does not hold the %llu float32 values of the array",
+				                            blob.GetSize(), array_size);
+			}
+			DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), decoded.get());
+			decoded_blob_idx = blob_idx;
 		}
-
-		DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), decoded.get());
 		res_data[i] =
 		    OP::template Operation<float>(decoded.get(), array_child_data + array_idx * array_size, array_size);
 	}
@@ -271,6 +216,7 @@ static void ArrayBlobDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 	auto res_data = FlatVector::GetDataMutable<float>(result);
 
 	auto decoded = make_unsafe_uniq_array<float>(array_size);
+	optional_idx decoded_blob_idx;
 
 	for (idx_t i = 0; i < count; i++) {
 		auto array_idx = array_format.sel->get_index(i);
@@ -281,13 +227,16 @@ static void ArrayBlobDistanceExecute(DataChunk &args, ExpressionState &state, Ve
 			continue;
 		}
 
-		auto &blob = blob_data[blob_idx];
-		if (BlobDimensionCount(blob.GetSize()) != array_size) {
-			throw InvalidInputException("BLOB dimension count (%llu) does not match array size (%llu)",
-			                            BlobDimensionCount(blob.GetSize()), array_size);
+		// A constant query vector is copied once per chunk.
+		if (!decoded_blob_idx.IsValid() || decoded_blob_idx.GetIndex() != blob_idx) {
+			auto &blob = blob_data[blob_idx];
+			if (blob.GetSize() != array_size * sizeof(float)) {
+				throw InvalidInputException("BLOB of %llu bytes does not hold the %llu float32 values of the array",
+				                            blob.GetSize(), array_size);
+			}
+			DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), decoded.get());
+			decoded_blob_idx = blob_idx;
 		}
-
-		DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), decoded.get());
 		res_data[i] =
 		    OP::template Operation<float>(array_child_data + array_idx * array_size, decoded.get(), array_size);
 	}
@@ -320,17 +269,8 @@ static void RegisterDistanceOverloads(ExtensionLoader &loader, const Identifier 
 
 void VSSBlobFunctions::Register(ExtensionLoader &loader) {
 	// Utility functions
-	loader.RegisterFunction(ScalarFunction("duckir_vss_encode_blob", {LogicalType::LIST(LogicalType::FLOAT)},
-	                                       LogicalType::BLOB, EncodeBlobFunction));
-
-	loader.RegisterFunction(ScalarFunction("duckir_vss_decode_blob", {LogicalType::BLOB},
-	                                       LogicalType::LIST(LogicalType::FLOAT), DecodeBlobFunction));
-
 	loader.RegisterFunction(
-	    ScalarFunction("duckir_vss_blob_to_base64", {LogicalType::BLOB}, LogicalType::VARCHAR, BlobToBase64Function));
-
-	loader.RegisterFunction(
-	    ScalarFunction("duckir_vss_base64_to_blob", {LogicalType::VARCHAR}, LogicalType::BLOB, Base64ToBlobFunction));
+	    ScalarFunction("duckir_vss_encode_query", {LogicalType::VARCHAR}, LogicalType::BLOB, EncodeQueryFunction));
 
 	// Distance function overloads
 	RegisterDistanceOverloads<BlobDistanceOp>(loader, "array_distance");
