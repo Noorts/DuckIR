@@ -217,7 +217,7 @@ public:
 	VSSRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
 	// CREATE INDEX fits a u4 index before its parallel builds when a row group could reach
-	// MIN_EMBEDDINGS_FOR_CLUSTERING rows, on rows sampled from every row group as the CREATE INDEX scan sees them.
+	// MIN_EMBEDDINGS_FOR_CLUSTERING rows, on committed rows sampled from every row group.
 	void FitSAQModelForCreate(ClientContext &context, DataTable &table);
 	void SetUpIndexForRowGroup(const row_t *row_ids, float *embeddings, idx_t num_embeddings, row_t row_start,
 	                           idx_t count, bool is_closed, PDX::ParallelExecutor *executor);

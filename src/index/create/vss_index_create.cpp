@@ -36,6 +36,7 @@ public:
 	                                       TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
 	                                       op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
 	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->GetReturnType())) {
+		global_index->Cast<VSSIndex>().FitSAQModelForCreate(context, op.table.GetStorage());
 		const auto &index = global_index->Cast<VSSIndex>();
 		const idx_t row_group_size = index.GetRowGroupSize();
 		const idx_t build_bytes =
