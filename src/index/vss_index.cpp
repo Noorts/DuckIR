@@ -231,8 +231,8 @@ VSSRowRange VSSIndex::GetRowGroupRange(const idx_t row_group_idx) const {
 void VSSIndex::AppendRows(const idx_t row_group_idx, const row_t *const row_ids, float *const transformed_embeddings,
                           const idx_t count, PDX::ParallelExecutor *const executor) {
 	DispatchWrapper([&](auto &wrapper) {
-		wrapper.AppendRows(row_group_idx, row_ids, transformed_embeddings, count, storage_reader.get(),
-		                   buffer_manager, executor);
+		wrapper.AppendRows(row_group_idx, row_ids, transformed_embeddings, count, storage_reader.get(), buffer_manager,
+		                   executor);
 	});
 }
 
@@ -517,9 +517,8 @@ VSSIndex::BeginSearchForRowGroup(const idx_t row_group_idx, const float *const p
 
 std::vector<uint32_t> VSSIndex::GetClustersAccessOrderForRowGroup(const idx_t row_group_idx,
                                                                   const float *const preprocessed_query) {
-	return DispatchWrapper([&](auto &wrapper) {
-		return wrapper.GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query);
-	});
+	return DispatchWrapper(
+	    [&](auto &wrapper) { return wrapper.GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query); });
 }
 
 /******************************************************************

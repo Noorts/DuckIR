@@ -295,9 +295,8 @@ public:
 	}
 
 	const PDX::IPDXIndex &GetRowGroupIndex(const idx_t row_group_idx) const {
-		return DispatchWrapper([&](auto &wrapper) -> const PDX::IPDXIndex & {
-			return wrapper.GetRowGroupIndex(row_group_idx);
-		});
+		return DispatchWrapper(
+		    [&](auto &wrapper) -> const PDX::IPDXIndex & { return wrapper.GetRowGroupIndex(row_group_idx); });
 	}
 
 	// The most clusters a row group has: the bound n_probe is clamped to.
