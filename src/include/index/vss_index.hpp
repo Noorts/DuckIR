@@ -99,11 +99,11 @@ private:
 	                PDX::ParallelExecutor *executor);
 	void DeleteRow(row_t row_id);
 
-	// Returns the committed rows of [start, end) whose embedding is not NULL,
-	// We transform them (random rotation) and return how many were written to `embeddings`.
+	// Scans the committed rows of [start, end) whose embedding is not NULL into `embeddings`, normalized when the
+	// metric needs it and rotated if `rotate`, and their ids into `row_ids` unless it is null. Returns how many.
 	// `rows_returned` counts every committed row the table returned, NULL embeddings included.
-	idx_t FetchRows(DataTable &table, row_t start, row_t end, row_t *row_ids, float *embeddings, idx_t &rows_returned,
-	                PDX::ParallelExecutor *executor);
+	idx_t FetchRows(DataTable &table, row_t start, row_t end, float *embeddings, idx_t &rows_returned, row_t *row_ids,
+	                bool rotate, PDX::ParallelExecutor *executor);
 
 	// The committed rows of [start, end), ascending, written to `row_ids`. Scans only the row id column, so it reads no
 	// column data.
@@ -216,6 +216,9 @@ public:
 	// The row ids the index's row group at row_group_idx covers.
 	VSSRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
+	// CREATE INDEX fits a u4 index before its parallel builds when a row group could reach
+	// MIN_EMBEDDINGS_FOR_CLUSTERING rows, on rows sampled from every row group as the CREATE INDEX scan sees them.
+	void FitSAQModelForCreate(ClientContext &context, DataTable &table);
 	void SetUpIndexForRowGroup(const row_t *row_ids, float *embeddings, idx_t num_embeddings, row_t row_start,
 	                           idx_t count, bool is_closed, PDX::ParallelExecutor *executor);
 	uint64_t EstimateBuildPeakBytes(idx_t num_embeddings) const;
