@@ -43,6 +43,7 @@ public:
 		                                             index.GetMemoryAllocator());
 		embedding_preprocessor.PreprocessEmbedding(bind_data.query_embedding.get(), preprocessed_query_embedding.get(),
 		                                           index.IsNormalized());
+		ranking_query = index.EncodeQueryForRanking(preprocessed_query_embedding.get());
 
 		auto n_probe = index.GetEffectiveNProbe(context);
 		// The cluster count varies per row group, but the iteration loop uses a single value across all row groups. We
@@ -75,6 +76,7 @@ public:
 	VSSIndex &index;
 
 	const unique_ptr<float[]> preprocessed_query_embedding;
+	unique_ptr<PDX::CentroidRankingQuery> ranking_query;
 
 	// Top-k heap shared by the searches of all row groups (and threads).
 	PDX::TopKHeap top_k_heap {/*thread_safe=*/true};
@@ -145,20 +147,20 @@ static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(VSSIndex &
                                                                       const idx_t row_group_idx,
                                                                       const std::vector<size_t> &passing_rowids) {
 	if (passing_rowids.size() <= g_sink.partitions_to_probe_per_row_group_on_first_iteration) {
-		auto search_cursor =
-		    index.BeginSearchForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit,
-		                                 g_sink.top_k_heap, &passing_rowids, &g_sink.identity_clusters_access_order);
+		auto search_cursor = index.BeginSearchForRowGroup(
+		    row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit, g_sink.top_k_heap, &passing_rowids,
+		    &g_sink.identity_clusters_access_order, g_sink.ranking_query.get());
 		search_cursor->Next(search_cursor->ClustersRemaining());
 		return search_cursor;
 	}
 	auto &clusters_access_order = g_sink.clusters_access_orders[row_group_idx];
 	std::call_once(g_sink.clusters_access_orders_once[row_group_idx], [&]() {
-		clusters_access_order =
-		    index.GetClustersAccessOrderForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get());
+		clusters_access_order = index.GetClustersAccessOrderForRowGroup(
+		    row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.ranking_query.get());
 	});
-	auto search_cursor =
-	    index.BeginSearchForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit,
-	                                 g_sink.top_k_heap, &passing_rowids, &clusters_access_order);
+	auto search_cursor = index.BeginSearchForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get(),
+	                                                  g_sink.limit, g_sink.top_k_heap, &passing_rowids,
+	                                                  &clusters_access_order, g_sink.ranking_query.get());
 	search_cursor->Next(g_sink.partitions_to_probe_per_row_group_on_first_iteration);
 	return search_cursor;
 }

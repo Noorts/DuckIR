@@ -34,6 +34,7 @@ public:
 		    EmbeddingPreprocessor(index.GetNumDimensions(), index.GetRotationMatrix(), index.GetMemoryAllocator());
 		embedding_preprocessor.PreprocessEmbedding(bind_data.query_embedding.get(), preprocessed_query_embedding.get(),
 		                                           index.IsNormalized());
+		ranking_query = index.EncodeQueryForRanking(preprocessed_query_embedding.get());
 
 		// Determine number of clusters to probe per row group. The cluster count varies per row group, but a single
 		// upper bound is used here. We use the largest row group's count: for smaller row groups the per-row-group
@@ -74,6 +75,7 @@ public:
 	VSSIndex &index;
 
 	const unique_ptr<float[]> preprocessed_query_embedding;
+	unique_ptr<PDX::CentroidRankingQuery> ranking_query;
 
 	// Top-k heap shared by the searches of all row groups (and threads).
 	PDX::TopKHeap top_k_heap {/*thread_safe=*/true};
@@ -107,8 +109,9 @@ public:
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
 		auto &index = g_state.index;
 
-		auto search_cursor = index.BeginSearchForRowGroup(row_group_id, g_state.preprocessed_query_embedding.get(),
-		                                                  g_state.limit, g_state.top_k_heap, nullptr);
+		auto search_cursor =
+		    index.BeginSearchForRowGroup(row_group_id, g_state.preprocessed_query_embedding.get(), g_state.limit,
+		                                 g_state.top_k_heap, nullptr, nullptr, g_state.ranking_query.get());
 		search_cursor->Next(g_state.num_clusters_to_probe_per_row_group);
 
 		event->FinishTask();
