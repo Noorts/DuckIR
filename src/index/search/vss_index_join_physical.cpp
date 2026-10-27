@@ -475,6 +475,7 @@ public:
 	const idx_t num_dimensions;
 	const unique_ptr<float[]> raw_query;
 	const unique_ptr<float[]> query;
+	unique_ptr<PDX::CentroidRankingQuery> ranking_query;
 	PDX::TopKHeap heap;
 	std::vector<unique_ptr<PDX::IIterativeSearch>> search_cursors;
 
@@ -542,7 +543,8 @@ static void BeginSearchAndRankClusters(const VSSIndexJoinSearch &search, VSSInde
 	const uint32_t num_clusters = index.GetNumClusters();
 	auto &distances = state.centroid_distances;
 	distances.resize(num_clusters);
-	index.GetDistancesToCentroids(state.query.get(), /*is_query_transformed=*/true, distances.data());
+	index.GetDistancesToCentroids(state.query.get(), /*is_query_transformed=*/true, distances.data(),
+	                              state.ranking_query.get());
 	auto &clusters_access_order = state.clusters_access_order;
 	clusters_access_order.resize(num_clusters);
 	std::iota(clusters_access_order.begin(), clusters_access_order.end(), 0);
@@ -553,9 +555,10 @@ static void BeginSearchAndRankClusters(const VSSIndexJoinSearch &search, VSSInde
 	    evaluator
 	        ? index.BeginIterativeSearchWithSharedEvaluator(state.query.get(), static_cast<uint32_t>(search.limit),
 	                                                        state.heap, *evaluator, /*is_query_transformed=*/true,
-	                                                        &clusters_access_order)
+	                                                        &clusters_access_order, state.ranking_query.get())
 	        : index.BeginIterativeSearch(state.query.get(), static_cast<uint32_t>(search.limit), state.heap, nullptr,
-	                                     /*is_query_transformed=*/true, &clusters_access_order);
+	                                     /*is_query_transformed=*/true, &clusters_access_order,
+	                                     state.ranking_query.get());
 	const idx_t cursor_idx = state.search_cursors.size();
 	state.search_cursors.push_back(unique_ptr<PDX::IIterativeSearch>(search_cursor.release()));
 	// The clusters the cursor queues: not empty and, when filtered, with passing rows.
@@ -616,8 +619,9 @@ static void ProbeNearestClustersPerRowGroup(const VSSIndexJoinSearch &search, VS
 	for (idx_t row_group_idx = 0; row_group_idx < search.index.GetNumRowGroups(); row_group_idx++) {
 		unique_ptr<PDX::IIterativeSearch> search_cursor;
 		if (!search.is_filtered) {
-			search_cursor = search.index.BeginSearchForRowGroup(row_group_idx, state.query.get(), search.limit,
-			                                                    state.heap, nullptr);
+			search_cursor =
+			    search.index.BeginSearchForRowGroup(row_group_idx, state.query.get(), search.limit, state.heap, nullptr,
+			                                        nullptr, state.ranking_query.get());
 		} else {
 			const auto *evaluator = search.shared_predicate_evaluators[row_group_idx].get();
 			if (!evaluator) {
@@ -626,7 +630,8 @@ static void ProbeNearestClustersPerRowGroup(const VSSIndexJoinSearch &search, VS
 			search_cursor = unique_ptr<PDX::IIterativeSearch>(
 			    search.index.GetRowGroupIndex(row_group_idx)
 			        .BeginIterativeSearchWithSharedEvaluator(state.query.get(), static_cast<uint32_t>(search.limit),
-			                                                 state.heap, *evaluator, /*is_query_transformed=*/true)
+			                                                 state.heap, *evaluator, /*is_query_transformed=*/true,
+			                                                 nullptr, state.ranking_query.get())
 			        .release());
 		}
 		search_cursor->Next(search.clusters_to_probe_on_first_iteration);
@@ -639,6 +644,7 @@ static void ProbeNearestClustersPerRowGroup(const VSSIndexJoinSearch &search, VS
 static idx_t SearchQuery(const VSSIndexJoinSearch &search, VSSIndexJoinOperatorState &state) {
 	// Normalizes raw_query in place for the cosine distance: our copy, not the input the operators above read.
 	search.preprocessor.PreprocessEmbedding(state.raw_query.get(), state.query.get(), search.index.IsNormalized());
+	state.ranking_query = search.index.EncodeQueryForRanking(state.query.get());
 
 	state.heap.Clear();
 	state.search_cursors.clear();

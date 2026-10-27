@@ -218,12 +218,21 @@ public:
 
 	// !`passing_row_ids` are size_t because they go straight into PDX's IPDXIndex::BeginIterativeSearch.
 	// `clusters_access_order`: the row group's GetClustersAccessOrderForRowGroup for this query (nullptr: rank).
-	unique_ptr<PDX::IIterativeSearch>
-	BeginSearchForRowGroup(idx_t row_group_idx, const float *preprocessed_query_embedding, idx_t limit,
-	                       PDX::TopKHeap &top_k_heap, const std::vector<size_t> *passing_row_ids,
-	                       const std::vector<uint32_t> *clusters_access_order = nullptr);
+	// `ranking_query`: the query's EncodeQueryForRanking.
+	unique_ptr<PDX::IIterativeSearch> BeginSearchForRowGroup(idx_t row_group_idx,
+	                                                         const float *preprocessed_query_embedding, idx_t limit,
+	                                                         PDX::TopKHeap &top_k_heap,
+	                                                         const std::vector<size_t> *passing_row_ids,
+	                                                         const std::vector<uint32_t> *clusters_access_order,
+	                                                         const PDX::CentroidRankingQuery *ranking_query);
 	std::vector<uint32_t> GetClustersAccessOrderForRowGroup(idx_t row_group_idx,
-	                                                        const float *preprocessed_query_embedding);
+	                                                        const float *preprocessed_query_embedding,
+	                                                        const PDX::CentroidRankingQuery *ranking_query);
+	// The transformed query encoded once for the centroids of every index it ranks.
+	unique_ptr<PDX::CentroidRankingQuery> EncodeQueryForRanking(const float *preprocessed_query_embedding) const {
+		return make_uniq<PDX::CentroidRankingQuery>(preprocessed_query_embedding, GetNumDimensions(),
+		                                            VSSWrapper::CENTROID_QUANTIZATION);
+	}
 
 	/******************************************************************
 	 * Index maintenance
