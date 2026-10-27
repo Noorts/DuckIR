@@ -63,7 +63,6 @@ private:
 	// Declared before the wrapper, whose PDX buffers it frees.
 	DuckDBMemoryAllocator memory_allocator;
 	unique_ptr<VSSWrapper> vss_wrapper;
-	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 
 	// Calls f with the wrapper as its quantization's VSSWrapperParallel, and returns what f returns.
 	template <class F>
@@ -73,6 +72,8 @@ private:
 			return f(*static_cast<VSSWrapperF32 *>(vss_wrapper.get()));
 		case PDX::U8:
 			return f(*static_cast<VSSWrapperU8 *>(vss_wrapper.get()));
+		case PDX::SAQ:
+			return f(*static_cast<VSSWrapperSAQ *>(vss_wrapper.get()));
 		default:
 			throw InternalException("Unsupported quantization in the DuckIR VSS index");
 		}
@@ -212,7 +213,7 @@ public:
 	// The row ids the index's row group at row_group_idx covers.
 	VSSRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
-	void SetUpIndexForRowGroup(const row_t *row_ids, const float *embeddings, idx_t num_embeddings, row_t row_start,
+	void SetUpIndexForRowGroup(const row_t *row_ids, float *embeddings, idx_t num_embeddings, row_t row_start,
 	                           idx_t count, bool is_closed, PDX::ParallelExecutor *executor);
 	uint64_t EstimateBuildPeakBytes(idx_t num_embeddings) const;
 
@@ -352,6 +353,12 @@ public:
 
 	float *GetRotationMatrix() const {
 		return vss_wrapper->GetRotationMatrix();
+	}
+
+	// Warning: modifies the input_embeddings.
+	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings, const size_t num_embeddings,
+	                          PDX::ParallelExecutor *const executor = nullptr) const {
+		vss_wrapper->PreprocessEmbeddings(input_embeddings, output_embeddings, num_embeddings, executor);
 	}
 
 	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, PDX::ParallelExecutor *const executor,

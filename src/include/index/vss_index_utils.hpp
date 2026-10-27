@@ -5,9 +5,6 @@
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/storage/storage_info.hpp"
-#include "pdx/common.hpp"
-#include "pdx/quantizers/scalar.hpp"
-#include "pdx/pruners/adsampling.hpp"
 
 namespace duckdb {
 
@@ -44,43 +41,14 @@ namespace duckdb {
 	return rotation_matrix;
 }
 
-class EmbeddingPreprocessor {
-private:
-	// For rotation matrix multiplication.
-	PDX::ADSamplingPruner pruner;
-	// For normalization.
-	PDX::Quantizer quantizer;
-	const size_t num_dimensions;
-
-public:
-	EmbeddingPreprocessor(const size_t num_dimensions, const float *const rotation_matrix,
-	                      PDX::MemoryAllocator &memory_allocator)
-	    : pruner(num_dimensions, rotation_matrix, &memory_allocator), quantizer(num_dimensions),
-	      num_dimensions(num_dimensions) {
-	}
-
-	// Warning: modifies the input_embedding.
-	void PreprocessEmbedding(float *const input_embedding, float *const output_embedding, const bool normalize) const {
-		// In-place normalization.
-		if (normalize) {
-			quantizer.NormalizeQuery(input_embedding, input_embedding);
-		}
-		pruner.PreprocessQuery(input_embedding, output_embedding);
-	}
-
-	// Warning: modifies the input_embeddings.
-	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings,
-	                          const size_t num_embeddings, const bool normalize,
-	                          PDX::ParallelExecutor *const executor = nullptr) const {
-		// In-place normalization.
-		if (normalize) {
-			for (size_t i = 0; i < num_embeddings; i++) {
-				quantizer.NormalizeQuery(input_embeddings + i * num_dimensions, input_embeddings + i * num_dimensions);
-			}
-		}
-		pruner.PreprocessEmbeddings(input_embeddings, output_embeddings, num_embeddings, executor);
-	}
-};
+// The rotation of a u4 index before its SAQ fit: its rows stay as they are until the fit's rotation replaces it.
+[[nodiscard]] inline unique_ptr<float[]> GenerateIdentityRotationMatrix(const size_t num_dimensions) {
+	auto rotation_matrix = make_uniq_array<float>(num_dimensions * num_dimensions);
+	Eigen::Map<Eigen::MatrixXf>(rotation_matrix.get(), static_cast<Eigen::Index>(num_dimensions),
+	                            static_cast<Eigen::Index>(num_dimensions))
+	    .setIdentity();
+	return rotation_matrix;
+}
 
 [[nodiscard]] inline string ConvertBytesToHumanReadableString(const uint64_t bytes) {
 	constexpr uint64_t kB = 1000;

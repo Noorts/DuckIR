@@ -58,7 +58,7 @@ Binder Error: DuckIR VSS index 'quantization' must be a string
 statement error
 CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (quantization = 'test');
 ----
-Binder Error: DuckIR VSS index 'quantization' must be one of: 'f32', 'u8'
+Binder Error: DuckIR VSS index 'quantization' must be one of: 'f32', 'u4', 'u8'
 
 foreach quantization f32 u8
 
