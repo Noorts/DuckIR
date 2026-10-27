@@ -504,6 +504,39 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 	UpdateReservedMemory(self_managed_bytes - static_cast<int64_t>(reserved_memory_bytes.load()));
 }
 
+void VSSIndex::FitSAQModelForCreate(ClientContext &context, DataTable &table) {
+	// No row group can reach MIN_EMBEDDINGS_FOR_CLUSTERING rows: they are all Flat, and the first sync that clusters
+	// one fits.
+	if (!vss_wrapper->NeedsSAQFit() || table.GetTotalRows() < VSSWrapperSAQ::MIN_EMBEDDINGS_FOR_CLUSTERING) {
+		return;
+	}
+	// The first rows of every row group, SAQ_FIT_SAMPLE_SIZE in all.
+	const auto physical_row_groups = GetPhysicalRowGroups(table);
+	const idx_t rows_per_row_group =
+	    (PDX::SAQ_FIT_SAMPLE_SIZE + physical_row_groups.size() - 1) / physical_row_groups.size();
+	idx_t max_sampled = 0;
+	for (const auto &row_group : physical_row_groups) {
+		max_sampled += MinValue<idx_t>(row_group.count, rows_per_row_group);
+	}
+	const auto num_dimensions = GetNumDimensions();
+	auto sample = skmeans::AllocateBuffer<float>(memory_allocator, max_sampled * num_dimensions);
+	DuckDBParallelExecutor executor(context,
+	                                static_cast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads()));
+	idx_t num_sampled = 0;
+	idx_t rows_returned;
+	for (const auto &row_group : physical_row_groups) {
+		const row_t end =
+		    row_group.row_start + static_cast<row_t>(MinValue<idx_t>(row_group.count, rows_per_row_group));
+		// The identity rotation of an index not fitted yet leaves the rows as they are.
+		num_sampled += FetchRows(table, row_group.row_start, end, sample.get() + num_sampled * num_dimensions,
+		                         rows_returned, /*row_ids=*/nullptr, /*rotate=*/false, &executor);
+	}
+	if (num_sampled == 0) {
+		return;
+	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.FitSAQIfNeeded(sample.get(), num_sampled, &executor); });
+}
+
 // Called by CREATE INDEX's threads in parallel: each reserves the self-managed memory its row group grew by. PDX's
 // buffers are charged as it allocates them.
 void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, float *const vectors, const idx_t num_vectors,
