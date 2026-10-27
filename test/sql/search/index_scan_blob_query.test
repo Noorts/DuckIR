@@ -66,6 +66,15 @@ FROM t1;
 ----
 true
 
+# Cosine on degenerate vectors as DuckDB: NaN for a zero vector, 0 for identical vectors whose norms underflow or overflow.
+query III
+SELECT isnan(array_cosine_distance(emb, duckir_vss_encode_query('[0.0, 0.0, 0.0]'))),
+       array_cosine_distance('[1e-30, 1e-30, 1e-30]'::FLOAT[3], duckir_vss_encode_query('[1e-30, 1e-30, 1e-30]')),
+       array_cosine_distance('[1e20, 1e20, 1e20]'::FLOAT[3], duckir_vss_encode_query('[1e20, 1e20, 1e20]'))
+FROM t1 WHERE id = 1;
+----
+true	0.0	0.0
+
 statement error
 SELECT array_distance(emb, duckir_vss_encode_query('[1.0, 0.0]')) FROM t1;
 ----
