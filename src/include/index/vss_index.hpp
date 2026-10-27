@@ -65,6 +65,19 @@ private:
 	unique_ptr<VSSWrapper> vss_wrapper;
 	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 
+	// Calls f with the wrapper as its quantization's VSSWrapperParallel, and returns what f returns.
+	template <class F>
+	decltype(auto) DispatchWrapper(F &&f) const {
+		switch (vss_wrapper->GetQuantization()) {
+		case PDX::F32:
+			return f(*static_cast<VSSWrapperF32 *>(vss_wrapper.get()));
+		case PDX::U8:
+			return f(*static_cast<VSSWrapperU8 *>(vss_wrapper.get()));
+		default:
+			throw InternalException("Unsupported quantization in the DuckIR VSS index");
+		}
+	}
+
 	// Row ids committed to the table whose embeddings are not in the index yet
 	std::vector<VSSRowRange> unindexed_row_ranges;
 	std::atomic<bool> has_unindexed_rows {false};
@@ -269,10 +282,7 @@ public:
 
 	// Total cluster count summed across all (initialized) row groups. Used for EXPLAIN output.
 	idx_t GetTotalNumClusters() const {
-		if (vss_wrapper->GetQuantization() == PDX::U8) {
-			return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->GetTotalNumClusters();
-		}
-		return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetTotalNumClusters();
+		return DispatchWrapper([](auto &wrapper) { return wrapper.GetTotalNumClusters(); });
 	}
 
 	// The clusters a full row group is built with. This is not an upper bound, SPFresh can grow a row group past it.
@@ -281,17 +291,13 @@ public:
 	}
 
 	idx_t GetNumRowGroups() const {
-		if (vss_wrapper->GetQuantization() == PDX::U8) {
-			return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->GetNumRowGroups();
-		}
-		return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetNumRowGroups();
+		return DispatchWrapper([](auto &wrapper) { return wrapper.GetNumRowGroups(); });
 	}
 
 	const PDX::IPDXIndex &GetRowGroupIndex(const idx_t row_group_idx) const {
-		if (vss_wrapper->GetQuantization() == PDX::U8) {
-			return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->GetRowGroupIndex(row_group_idx);
-		}
-		return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetRowGroupIndex(row_group_idx);
+		return DispatchWrapper([&](auto &wrapper) -> const PDX::IPDXIndex & {
+			return wrapper.GetRowGroupIndex(row_group_idx);
+		});
 	}
 
 	// The most clusters a row group has: the bound n_probe is clamped to.

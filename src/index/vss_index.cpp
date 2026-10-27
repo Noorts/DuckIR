@@ -218,48 +218,31 @@ vector<VSSRowGroupBounds> VSSIndex::GetPhysicalRowGroups(DataTable &table) const
 }
 
 optional_idx VSSIndex::LookupRowGroup(const row_t row_id) const {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->LookupRowGroup(row_id);
-	}
-	return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->LookupRowGroup(row_id);
+	return DispatchWrapper([&](auto &wrapper) { return wrapper.LookupRowGroup(row_id); });
 }
 
 VSSRowRange VSSIndex::GetRowGroupRange(const idx_t row_group_idx) const {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		const auto &row_group = static_cast<VSSWrapperU8 *>(vss_wrapper.get())->GetRowGroup(row_group_idx);
-		return {row_group.row_start, row_group.row_end};
-	}
-	const auto &row_group = static_cast<VSSWrapperF32 *>(vss_wrapper.get())->GetRowGroup(row_group_idx);
-	return {row_group.row_start, row_group.row_end};
+	return DispatchWrapper([&](auto &wrapper) {
+		const auto &row_group = wrapper.GetRowGroup(row_group_idx);
+		return VSSRowRange {row_group.row_start, row_group.row_end};
+	});
 }
 
 void VSSIndex::AppendRows(const idx_t row_group_idx, const row_t *const row_ids, float *const transformed_embeddings,
                           const idx_t count, PDX::ParallelExecutor *const executor) {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-		    ->AppendRows(row_group_idx, row_ids, transformed_embeddings, count, storage_reader.get(), buffer_manager,
-		                 executor);
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-		    ->AppendRows(row_group_idx, row_ids, transformed_embeddings, count, storage_reader.get(), buffer_manager,
-		                 executor);
-	}
+	DispatchWrapper([&](auto &wrapper) {
+		wrapper.AppendRows(row_group_idx, row_ids, transformed_embeddings, count, storage_reader.get(),
+		                   buffer_manager, executor);
+	});
 }
 
 void VSSIndex::DeleteRow(const row_t row_id) {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())->DeleteRow(row_id);
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())->DeleteRow(row_id);
-	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.DeleteRow(row_id); });
 }
 
 vector<VSSRowGroupBounds> VSSIndex::FindStaleRowGroups(DataTable &table) const {
 	const auto physical_row_groups = GetPhysicalRowGroups(table);
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->FindStaleRowGroups(physical_row_groups);
-	}
-	return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->FindStaleRowGroups(physical_row_groups);
+	return DispatchWrapper([&](auto &wrapper) { return wrapper.FindStaleRowGroups(physical_row_groups); });
 }
 
 void VSSIndex::MarkClosedRowGroups(DataTable &table) {
@@ -267,19 +250,11 @@ void VSSIndex::MarkClosedRowGroups(DataTable &table) {
 		VSSRowGroupBounds row_group;
 		return TryGetPhysicalRowGroup(table, row_start, row_group) && IsClosedRowGroup(table, row_group);
 	};
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())->MarkClosedRowGroups(is_closed);
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())->MarkClosedRowGroups(is_closed);
-	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.MarkClosedRowGroups(is_closed); });
 }
 
 void VSSIndex::RemoveRowGroupsOverlapping(const row_t start, const row_t end) {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())->RemoveRowGroupsOverlapping(start, end);
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())->RemoveRowGroupsOverlapping(start, end);
-	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.RemoveRowGroupsOverlapping(start, end); });
 }
 
 idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, row_t *const row_ids,
@@ -378,11 +353,7 @@ void VSSIndex::ReconcileWithTable(DataTable &table) {
 
 void VSSIndex::ReconcileRowGroup(const row_t start, const row_t end, const row_t *const row_ids, const idx_t count,
                                  const std::function<void(row_t, row_t)> &stage) {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())->ReconcileRowGroup(start, end, row_ids, count, stage);
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())->ReconcileRowGroup(start, end, row_ids, count, stage);
-	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.ReconcileRowGroup(start, end, row_ids, count, stage); });
 }
 
 void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
@@ -523,48 +494,32 @@ void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *co
                                      PDX::ParallelExecutor *const executor) {
 	// Without paging, the row groups stay in memory.
 	const auto reader = cluster_paging ? storage_reader.get() : nullptr;
-	int64_t self_managed_growth_bytes;
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		self_managed_growth_bytes = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-		                                ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count,
-		                                                        is_closed, executor, reader, buffer_manager);
-	} else {
-		self_managed_growth_bytes = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-		                                ->SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count,
-		                                                        is_closed, executor, reader, buffer_manager);
-	}
+	const int64_t self_managed_growth_bytes = DispatchWrapper([&](auto &wrapper) {
+		return wrapper.SetUpIndexForRowGroup(row_ids, vectors, num_vectors, row_start, count, is_closed, executor,
+		                                     reader, buffer_manager);
+	});
 	UpdateReservedMemory(self_managed_growth_bytes);
 }
 
 uint64_t VSSIndex::EstimateBuildPeakBytes(const idx_t num_embeddings) const {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		return static_cast<VSSWrapperU8 *>(vss_wrapper.get())->EstimateBuildPeakBytes(num_embeddings);
-	}
-	return static_cast<VSSWrapperF32 *>(vss_wrapper.get())->EstimateBuildPeakBytes(num_embeddings);
+	return DispatchWrapper([&](auto &wrapper) { return wrapper.EstimateBuildPeakBytes(num_embeddings); });
 }
 
 unique_ptr<PDX::IIterativeSearch>
 VSSIndex::BeginSearchForRowGroup(const idx_t row_group_idx, const float *const preprocessed_query, const idx_t limit,
                                  PDX::TopKHeap &top_k_heap, const std::vector<size_t> *const passing_row_ids,
                                  const std::vector<uint32_t> *const clusters_access_order) {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		return static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-		    ->BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids,
-		                             clusters_access_order);
-	}
-	return static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-	    ->BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids,
-	                             clusters_access_order);
+	return DispatchWrapper([&](auto &wrapper) {
+		return wrapper.BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids,
+		                                      clusters_access_order);
+	});
 }
 
 std::vector<uint32_t> VSSIndex::GetClustersAccessOrderForRowGroup(const idx_t row_group_idx,
                                                                   const float *const preprocessed_query) {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		return static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-		    ->GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query);
-	}
-	return static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-	    ->GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query);
+	return DispatchWrapper([&](auto &wrapper) {
+		return wrapper.GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query);
+	});
 }
 
 /******************************************************************
@@ -786,14 +741,8 @@ unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &in
 // buffers are charged as it allocates them.
 void VSSIndex::LoadRowGroups(VSSBlockChainReader &reader, const VSSDirectory &directory, const bool page_clusters) {
 	for (const auto &entry : directory.row_groups) {
-		uint64_t self_managed_bytes;
-		if (vss_wrapper->GetQuantization() == PDX::U8) {
-			self_managed_bytes = static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-			                         ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
-		} else {
-			self_managed_bytes = static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-			                         ->LoadRowGroup(reader, entry, buffer_manager, page_clusters);
-		}
+		const uint64_t self_managed_bytes = DispatchWrapper(
+		    [&](auto &wrapper) { return wrapper.LoadRowGroup(reader, entry, buffer_manager, page_clusters); });
 		UpdateReservedMemory(static_cast<int64_t>(self_managed_bytes));
 	}
 }
@@ -809,39 +758,22 @@ IndexStorageInfo VSSIndex::CopyStorageInfo(const IndexStorageInfo &info) {
 }
 
 void VSSIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())
-		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
-		                            cluster_paging);
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())
-		    ->PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
-		                            cluster_paging);
-	}
+	DispatchWrapper([&](auto &wrapper) {
+		wrapper.PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
+		                              cluster_paging);
+	});
 }
 
 void VSSIndex::WriteTemporaryChains() {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())->WriteTemporaryChains(*storage_reader, buffer_manager);
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())->WriteTemporaryChains(*storage_reader, buffer_manager);
-	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.WriteTemporaryChains(*storage_reader, buffer_manager); });
 }
 
 void VSSIndex::AddRowGroupEntries(VSSDirectory &directory) const {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())->AddRowGroupEntries(directory);
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())->AddRowGroupEntries(directory);
-	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.AddRowGroupEntries(directory); });
 }
 
 void VSSIndex::ResetPersistedChains() {
-	if (vss_wrapper->GetQuantization() == PDX::U8) {
-		static_cast<VSSWrapperU8 *>(vss_wrapper.get())->ResetPersistedChains();
-	} else {
-		static_cast<VSSWrapperF32 *>(vss_wrapper.get())->ResetPersistedChains();
-	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.ResetPersistedChains(); });
 }
 
 // Like ART::WritePartialBlocks. Flushing every time keeps a later New() from landing in a buffer whose block is not on
