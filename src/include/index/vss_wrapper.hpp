@@ -93,16 +93,20 @@ public:
 		                                          &memory_allocator);
 	}
 
-	// Warning: modifies the input_embeddings.
-	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings,
-	                          const size_t num_embeddings, PDX::ParallelExecutor *const executor) const {
-		// In-place normalization.
+	// In place, when the distance metric needs it.
+	void NormalizeEmbeddings(float *const embeddings, const size_t num_embeddings) const {
 		if (is_normalized) {
 			const PDX::Quantizer quantizer(num_dimensions);
 			for (size_t i = 0; i < num_embeddings; i++) {
-				quantizer.NormalizeQuery(input_embeddings + i * num_dimensions, input_embeddings + i * num_dimensions);
+				quantizer.NormalizeQuery(embeddings + i * num_dimensions, embeddings + i * num_dimensions);
 			}
 		}
+	}
+
+	// Warning: modifies the input_embeddings.
+	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings,
+	                          const size_t num_embeddings, PDX::ParallelExecutor *const executor) const {
+		NormalizeEmbeddings(input_embeddings, num_embeddings);
 		pruner->PreprocessEmbeddings(input_embeddings, output_embeddings, num_embeddings, executor);
 	}
 

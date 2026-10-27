@@ -261,58 +261,70 @@ void VSSIndex::RemoveRowGroupsOverlapping(const row_t start, const row_t end) {
 	DispatchWrapper([&](auto &wrapper) { wrapper.RemoveRowGroupsOverlapping(start, end); });
 }
 
-idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, row_t *const row_ids,
-                          float *const embeddings, idx_t &rows_returned, PDX::ParallelExecutor *const executor) {
+idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, float *const embeddings,
+                          idx_t &rows_returned, row_t *const row_ids, const bool rotate,
+                          PDX::ParallelExecutor *const executor) {
 	rows_returned = 0;
-	// Fetches every committed row, whatever the calling transaction's snapshot. The mirror
+	if (start >= end) {
+		return 0;
+	}
+	// Scans every committed row, whatever the calling transaction's snapshot. The mirror
 	// holds the committed state, and rows a query must not see are dropped when it fetches its results.
 	const TransactionData committed(MAX_TRANSACTION_ID,
 	                                VisibilityBound::Through(DuckTransactionManager::Get(db).GetLastCommit()));
-	const vector<StorageIndex> fetch_column_ids {StorageIndex(GetColumnIds()[0]), StorageIndex()};
-	DataChunk fetched;
-	fetched.Initialize(Allocator::Get(db), {logical_types[0], LogicalType::ROW_TYPE});
-	Vector fetch_row_ids(LogicalType::ROW_TYPE, STANDARD_VECTOR_SIZE);
-	const auto fetch_row_ids_data = FlatVector::GetDataMutable<row_t>(fetch_row_ids);
-	ColumnFetchState fetch_state;
+	const vector<StorageIndex> column_ids {StorageIndex(GetColumnIds()[0]), StorageIndex()};
+	TableScanState scan_state;
+	scan_state.Initialize(column_ids);
+	table.GetRowGroupCollection()->InitializeScanWithOffset(QueryContext(), scan_state.table_state, column_ids,
+	                                                        static_cast<idx_t>(start), static_cast<idx_t>(end));
+	DataChunk chunk;
+	chunk.Initialize(Allocator::Get(db), {logical_types[0], LogicalType::ROW_TYPE});
 	const auto num_dimensions = GetNumDimensions();
 	auto raw_embeddings = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
 
 	idx_t count = 0;
-	for (row_t batch_start = start; batch_start < end; batch_start += STANDARD_VECTOR_SIZE) {
-		const idx_t batch_size = MinValue<idx_t>(STANDARD_VECTOR_SIZE, static_cast<idx_t>(end - batch_start));
-		for (idx_t i = 0; i < batch_size; i++) {
-			fetch_row_ids_data[i] = batch_start + static_cast<row_t>(i);
-		}
-		fetched.Reset();
+	while (true) {
+		chunk.Reset();
 		// Deleted rows are gone, NULL embeddings are NULL.
-		table.GetRowGroupCollection()->Fetch(committed, fetched, fetch_column_ids, fetch_row_ids, batch_size,
-		                                     fetch_state);
-		const idx_t fetched_count = fetched.size();
-		rows_returned += fetched_count;
-		if (fetched_count == 0) {
-			continue;
+		scan_state.table_state.Scan(ScanOptions(committed), chunk);
+		if (chunk.size() == 0) {
+			break;
 		}
-		auto &embedding_column = fetched.data[0];
+		auto &embedding_column = chunk.data[0];
 		embedding_column.Flatten();
-		fetched.data[1].Flatten();
+		chunk.data[1].Flatten();
 		const auto &validity = FlatVector::Validity(embedding_column);
-		const auto fetched_embeddings = FlatVector::GetData<float>(ArrayVector::GetChild(embedding_column));
-		const auto fetched_row_ids = FlatVector::GetData<row_t>(fetched.data[1]);
+		const auto scanned_embeddings = FlatVector::GetData<float>(ArrayVector::GetChild(embedding_column));
+		const auto scanned_row_ids = FlatVector::GetData<row_t>(chunk.data[1]);
+		// Without a rotation, the rows go straight to the output.
+		float *const batch_embeddings = rotate ? raw_embeddings.get() : embeddings + count * num_dimensions;
 		idx_t batch_count = 0;
-		for (idx_t i = 0; i < fetched_count; i++) {
+		for (idx_t i = 0; i < chunk.size(); i++) {
+			// The scan starts at the vector that holds `start`.
+			if (scanned_row_ids[i] < start) {
+				continue;
+			}
+			rows_returned++;
 			if (!validity.RowIsValid(i)) {
 				continue;
 			}
-			memcpy(raw_embeddings.get() + batch_count * num_dimensions, fetched_embeddings + i * num_dimensions,
+			memcpy(batch_embeddings + batch_count * num_dimensions, scanned_embeddings + i * num_dimensions,
 			       num_dimensions * sizeof(float));
-			row_ids[count + batch_count] = fetched_row_ids[i];
+			if (row_ids) {
+				row_ids[count + batch_count] = scanned_row_ids[i];
+			}
 			batch_count++;
 		}
-		if (batch_count > 0) {
+		if (batch_count == 0) {
+			continue;
+		}
+		if (rotate) {
 			vss_wrapper->PreprocessEmbeddings(raw_embeddings.get(), embeddings + count * num_dimensions, batch_count,
 			                                  executor);
-			count += batch_count;
+		} else {
+			vss_wrapper->NormalizeEmbeddings(batch_embeddings, batch_count);
 		}
+		count += batch_count;
 	}
 	return count;
 }
@@ -392,8 +404,8 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		try {
 			auto embeddings_buffer = allocate_embeddings(bounds.count);
 			const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
-			const idx_t count =
-			    FetchRows(table, bounds.row_start, bounds_end, row_ids.get(), embeddings, rows_returned, &executor);
+			const idx_t count = FetchRows(table, bounds.row_start, bounds_end, embeddings, rows_returned, row_ids.get(),
+			                              /*rotate=*/true, &executor);
 			if (count > 0) {
 				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
 				                      IsClosedRowGroup(table, bounds), &executor);
@@ -439,8 +451,9 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			while (range_idx < unindexed_row_ranges.size() && unindexed_row_ranges[range_idx].start < bounds_end) {
 				auto &range = unindexed_row_ranges[range_idx];
 				const row_t sub_end = MinValue<row_t>(range.end, bounds_end);
-				const idx_t range_count = FetchRows(table, range.start, sub_end, row_ids.get() + count,
-				                                    embeddings + count * num_dimensions, rows_returned, &executor);
+				const idx_t range_count =
+				    FetchRows(table, range.start, sub_end, embeddings + count * num_dimensions, rows_returned,
+				              row_ids.get() + count, /*rotate=*/true, &executor);
 				if (rows_returned == 0) {
 					// Not committed yet: a later sync indexes them.
 					still_unindexed.push_back({range.start, sub_end});
