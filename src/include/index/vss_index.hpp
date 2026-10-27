@@ -137,10 +137,12 @@ private:
 	// - Every mirrored row group matches its DuckDB row group.
 	bool IsInSyncWithTable(DataTable &table) const;
 
-	// The index's storage: the directory chain points to the rotation chain and to each row group's chain.
+	// The index's storage: the directory chain points to the rotation chain, the SAQ model chain and to each row group's
+	// chain.
 	unique_ptr<FixedSizeAllocator> allocator;
 	VSSBlockChain directory_chain;
 	VSSBlockChain rotation_chain;
+	VSSBlockChain saq_model_chain;
 
 	// Writes the allocator's dirty buffers to disk, which releases their memory.
 	void WritePartialBlocks(QueryContext context);
@@ -151,10 +153,11 @@ private:
 	void WriteTemporaryChains();
 	void AddRowGroupEntries(VSSDirectory &directory) const;
 	void ResetPersistedChains();
-	// Reads the directory and the rotation of a persisted index. The returned reader
+	// Reads the directory, the rotation and the SAQ model of a persisted index. The returned reader
 	// then reads the row groups' chains.
 	unique_ptr<VSSBlockChainReader> OpenStorage(const IndexStorageInfo &info, uint32_t num_dimensions,
-	                                            VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix);
+	                                            VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix,
+	                                            std::optional<PDX::SAQModel> &saq_model);
 	void LoadRowGroups(VSSBlockChainReader &reader, const VSSDirectory &directory, bool page_clusters);
 	static IndexStorageInfo CopyStorageInfo(const IndexStorageInfo &info);
 

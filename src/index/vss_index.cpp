@@ -91,7 +91,7 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 		persisted_storage_info = CopyStorageInfo(persistence_info);
 		try {
 			storage_reader =
-			    OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory, rotation_matrix);
+			    OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory, rotation_matrix, saq_model);
 		} catch (std::exception &ex) {
 			bind_error = ErrorData(ex);
 			rotation_matrix.reset();
@@ -638,6 +638,7 @@ void VSSIndex::ResetStorage(IndexLock &lock) {
 	allocator->Reset();
 	directory_chain = VSSBlockChain();
 	rotation_chain = VSSBlockChain();
+	saq_model_chain = VSSBlockChain();
 	ResetPersistedChains();
 }
 
@@ -699,7 +700,8 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
  ******************************************************************/
 
 unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &info, const uint32_t num_dimensions,
-                                                      VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix) {
+                                                      VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix,
+                                                      std::optional<PDX::SAQModel> &saq_model) {
 	const auto version = info.options.find("storage_version");
 	if (version == info.options.end() || version->second.GetValue<uint32_t>() != VSS_STORAGE_VERSION) {
 		throw NotImplementedException(
@@ -735,6 +737,13 @@ unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &in
 		PDX::StreamReader rotation_reader {in};
 		rotation_reader.Read(rotation_matrix.get(), sizeof(float) * num_values);
 		rotation_chain = reader->Finish();
+	}
+	if (directory.saq_model.num_bytes > 0) {
+		reader->Open(directory.saq_model);
+		PDX::StreamReader saq_model_reader {in};
+		saq_model.emplace();
+		saq_model->Load(saq_model_reader);
+		saq_model_chain = reader->Finish();
 	}
 	return reader;
 }
@@ -819,7 +828,14 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 		return CopyStorageInfo(persisted_storage_info);
 	}
 	PersistDirtyRowGroups([&]() { WritePartialBlocks(context); });
-	// Written once: the rotation never changes.
+	// A SAQ model that is not persisted yet comes from a fit since the last checkpoint, whose rotation replaced the
+	// persisted one: both are written.
+	const auto saq_model = vss_wrapper->GetSAQModel();
+	const bool write_saq_model = saq_model && saq_model_chain.segments.empty();
+	if (write_saq_model) {
+		rotation_chain.Free(*allocator);
+	}
+	// Written once, and again after a SAQ fit.
 	if (rotation_chain.segments.empty()) {
 		const auto num_dimensions = GetNumDimensions();
 		VSSBlockChainWriter writer(*allocator);
@@ -828,10 +844,17 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 		          static_cast<std::streamsize>(sizeof(float) * num_dimensions * num_dimensions));
 		rotation_chain = writer.Finish();
 	}
+	if (write_saq_model) {
+		VSSBlockChainWriter writer(*allocator);
+		VSSChainOutputStream out(writer);
+		saq_model->Save(out);
+		saq_model_chain = writer.Finish();
+	}
 
 	VSSDirectory directory;
 	directory.num_dimensions = static_cast<uint32_t>(GetNumDimensions());
 	directory.rotation = VSSBlockChain {rotation_chain.head, rotation_chain.num_bytes, {}};
+	directory.saq_model = VSSBlockChain {saq_model_chain.head, saq_model_chain.num_bytes, {}};
 	AddRowGroupEntries(directory);
 	WriteDirectory(directory);
 	WritePartialBlocks(context);
