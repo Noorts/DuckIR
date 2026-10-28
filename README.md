@@ -172,6 +172,44 @@ When the index is loaded, it is validated against the table, so it never misses 
 
 See [PR#35](https://github.com/Noorts/DuckIR/pull/35) for a more detailed explanation of persistence in DuckIR.
 
+### Writing Queries
+
+A list literal is the simplest way to write the query vector: 
+
+```sql
+SELECT id
+FROM t
+ORDER BY array_distance(
+  embedding, 
+  [0.2502, 0.7944, ..., -0.5050]
+)
+LIMIT 10;
+```
+
+However, DuckDB parses the list literal and binds it element by element. Funny enough, **that costs more than the vector search itself**. If you want the highest query throughput, pass the list literal as a string to `duckir_vss_encode_query` instead:
+
+```sql
+SELECT id
+FROM t
+ORDER BY array_distance(
+  embedding, 
+  duckir_vss_encode_query('[0.2502, 0.7944, ..., -0.5050]')
+)
+LIMIT 10;
+```
+
+`duckir_vss_encode_query` reads the string and returns its `float32` values as a `BLOB`, which the search uses directly. This bypass the bind overhead.
+
+From a client, you can instead bind the vector's raw bytes as a parameter. For example, in Python:
+
+```python
+q = np.asarray(vec, dtype='<f4')
+con.execute("SELECT id FROM t ORDER BY array_distance(embedding, ?) LIMIT 10", [q.tobytes()])
+```
+
+To issue queries in bulk, see [LATERAL JOIN](#lateral-join-aka-nearest-similarity-join).
+
+
 ## Operational Notes
 
 - **In-Memory Databases**: We recommend using DuckDB with a database file. In an in-memory database (`:memory:`) nothing is ever checkpointed, so an index larger than `memory_limit` writes its parts to the temporary files every time DuckDB evicts them. 
