@@ -77,6 +77,10 @@ public:
 			                      : mode == "auto" ? OnTheFlyIndexingMode::AUTO
 			                                       : OnTheFlyIndexingMode::NEVER;
 		}
+		// The on-the-fly indexes prune with ADSampling, which needs a random rotation: u4's is its SAQ fit's.
+		if (index.GetQuantizationType() == PDX::Quantization::SAQ) {
+			on_the_fly_indexing = OnTheFlyIndexingMode::NEVER;
+		}
 		Value on_the_fly_indexing_threshold_setting;
 		if (context.TryGetCurrentSetting("duckir_vss_on_the_fly_indexing_threshold",
 		                                 on_the_fly_indexing_threshold_setting) &&
