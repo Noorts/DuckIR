@@ -60,7 +60,7 @@ CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (quantization = 'test');
 ----
 Binder Error: DuckIR VSS index 'quantization' must be one of: 'f32', 'u4', 'u8'
 
-foreach quantization f32 u8
+foreach quantization f32 u4 u8
 
 statement ok
 CREATE INDEX idx ON t1 USING DUCKIR_VSS (emb) WITH (quantization = '{quantization}');
@@ -69,6 +69,21 @@ statement ok
 DROP INDEX IF EXISTS idx;
 
 endloop
+
+# u4 needs at least 64 dimensions
+statement ok
+CREATE TABLE t63 (emb FLOAT[63]);
+
+statement error
+CREATE INDEX idx63 ON t63 USING DUCKIR_VSS (emb) WITH (quantization = 'u4');
+----
+Binder Error: DuckIR VSS index quantization 'u4' needs at least 64 dimensions, got 63
+
+statement ok
+CREATE TABLE t64 (emb FLOAT[64]);
+
+statement ok
+CREATE INDEX idx64 ON t64 USING DUCKIR_VSS (emb) WITH (quantization = 'u4');
 
 # ============================================
 # Parameter: n_probe

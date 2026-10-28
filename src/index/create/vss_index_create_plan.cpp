@@ -88,6 +88,13 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 		    "DuckIR VSS index FLOAT array length (i.e., dimensions) must be less than or equal to %d, got %d",
 		    PDX::PDX_MAX_DIMS, arr_dims);
 	}
+	const auto quantization_option = create_index.info->options.find("quantization");
+	if (quantization_option != create_index.info->options.end() &&
+	    VSSIndex::QUANTIZATION_MAP.at(quantization_option->second.GetValue<string>()) == PDX::Quantization::SAQ &&
+	    arr_dims < PDX::SAQ_MIN_DIMENSIONS) {
+		throw BinderException("DuckIR VSS index quantization 'u4' needs at least %d dimensions, got %d",
+		                      PDX::SAQ_MIN_DIMENSIONS, arr_dims);
+	}
 
 	// Projection to execute expressions on the key columns
 	vector<LogicalType> new_column_types;
