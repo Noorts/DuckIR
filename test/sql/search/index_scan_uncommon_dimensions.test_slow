@@ -41,7 +41,7 @@ SELECT * FROM t1
 ORDER BY array_distance(emb, list_resize([1.0], {DIMS}, 1.0)::FLOAT[{DIMS}])
 LIMIT {LIMIT};
 
-foreach quantization f32 u8
+foreach quantization f32 u4 u8
 
 statement ok
 DROP INDEX IF EXISTS t1_idx;

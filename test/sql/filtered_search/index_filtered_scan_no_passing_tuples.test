@@ -35,7 +35,7 @@ SELECT COUNT(*) FROM t1 WHERE id > ({ROW_GROUP_SIZE} + {ROW_GROUP_SIZE} - 10);
 ----
 9
 
-foreach quantization f32 u8
+foreach quantization f32 u4 u8
 
 foreach metric_name,distance_func l2sq,array_distance cosine,array_cosine_distance
 

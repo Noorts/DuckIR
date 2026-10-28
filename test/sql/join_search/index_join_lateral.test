@@ -40,7 +40,7 @@ CREATE TABLE q_extra AS SELECT qid, vec FROM q UNION ALL SELECT qid + 100, vec F
 statement ok
 CREATE TABLE t_cosine AS FROM t;
 
-foreach quantization f32 u8
+foreach quantization f32 u4 u8
 
 statement ok
 DROP INDEX IF EXISTS t_idx;
