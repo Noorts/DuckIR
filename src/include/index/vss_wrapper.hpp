@@ -33,6 +33,7 @@ public:
 	static constexpr PDX::Quantization DEFAULT_QUANTIZATION = PDX::Quantization::U8;
 	static constexpr PDX::CentroidQuantization CENTROID_QUANTIZATION = PDX::CentroidQuantization::LVQ8;
 	static constexpr uint32_t SAQ_BITS_PER_DIMENSION = 4;
+	static constexpr float SAQ_PRUNING_SIGNIFICANCE = 0.01f;
 	static constexpr int32_t DEFAULT_N_PROBE = 24; // 5% of the data in a full search
 	// Clusters average about 256 rows, one u8 block
 	static constexpr uint32_t DEFAULT_MAX_CLUSTER_SIZE = 384;
@@ -157,6 +158,7 @@ public:
 		config.is_data_transformed = true;
 		config.base_row_id = static_cast<size_t>(base_row_id);
 		config.centroid_quantization = CENTROID_QUANTIZATION;
+		config.saq_pruning_significance = SAQ_PRUNING_SIGNIFICANCE;
 		return config;
 	}
 
