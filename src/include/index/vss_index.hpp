@@ -325,6 +325,9 @@ public:
 	}
 
 	string GetQuantization() const;
+	PDX::Quantization GetQuantizationType() const {
+		return vss_wrapper->GetQuantization();
+	}
 
 	idx_t GetNumDimensions() const {
 		return vss_wrapper->GetNumDimensions();
