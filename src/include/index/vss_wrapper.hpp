@@ -90,8 +90,8 @@ public:
 	virtual ~VSSWrapper() = default;
 
 	void CreatePruner() {
-		pruner = make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get(), num_dimensions,
-		                                          &memory_allocator);
+		pruner =
+		    make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get(), num_dimensions, &memory_allocator);
 	}
 
 	// In place, when the distance metric needs it.
@@ -261,8 +261,9 @@ public:
 		return row_group_size;
 	}
 
-	// Fits the index's SAQ model and rotation on rows in the identity rotation (normalized raw rows), the rotation of an
-	// index not fitted yet. The existing Flat indexes are transformed into the fit's PCA-rotated space and marked dirty.
+	// Fits the index's SAQ model and rotation on rows in the identity rotation (normalized raw rows), the rotation of
+	// an index not fitted yet. The existing Flat indexes are transformed into the fit's PCA-rotated space and marked
+	// dirty.
 	void FitSAQIfNeeded(const float *const rows, const idx_t num_rows, PDX::ParallelExecutor *const executor) {
 		if (!NeedsSAQFit()) {
 			return;
@@ -283,8 +284,9 @@ public:
 			}
 			const auto flat_index = dynamic_cast<const PDX::FlatIndex *>(row_group.index.get());
 			if (!flat_index) {
-				throw InternalException("DuckIR VSS: a row group of this u4 index is already clustered, but the index's "
-				                        "SAQ model hasn't been fitted. If you see this, please report this bug.");
+				throw InternalException(
+				    "DuckIR VSS: a row group of this u4 index is already clustered, but the index's "
+				    "SAQ model hasn't been fitted. If you see this, please report this bug.");
 			}
 			const auto row_ids = flat_index->GetRowIds();
 			skmeans::AllocatedBuffer<float> rotated;
@@ -741,9 +743,9 @@ public:
 
 	uint64_t GetSelfManagedMemorySizeInBytes() const override {
 		// The rotation matrix and the SAQ model. The pruner's copy of the rotation comes from the memory allocator.
-		uint64_t self_managed_bytes =
-		    sizeof(*this) + static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float) +
-		    (saq_model ? saq_model->GetInMemorySizeInBytes() : 0);
+		uint64_t self_managed_bytes = sizeof(*this) +
+		                              static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float) +
+		                              (saq_model ? saq_model->GetInMemorySizeInBytes() : 0);
 		for (const auto &row_group : row_groups) {
 			self_managed_bytes += row_group->GetSelfManagedMemorySizeInBytes();
 		}
@@ -765,7 +767,12 @@ private:
 
 	unique_ptr<PDX::PDXIndex<Q>> MakeIVFIndex(const PDX::PDXIndexConfig &config) const {
 		if constexpr (Q == PDX::SAQ) {
-			return make_uniq<PDX::PDXIndex<Q>>(config, *pruner, saq_model.value());
+			if (!saq_model) {
+				throw InternalException(
+				    "DuckIR VSS: a row group of this u4 index is being clustered, but the index's SAQ "
+				    "model hasn't been fitted. If you see this, please report this bug.");
+			}
+			return make_uniq<PDX::PDXIndex<Q>>(config, *pruner, *saq_model);
 		} else {
 			return make_uniq<PDX::PDXIndex<Q>>(config, *pruner);
 		}

@@ -137,8 +137,8 @@ private:
 	// - Every mirrored row group matches its DuckDB row group.
 	bool IsInSyncWithTable(DataTable &table) const;
 
-	// The index's storage: the directory chain points to the rotation chain, the SAQ model chain and to each row group's
-	// chain.
+	// The index's storage: the directory chain points to the rotation chain, the SAQ model chain and to each row
+	// group's chain.
 	unique_ptr<FixedSizeAllocator> allocator;
 	VSSBlockChain directory_chain;
 	VSSBlockChain rotation_chain;
@@ -365,8 +365,8 @@ public:
 	}
 
 	// Warning: modifies the input_embeddings.
-	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings, const size_t num_embeddings,
-	                          PDX::ParallelExecutor *const executor = nullptr) const {
+	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings,
+	                          const size_t num_embeddings, PDX::ParallelExecutor *const executor = nullptr) const {
 		vss_wrapper->PreprocessEmbeddings(input_embeddings, output_embeddings, num_embeddings, executor);
 	}
 

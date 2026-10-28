@@ -90,8 +90,8 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	if (persistence_info.IsValid()) {
 		persisted_storage_info = CopyStorageInfo(persistence_info);
 		try {
-			storage_reader =
-			    OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory, rotation_matrix, saq_model);
+			storage_reader = OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory,
+			                             rotation_matrix, saq_model);
 		} catch (std::exception &ex) {
 			bind_error = ErrorData(ex);
 			rotation_matrix.reset();
@@ -103,17 +103,17 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	if (quantization == PDX::Quantization::F32) {
 		D_ASSERT(ArrayType::GetChildType(embedding_type).id() == LogicalTypeId::FLOAT);
 
-		vss_wrapper = make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
-		                                       row_group_size, std::move(rotation_matrix), std::nullopt,
-		                                       memory_allocator);
+		vss_wrapper =
+		    make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
+		                             std::move(rotation_matrix), std::nullopt, memory_allocator);
 	} else if (quantization == PDX::Quantization::U8) {
-		vss_wrapper = make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
-		                                      row_group_size, std::move(rotation_matrix), std::nullopt,
-		                                      memory_allocator);
+		vss_wrapper =
+		    make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
+		                            std::move(rotation_matrix), std::nullopt, memory_allocator);
 	} else if (quantization == PDX::Quantization::SAQ) {
-		vss_wrapper = make_uniq<VSSWrapperSAQ>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
-		                                       row_group_size, std::move(rotation_matrix), std::move(saq_model),
-		                                       memory_allocator);
+		vss_wrapper =
+		    make_uniq<VSSWrapperSAQ>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
+		                             std::move(rotation_matrix), std::move(saq_model), memory_allocator);
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
@@ -451,9 +451,8 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			while (range_idx < unindexed_row_ranges.size() && unindexed_row_ranges[range_idx].start < bounds_end) {
 				auto &range = unindexed_row_ranges[range_idx];
 				const row_t sub_end = MinValue<row_t>(range.end, bounds_end);
-				const idx_t range_count =
-				    FetchRows(table, range.start, sub_end, embeddings + count * num_dimensions, rows_returned,
-				              row_ids.get() + count, /*rotate=*/true, &executor);
+				const idx_t range_count = FetchRows(table, range.start, sub_end, embeddings + count * num_dimensions,
+				                                    rows_returned, row_ids.get() + count, /*rotate=*/true, &executor);
 				if (rows_returned == 0) {
 					// Not committed yet: a later sync indexes them.
 					still_unindexed.push_back({range.start, sub_end});
