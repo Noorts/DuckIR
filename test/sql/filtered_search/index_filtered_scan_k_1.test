@@ -29,7 +29,7 @@ INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet'
 statement ok
 CREATE TABLE t_no_index AS FROM t1;
 
-foreach quantization f32 u8
+foreach quantization f32 u4 u8
 
 foreach metric_name,distance_func l2sq,array_distance cosine,array_cosine_distance
 
