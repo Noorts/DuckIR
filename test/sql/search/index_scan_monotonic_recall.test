@@ -28,7 +28,7 @@ CREATE OR REPLACE TABLE t1 (id INTEGER, emb FLOAT[{DIMS}]);
 statement ok
 INSERT INTO t1 FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') LIMIT {NUM_ROWS};
 
-foreach quantization f32 u4 u8
+foreach quantization,min_exact_recall f32,0.90 u4,0.80 u8,0.90
 
 foreach metric_name,distance_func l2sq,array_distance cosine,array_cosine_distance
 
@@ -89,9 +89,9 @@ SELECT bool_and(diff >= 0) FROM (
 true
 
 # Verify that exact search (n_probe=0) achieves a high recall. Not necessarily
-# 1.0 because of float computations and pruning algorithm loss.
+# 1.0 because of float computations, pruning algorithm loss and quantization.
 query I
-SELECT 0.90 <= (SELECT recall FROM results WHERE n_probe = 0);
+SELECT {min_exact_recall} <= (SELECT recall FROM results WHERE n_probe = 0);
 ----
 true
 
