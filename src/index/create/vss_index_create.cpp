@@ -35,11 +35,8 @@ public:
 	    : global_index(make_uniq<VSSIndex>(op.info->GetIndexName(), op.info->constraint_type, op.storage_ids,
 	                                       TableIOManager::Get(op.table.GetStorage()), op.unbound_expressions,
 	                                       op.table.GetStorage().db, op.info->options, IndexStorageInfo())),
-	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->GetReturnType())),
-	      embedding_preprocessor(make_uniq<EmbeddingPreprocessor>(num_dimensions,
-	                                                              global_index->Cast<VSSIndex>().GetRotationMatrix(),
-	                                                              global_index->Cast<VSSIndex>().GetMemoryAllocator())),
-	      is_normalized(global_index->Cast<VSSIndex>().IsNormalized()) {
+	      num_dimensions(ArrayType::GetSize(op.unbound_expressions[0]->GetReturnType())) {
+		global_index->Cast<VSSIndex>().FitSAQModelForCreate(context, op.table.GetStorage());
 		const auto &index = global_index->Cast<VSSIndex>();
 		const idx_t row_group_size = index.GetRowGroupSize();
 		const idx_t build_bytes =
@@ -65,8 +62,6 @@ public:
 
 	unique_ptr<BoundIndex> global_index;
 	const idx_t num_dimensions;
-	const unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
-	const bool is_normalized {false};
 	unique_ptr<TemporaryMemoryState> memory_state;
 	idx_t max_concurrent_builds = 1;
 	// Under Lock().
@@ -180,11 +175,10 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 	// Preprocess and accumulate the embeddings into the row group's buffer.
 	D_ASSERT(l_sink.row_group_embeddings_count + num_embeddings <= row_group.count);
 
-	g_sink.embedding_preprocessor->PreprocessEmbeddings(
-	    FlatVector::GetDataMutable<float>(ArrayVector::GetChildMutable(embedding_column)),
-	    reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()) +
-	        (l_sink.row_group_embeddings_count * g_sink.num_dimensions),
-	    num_embeddings, g_sink.is_normalized);
+	vss_index.PreprocessEmbeddings(FlatVector::GetDataMutable<float>(ArrayVector::GetChildMutable(embedding_column)),
+	                               reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()) +
+	                                   (l_sink.row_group_embeddings_count * g_sink.num_dimensions),
+	                               num_embeddings);
 
 	memcpy(l_sink.row_group_row_ids.data() + l_sink.row_group_embeddings_count, row_id_data,
 	       num_embeddings * sizeof(row_t));

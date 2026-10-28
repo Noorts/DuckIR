@@ -104,8 +104,9 @@ Available options:
   - `'l2sq'` (*default*; Squared Euclidean Distance, optimizes `array_distance`) 
   - `'cosine'` (Cosine similarity distance, optimizes `array_cosine_distance`). 
 - `quantization`: The precision of the embeddings stored inside the index. 
-  - `f32` (full-precision, 4 bytes, no compression)
-  - `u8` (*default*; scalar quantization, 1 byte, ×4 compression, small quality loss).
+  - `f32`: full-precision, 4 bytes, no compression.
+  - `u8`: *default*; scalar quantization, 1 byte per dimension, ×4 compression; ~1% quality loss to `f32`.
+  - `u4`: SAQ, 4 bits per dimension, ×8 compression; needs at least 64 dimensions; <1% quality loss to `u8`.
 - `n_probe`: Increasing `n_probe` increases the effort spent during vector search, thus increasing recall, but also increasing search latency. You can set it at search time using `duckir_vss_n_probe` (see below).
   - `[0, 2147483647]`. *Default* is `24`. This is per row group, which likely has 480 lists. Set `n_probe` to `0` to run a brute force search. 
 - `seed`
@@ -158,7 +159,7 @@ FROM queries q, LATERAL (
 ) s;
 ```
 
-*[EXPERIMENTAL]* Mid-range selectivities are known to be hard for vector search. To tackle this on LATERAL JOINs, we build a temporary index at query time only with the passing tuples. You can enable this feature with `SET duckir_vss_experimental_on_the_fly_indexing = 'auto';` option. 
+*[EXPERIMENTAL]* Mid-range selectivities are known to be hard for vector search. To tackle this on LATERAL JOINs, we build a temporary index at query time only with the passing tuples. You can enable this feature with `SET duckir_vss_experimental_on_the_fly_indexing = 'auto';` option. It is not available for `u4` indexes.
 
 ### Index Metadata
 

@@ -86,14 +86,16 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	// opened (bind_error), the wrapper gets the seed's rotation, only for planning until the error is raised.
 	VSSDirectory directory;
 	unique_ptr<float[]> rotation_matrix;
+	std::optional<PDX::SAQModel> saq_model;
 	if (persistence_info.IsValid()) {
 		persisted_storage_info = CopyStorageInfo(persistence_info);
 		try {
-			storage_reader =
-			    OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory, rotation_matrix);
+			storage_reader = OpenStorage(persistence_info, static_cast<uint32_t>(num_dimensions), directory,
+			                             rotation_matrix, saq_model);
 		} catch (std::exception &ex) {
 			bind_error = ErrorData(ex);
 			rotation_matrix.reset();
+			saq_model.reset();
 		}
 	}
 
@@ -101,11 +103,17 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	if (quantization == PDX::Quantization::F32) {
 		D_ASSERT(ArrayType::GetChildType(embedding_type).id() == LogicalTypeId::FLOAT);
 
-		vss_wrapper = make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
-		                                       row_group_size, std::move(rotation_matrix), memory_allocator);
+		vss_wrapper =
+		    make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
+		                             std::move(rotation_matrix), std::nullopt, memory_allocator);
 	} else if (quantization == PDX::Quantization::U8) {
-		vss_wrapper = make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
-		                                      row_group_size, std::move(rotation_matrix), memory_allocator);
+		vss_wrapper =
+		    make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
+		                            std::move(rotation_matrix), std::nullopt, memory_allocator);
+	} else if (quantization == PDX::Quantization::SAQ) {
+		vss_wrapper =
+		    make_uniq<VSSWrapperSAQ>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
+		                             std::move(rotation_matrix), std::move(saq_model), memory_allocator);
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
@@ -113,8 +121,6 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	// loads, below.
 	if (!persistence_info.IsValid()) {
 		vss_wrapper->CreatePruner();
-		embedding_preprocessor =
-		    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
 		UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes()));
 	}
 	Value cluster_paging_setting;
@@ -137,8 +143,6 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	if (persistence_info.IsValid() && !bind_error.HasError()) {
 		try {
 			vss_wrapper->CreatePruner();
-			embedding_preprocessor =
-			    make_uniq<EmbeddingPreprocessor>(num_dimensions, vss_wrapper->GetRotationMatrix(), memory_allocator);
 			UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes()));
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
 			needs_reconciliation = true;
@@ -257,58 +261,70 @@ void VSSIndex::RemoveRowGroupsOverlapping(const row_t start, const row_t end) {
 	DispatchWrapper([&](auto &wrapper) { wrapper.RemoveRowGroupsOverlapping(start, end); });
 }
 
-idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, row_t *const row_ids,
-                          float *const embeddings, idx_t &rows_returned, PDX::ParallelExecutor *const executor) {
+idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, float *const embeddings,
+                          idx_t &rows_returned, row_t *const row_ids, const bool rotate,
+                          PDX::ParallelExecutor *const executor) {
 	rows_returned = 0;
-	// Fetches every committed row, whatever the calling transaction's snapshot. The mirror
+	if (start >= end) {
+		return 0;
+	}
+	// Scans every committed row, whatever the calling transaction's snapshot. The mirror
 	// holds the committed state, and rows a query must not see are dropped when it fetches its results.
 	const TransactionData committed(MAX_TRANSACTION_ID,
 	                                VisibilityBound::Through(DuckTransactionManager::Get(db).GetLastCommit()));
-	const vector<StorageIndex> fetch_column_ids {StorageIndex(GetColumnIds()[0]), StorageIndex()};
-	DataChunk fetched;
-	fetched.Initialize(Allocator::Get(db), {logical_types[0], LogicalType::ROW_TYPE});
-	Vector fetch_row_ids(LogicalType::ROW_TYPE, STANDARD_VECTOR_SIZE);
-	const auto fetch_row_ids_data = FlatVector::GetDataMutable<row_t>(fetch_row_ids);
-	ColumnFetchState fetch_state;
+	const vector<StorageIndex> column_ids {StorageIndex(GetColumnIds()[0]), StorageIndex()};
+	TableScanState scan_state;
+	scan_state.Initialize(column_ids);
+	table.GetRowGroupCollection()->InitializeScanWithOffset(QueryContext(), scan_state.table_state, column_ids,
+	                                                        static_cast<idx_t>(start), static_cast<idx_t>(end));
+	DataChunk chunk;
+	chunk.Initialize(Allocator::Get(db), {logical_types[0], LogicalType::ROW_TYPE});
 	const auto num_dimensions = GetNumDimensions();
 	auto raw_embeddings = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
 
 	idx_t count = 0;
-	for (row_t batch_start = start; batch_start < end; batch_start += STANDARD_VECTOR_SIZE) {
-		const idx_t batch_size = MinValue<idx_t>(STANDARD_VECTOR_SIZE, static_cast<idx_t>(end - batch_start));
-		for (idx_t i = 0; i < batch_size; i++) {
-			fetch_row_ids_data[i] = batch_start + static_cast<row_t>(i);
-		}
-		fetched.Reset();
+	while (true) {
+		chunk.Reset();
 		// Deleted rows are gone, NULL embeddings are NULL.
-		table.GetRowGroupCollection()->Fetch(committed, fetched, fetch_column_ids, fetch_row_ids, batch_size,
-		                                     fetch_state);
-		const idx_t fetched_count = fetched.size();
-		rows_returned += fetched_count;
-		if (fetched_count == 0) {
-			continue;
+		scan_state.table_state.Scan(ScanOptions(committed), chunk);
+		if (chunk.size() == 0) {
+			break;
 		}
-		auto &embedding_column = fetched.data[0];
+		auto &embedding_column = chunk.data[0];
 		embedding_column.Flatten();
-		fetched.data[1].Flatten();
+		chunk.data[1].Flatten();
 		const auto &validity = FlatVector::Validity(embedding_column);
-		const auto fetched_embeddings = FlatVector::GetData<float>(ArrayVector::GetChild(embedding_column));
-		const auto fetched_row_ids = FlatVector::GetData<row_t>(fetched.data[1]);
+		const auto scanned_embeddings = FlatVector::GetData<float>(ArrayVector::GetChild(embedding_column));
+		const auto scanned_row_ids = FlatVector::GetData<row_t>(chunk.data[1]);
+		// Without a rotation, the rows go straight to the output.
+		float *const batch_embeddings = rotate ? raw_embeddings.get() : embeddings + count * num_dimensions;
 		idx_t batch_count = 0;
-		for (idx_t i = 0; i < fetched_count; i++) {
+		for (idx_t i = 0; i < chunk.size(); i++) {
+			// The scan starts at the vector that holds `start`.
+			if (scanned_row_ids[i] < start) {
+				continue;
+			}
+			rows_returned++;
 			if (!validity.RowIsValid(i)) {
 				continue;
 			}
-			memcpy(raw_embeddings.get() + batch_count * num_dimensions, fetched_embeddings + i * num_dimensions,
+			memcpy(batch_embeddings + batch_count * num_dimensions, scanned_embeddings + i * num_dimensions,
 			       num_dimensions * sizeof(float));
-			row_ids[count + batch_count] = fetched_row_ids[i];
+			if (row_ids) {
+				row_ids[count + batch_count] = scanned_row_ids[i];
+			}
 			batch_count++;
 		}
-		if (batch_count > 0) {
-			embedding_preprocessor->PreprocessEmbeddings(raw_embeddings.get(), embeddings + count * num_dimensions,
-			                                             batch_count, IsNormalized(), executor);
-			count += batch_count;
+		if (batch_count == 0) {
+			continue;
 		}
+		if (rotate) {
+			vss_wrapper->PreprocessEmbeddings(raw_embeddings.get(), embeddings + count * num_dimensions, batch_count,
+			                                  executor);
+		} else {
+			vss_wrapper->NormalizeEmbeddings(batch_embeddings, batch_count);
+		}
+		count += batch_count;
 	}
 	return count;
 }
@@ -388,8 +404,8 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		try {
 			auto embeddings_buffer = allocate_embeddings(bounds.count);
 			const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
-			const idx_t count =
-			    FetchRows(table, bounds.row_start, bounds_end, row_ids.get(), embeddings, rows_returned, &executor);
+			const idx_t count = FetchRows(table, bounds.row_start, bounds_end, embeddings, rows_returned, row_ids.get(),
+			                              /*rotate=*/true, &executor);
 			if (count > 0) {
 				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
 				                      IsClosedRowGroup(table, bounds), &executor);
@@ -435,8 +451,8 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			while (range_idx < unindexed_row_ranges.size() && unindexed_row_ranges[range_idx].start < bounds_end) {
 				auto &range = unindexed_row_ranges[range_idx];
 				const row_t sub_end = MinValue<row_t>(range.end, bounds_end);
-				const idx_t range_count = FetchRows(table, range.start, sub_end, row_ids.get() + count,
-				                                    embeddings + count * num_dimensions, rows_returned, &executor);
+				const idx_t range_count = FetchRows(table, range.start, sub_end, embeddings + count * num_dimensions,
+				                                    rows_returned, row_ids.get() + count, /*rotate=*/true, &executor);
 				if (rows_returned == 0) {
 					// Not committed yet: a later sync indexes them.
 					still_unindexed.push_back({range.start, sub_end});
@@ -487,9 +503,42 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 	UpdateReservedMemory(self_managed_bytes - static_cast<int64_t>(reserved_memory_bytes.load()));
 }
 
+void VSSIndex::FitSAQModelForCreate(ClientContext &context, DataTable &table) {
+	// No row group can reach MIN_EMBEDDINGS_FOR_CLUSTERING rows: they are all Flat, and the first sync that clusters
+	// one fits.
+	if (!vss_wrapper->NeedsSAQFit() || table.GetTotalRows() < VSSWrapperSAQ::MIN_EMBEDDINGS_FOR_CLUSTERING) {
+		return;
+	}
+	// The first rows of every row group, SAQ_FIT_SAMPLE_SIZE in all.
+	const auto physical_row_groups = GetPhysicalRowGroups(table);
+	const idx_t rows_per_row_group =
+	    (PDX::SAQ_FIT_SAMPLE_SIZE + physical_row_groups.size() - 1) / physical_row_groups.size();
+	idx_t max_sampled = 0;
+	for (const auto &row_group : physical_row_groups) {
+		max_sampled += MinValue<idx_t>(row_group.count, rows_per_row_group);
+	}
+	const auto num_dimensions = GetNumDimensions();
+	auto sample = skmeans::AllocateBuffer<float>(memory_allocator, max_sampled * num_dimensions);
+	DuckDBParallelExecutor executor(context,
+	                                static_cast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads()));
+	idx_t num_sampled = 0;
+	idx_t rows_returned;
+	for (const auto &row_group : physical_row_groups) {
+		const row_t end =
+		    row_group.row_start + static_cast<row_t>(MinValue<idx_t>(row_group.count, rows_per_row_group));
+		// The identity rotation of an index not fitted yet leaves the rows as they are.
+		num_sampled += FetchRows(table, row_group.row_start, end, sample.get() + num_sampled * num_dimensions,
+		                         rows_returned, /*row_ids=*/nullptr, /*rotate=*/false, &executor);
+	}
+	if (num_sampled == 0) {
+		return;
+	}
+	DispatchWrapper([&](auto &wrapper) { wrapper.FitSAQIfNeeded(sample.get(), num_sampled, &executor); });
+}
+
 // Called by CREATE INDEX's threads in parallel: each reserves the self-managed memory its row group grew by. PDX's
 // buffers are charged as it allocates them.
-void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, const float *const vectors, const idx_t num_vectors,
+void VSSIndex::SetUpIndexForRowGroup(const row_t *const row_ids, float *const vectors, const idx_t num_vectors,
                                      const row_t row_start, const idx_t count, const bool is_closed,
                                      PDX::ParallelExecutor *const executor) {
 	// Without paging, the row groups stay in memory.
@@ -634,6 +683,7 @@ void VSSIndex::ResetStorage(IndexLock &lock) {
 	allocator->Reset();
 	directory_chain = VSSBlockChain();
 	rotation_chain = VSSBlockChain();
+	saq_model_chain = VSSBlockChain();
 	ResetPersistedChains();
 }
 
@@ -678,11 +728,7 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 	result->n_probe = static_cast<int64_t>(vss_wrapper->GetNProbe());
 	result->seed = static_cast<int64_t>(vss_wrapper->GetSeed());
 	result->is_normalized = IsNormalized();
-	// The wrapper and the query preprocessor's copy of the rotation matrix.
-	const uint64_t preprocessor_bytes =
-	    embedding_preprocessor ? static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float) : 0;
-	result->approximate_lower_bound_memory_usage_bytes =
-	    static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes() + preprocessor_bytes);
+	result->approximate_lower_bound_memory_usage_bytes = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
 	if (storage_reader) {
 		const auto &counters = storage_reader->counters;
 		result->cluster_acquires = static_cast<int64_t>(counters.cluster_acquires.load());
@@ -699,7 +745,8 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
  ******************************************************************/
 
 unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &info, const uint32_t num_dimensions,
-                                                      VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix) {
+                                                      VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix,
+                                                      std::optional<PDX::SAQModel> &saq_model) {
 	const auto version = info.options.find("storage_version");
 	if (version == info.options.end() || version->second.GetValue<uint32_t>() != VSS_STORAGE_VERSION) {
 		throw NotImplementedException(
@@ -735,6 +782,13 @@ unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &in
 		PDX::StreamReader rotation_reader {in};
 		rotation_reader.Read(rotation_matrix.get(), sizeof(float) * num_values);
 		rotation_chain = reader->Finish();
+	}
+	if (directory.saq_model.num_bytes > 0) {
+		reader->Open(directory.saq_model);
+		PDX::StreamReader saq_model_reader {in};
+		saq_model.emplace();
+		saq_model->Load(saq_model_reader);
+		saq_model_chain = reader->Finish();
 	}
 	return reader;
 }
@@ -819,7 +873,14 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 		return CopyStorageInfo(persisted_storage_info);
 	}
 	PersistDirtyRowGroups([&]() { WritePartialBlocks(context); });
-	// Written once: the rotation never changes.
+	// A SAQ model that is not persisted yet comes from a fit since the last checkpoint, whose rotation replaced the
+	// persisted one: both are written.
+	const auto saq_model = vss_wrapper->GetSAQModel();
+	const bool write_saq_model = saq_model && saq_model_chain.segments.empty();
+	if (write_saq_model) {
+		rotation_chain.Free(*allocator);
+	}
+	// Written once, and again after a SAQ fit.
 	if (rotation_chain.segments.empty()) {
 		const auto num_dimensions = GetNumDimensions();
 		VSSBlockChainWriter writer(*allocator);
@@ -828,10 +889,17 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 		          static_cast<std::streamsize>(sizeof(float) * num_dimensions * num_dimensions));
 		rotation_chain = writer.Finish();
 	}
+	if (write_saq_model) {
+		VSSBlockChainWriter writer(*allocator);
+		VSSChainOutputStream out(writer);
+		saq_model->Save(out);
+		saq_model_chain = writer.Finish();
+	}
 
 	VSSDirectory directory;
 	directory.num_dimensions = static_cast<uint32_t>(GetNumDimensions());
 	directory.rotation = VSSBlockChain {rotation_chain.head, rotation_chain.num_bytes, {}};
+	directory.saq_model = VSSBlockChain {saq_model_chain.head, saq_model_chain.num_bytes, {}};
 	AddRowGroupEntries(directory);
 	WriteDirectory(directory);
 	WritePartialBlocks(context);
@@ -924,6 +992,8 @@ string VSSIndex::GetQuantization() const {
 		return "f32";
 	case PDX::Quantization::U8:
 		return "u8";
+	case PDX::Quantization::SAQ:
+		return "u4";
 	default:
 		throw InternalException("Unknown quantization");
 	}
@@ -932,6 +1002,7 @@ string VSSIndex::GetQuantization() const {
 const case_insensitive_map_t<PDX::Quantization> VSSIndex::QUANTIZATION_MAP = {
     {"f32", PDX::Quantization::F32},
     {"u8", PDX::Quantization::U8},
+    {"u4", PDX::Quantization::SAQ},
 };
 
 string VSSIndex::GetDistanceMetric() const {

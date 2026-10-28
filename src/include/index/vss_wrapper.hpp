@@ -11,6 +11,7 @@
 #include <istream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <ostream>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "pdx/indexes/ivf_vanilla.hpp"
 #include "pdx/ivf_searcher.hpp"
 #include "pdx/pruners/adsampling.hpp"
+#include "pdx/quantizers/saq.hpp"
 #include "index/vss_index_utils.hpp"
 #include "index/vss_storage.hpp"
 
@@ -30,6 +32,8 @@ public:
 	static constexpr PDX::DistanceMetric DEFAULT_DISTANCE_METRIC = PDX::DistanceMetric::L2SQ;
 	static constexpr PDX::Quantization DEFAULT_QUANTIZATION = PDX::Quantization::U8;
 	static constexpr PDX::CentroidQuantization CENTROID_QUANTIZATION = PDX::CentroidQuantization::LVQ8;
+	static constexpr uint32_t SAQ_BITS_PER_DIMENSION = 4;
+	static constexpr float SAQ_PRUNING_SIGNIFICANCE = 0.01f;
 	static constexpr int32_t DEFAULT_N_PROBE = 24; // 5% of the data in a full search
 	// Clusters average about 256 rows, one u8 block
 	static constexpr uint32_t DEFAULT_MAX_CLUSTER_SIZE = 384;
@@ -63,23 +67,48 @@ private:
 
 protected:
 	PDX::MemoryAllocator &memory_allocator;
-	const unique_ptr<float[]> rotation_matrix;
+	unique_ptr<float[]> rotation_matrix;
 	unique_ptr<PDX::ADSamplingPruner> pruner;
+	std::optional<PDX::SAQModel> saq_model;
 
 public:
 	VSSWrapper(PDX::Quantization quantization, PDX::DistanceMetric distance_metric, uint32_t num_dimensions,
 	           uint32_t n_probe, int32_t seed, uint32_t max_cluster_size, unique_ptr<float[]> rotation_matrix_p,
-	           PDX::MemoryAllocator &memory_allocator)
+	           std::optional<PDX::SAQModel> saq_model_p, PDX::MemoryAllocator &memory_allocator)
 	    : num_dimensions(num_dimensions), is_normalized(PDX::DistanceMetricRequiresNormalization(distance_metric)),
 	      distance_metric(distance_metric), quantization(quantization), n_probe(n_probe), seed(seed),
 	      max_cluster_size(max_cluster_size), memory_allocator(memory_allocator),
-	      rotation_matrix(rotation_matrix_p ? std::move(rotation_matrix_p)
-	                                        : GenerateRandomRotationMatrix(num_dimensions, seed)) {
+	      rotation_matrix(std::move(rotation_matrix_p)), saq_model(std::move(saq_model_p)) {
+		if (!rotation_matrix) {
+			if (quantization == PDX::Quantization::SAQ) {
+				rotation_matrix = GenerateIdentityRotationMatrix(num_dimensions);
+			} else {
+				rotation_matrix = GenerateRandomRotationMatrix(num_dimensions, seed);
+			}
+		}
 	}
 	virtual ~VSSWrapper() = default;
 
 	void CreatePruner() {
-		pruner = make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get(), &memory_allocator);
+		pruner =
+		    make_uniq<PDX::ADSamplingPruner>(num_dimensions, rotation_matrix.get(), num_dimensions, &memory_allocator);
+	}
+
+	// In place, when the distance metric needs it.
+	void NormalizeEmbeddings(float *const embeddings, const size_t num_embeddings) const {
+		if (is_normalized) {
+			const PDX::Quantizer quantizer(num_dimensions);
+			for (size_t i = 0; i < num_embeddings; i++) {
+				quantizer.NormalizeQuery(embeddings + i * num_dimensions, embeddings + i * num_dimensions);
+			}
+		}
+	}
+
+	// Warning: modifies the input_embeddings.
+	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings,
+	                          const size_t num_embeddings, PDX::ParallelExecutor *const executor) const {
+		NormalizeEmbeddings(input_embeddings, num_embeddings);
+		pruner->PreprocessEmbeddings(input_embeddings, output_embeddings, num_embeddings, executor);
 	}
 
 	uint32_t GetNumDimensions() const {
@@ -106,6 +135,12 @@ public:
 	float *GetRotationMatrix() const {
 		return rotation_matrix.get();
 	}
+	const PDX::SAQModel *GetSAQModel() const {
+		return saq_model ? &saq_model.value() : nullptr;
+	}
+	bool NeedsSAQFit() const {
+		return quantization == PDX::Quantization::SAQ && !saq_model;
+	}
 
 	// The config of every PDX index over this index's rows (the row groups' and the join's on-the-fly ones), which all
 	// take transformed embeddings. num_clusters 0 is PDX's default for the number of rows. A null executor is serial.
@@ -123,6 +158,7 @@ public:
 		config.is_data_transformed = true;
 		config.base_row_id = static_cast<size_t>(base_row_id);
 		config.centroid_quantization = CENTROID_QUANTIZATION;
+		config.saq_pruning_significance = SAQ_PRUNING_SIGNIFICANCE;
 		return config;
 	}
 
@@ -215,9 +251,9 @@ public:
 
 	VSSWrapperParallel(PDX::DistanceMetric distance_metric, uint32_t num_dimensions, uint32_t n_probe, int32_t seed,
 	                   uint32_t max_cluster_size, idx_t row_group_size, unique_ptr<float[]> rotation_matrix,
-	                   PDX::MemoryAllocator &memory_allocator)
+	                   std::optional<PDX::SAQModel> saq_model, PDX::MemoryAllocator &memory_allocator)
 	    : VSSWrapper(Q, distance_metric, num_dimensions, n_probe, seed, max_cluster_size, std::move(rotation_matrix),
-	                 memory_allocator),
+	                 std::move(saq_model), memory_allocator),
 	      row_group_size(row_group_size) {
 	}
 
@@ -225,11 +261,65 @@ public:
 		return row_group_size;
 	}
 
+	// Fits the index's SAQ model and rotation on rows in the identity rotation (normalized raw rows), the rotation of
+	// an index not fitted yet. The existing Flat indexes are transformed into the fit's PCA-rotated space and marked
+	// dirty.
+	void FitSAQIfNeeded(const float *const rows, const idx_t num_rows, PDX::ParallelExecutor *const executor) {
+		if (!NeedsSAQFit()) {
+			return;
+		}
+		const uint32_t d = GetNumDimensions();
+		skmeans::SerialExecutor serial_executor;
+		auto fit = PDX::SAQQuantizer::Fit(rows, num_rows, d, SAQ_BITS_PER_DIMENSION, static_cast<uint32_t>(GetSeed()),
+		                                  executor ? *executor : serial_executor, memory_allocator);
+		auto fitted_rotation = make_uniq_array<float>(static_cast<size_t>(d) * d);
+		memcpy(fitted_rotation.get(), fit.rotation.get(), static_cast<size_t>(d) * d * sizeof(float));
+		auto fitted_pruner = make_uniq<PDX::ADSamplingPruner>(d, fitted_rotation.get(), d, &memory_allocator);
+		std::vector<std::unique_ptr<PDX::IPDXIndex>> rotated_flat_indexes(row_groups.size());
+		for (idx_t i = 0; i < row_groups.size(); i++) {
+			const auto &row_group = *row_groups[i];
+			// The row group being built
+			if (!row_group.index) {
+				continue;
+			}
+			const auto flat_index = dynamic_cast<const PDX::FlatIndex *>(row_group.index.get());
+			if (!flat_index) {
+				throw InternalException(
+				    "DuckIR VSS: a row group of this u4 index is already clustered, but the index's "
+				    "SAQ model hasn't been fitted. If you see this, please report this bug.");
+			}
+			const auto row_ids = flat_index->GetRowIds();
+			skmeans::AllocatedBuffer<float> rotated;
+			if (!row_ids.empty()) {
+				const auto embeddings = flat_index->GetEmbeddings();
+				rotated = skmeans::AllocateBuffer<float>(memory_allocator, row_ids.size() * d);
+				fitted_pruner->PreprocessEmbeddings(embeddings.get(), rotated.get(), row_ids.size(), executor);
+			}
+			auto rotated_flat_index = make_uniq<PDX::FlatIndex>(
+			    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), row_group.is_closed, executor),
+			    *fitted_pruner);
+			rotated_flat_index->BuildIndex(row_ids.data(), rotated.get(), row_ids.size());
+			rotated_flat_index->SetExecutor(nullptr);
+			rotated_flat_indexes[i] = std::move(rotated_flat_index);
+		}
+		// Swapped in only once every Flat is rebuilt, so a fit that throws (e.g. out of memory) changes nothing. The
+		// indexes on the old pruner go before it.
+		for (idx_t i = 0; i < row_groups.size(); i++) {
+			if (rotated_flat_indexes[i]) {
+				row_groups[i]->index = std::move(rotated_flat_indexes[i]);
+				row_groups[i]->is_dirty = true;
+			}
+		}
+		pruner = std::move(fitted_pruner);
+		rotation_matrix = std::move(fitted_rotation);
+		saq_model = std::move(fit.model);
+	}
+
 	// Builds the index of the row group [row_start, row_start + count) from its (non-NULL) rows. Rows of this row
 	// group that arrive in a later batch are appended to the index that was already built. The build runs on executor
 	// (null: serial). With a reader (duckir_vss_cluster_paging), the index then moves to a temporary chain. Returns how
 	// many bytes the row group's self-managed memory grew by.
-	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, const float *const embeddings, const idx_t num_embeddings,
+	int64_t SetUpIndexForRowGroup(const row_t *const row_ids, float *const embeddings, const idx_t num_embeddings,
 	                              const row_t row_start, const idx_t count, const bool is_closed,
 	                              PDX::ParallelExecutor *const executor, optional_ptr<VSSBlockChainReader> reader,
 	                              BufferManager &buffer_manager) {
@@ -259,6 +349,20 @@ public:
 		}
 
 		if (build_lock.owns_lock()) {
+			// Only a sync fits here, under the index's exclusive lock: CREATE INDEX fits before its parallel builds
+			// whenever a row group could reach MIN_EMBEDDINGS_FOR_CLUSTERING rows (FitSAQModelForCreate).
+			if (NeedsSAQFit() && num_embeddings >= MIN_EMBEDDINGS_FOR_CLUSTERING) {
+				FitSAQIfNeeded(embeddings, num_embeddings, executor);
+				// After fitting, rows need to be re-rotated with the fitted pruner (in place, a block at a time).
+				const idx_t num_dimensions = GetNumDimensions();
+				auto block = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
+				for (idx_t start = 0; start < num_embeddings; start += STANDARD_VECTOR_SIZE) {
+					const idx_t block_size = MinValue<idx_t>(STANDARD_VECTOR_SIZE, num_embeddings - start);
+					float *const block_rows = embeddings + start * num_dimensions;
+					memcpy(block.get(), block_rows, block_size * num_dimensions * sizeof(float));
+					pruner->PreprocessEmbeddings(block.get(), block_rows, block_size, executor);
+				}
+			}
 			row_group->index = BuildRowGroupIndex(*row_group, row_ids, embeddings, num_embeddings, executor);
 			// The executor ends with the build: later appends and deletes run serially.
 			row_group->index->SetExecutor(nullptr);
@@ -360,6 +464,11 @@ public:
 		row_group.index->SetExecutor(nullptr);
 		auto flat_index = dynamic_cast<PDX::FlatIndex *>(row_group.index.get());
 		if (flat_index && flat_index->GetClusterSize(0) >= MIN_EMBEDDINGS_FOR_CLUSTERING) {
+			if (NeedsSAQFit()) {
+				// The fit rebuilds every Flat index, this one included, in its rotation.
+				FitSAQIfNeeded(flat_index->GetEmbeddings().get(), flat_index->GetClusterSize(0), executor);
+				flat_index = static_cast<PDX::FlatIndex *>(row_group.index.get());
+			}
 			PromoteToIVF(row_group, *flat_index, executor);
 		}
 	}
@@ -622,9 +731,10 @@ public:
 	}
 
 	uint64_t GetInMemorySizeInBytes() const override {
-		// The rotation matrix and the pruner's copy of it.
+		// The rotation matrix, the pruner's copy of it and the SAQ model.
 		uint64_t in_memory_size_in_bytes =
-		    sizeof(*this) + 2 * static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float);
+		    sizeof(*this) + 2 * static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float) +
+		    (saq_model ? saq_model->GetInMemorySizeInBytes() : 0);
 		for (const auto &row_group : row_groups) {
 			in_memory_size_in_bytes += row_group->GetInMemorySizeInBytes();
 		}
@@ -632,9 +742,10 @@ public:
 	}
 
 	uint64_t GetSelfManagedMemorySizeInBytes() const override {
-		// The rotation matrix. The pruner's copy of it comes from the memory allocator.
-		uint64_t self_managed_bytes =
-		    sizeof(*this) + static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float);
+		// The rotation matrix and the SAQ model. The pruner's copy of the rotation comes from the memory allocator.
+		uint64_t self_managed_bytes = sizeof(*this) +
+		                              static_cast<uint64_t>(GetNumDimensions()) * GetNumDimensions() * sizeof(float) +
+		                              (saq_model ? saq_model->GetInMemorySizeInBytes() : 0);
 		for (const auto &row_group : row_groups) {
 			self_managed_bytes += row_group->GetSelfManagedMemorySizeInBytes();
 		}
@@ -654,6 +765,19 @@ private:
 		return config;
 	}
 
+	unique_ptr<PDX::PDXIndex<Q>> MakeIVFIndex(const PDX::PDXIndexConfig &config) const {
+		if constexpr (Q == PDX::SAQ) {
+			if (!saq_model) {
+				throw InternalException(
+				    "DuckIR VSS: a row group of this u4 index is being clustered, but the index's SAQ "
+				    "model hasn't been fitted. If you see this, please report this bug.");
+			}
+			return make_uniq<PDX::PDXIndex<Q>>(config, *pruner, *saq_model);
+		} else {
+			return make_uniq<PDX::PDXIndex<Q>>(config, *pruner);
+		}
+	}
+
 	unique_ptr<PDX::IPDXIndex> BuildRowGroupIndex(const PDXRowGroup &row_group, const row_t *const row_ids,
 	                                              const float *const embeddings, const idx_t num_embeddings,
 	                                              PDX::ParallelExecutor *const executor) const {
@@ -668,7 +792,7 @@ private:
 			flat_index->BuildIndex(ids.data(), embeddings, num_embeddings);
 			return std::move(flat_index);
 		}
-		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(config, *pruner);
+		auto ivf_index = MakeIVFIndex(config);
 		ivf_index->BuildIndex(ids.data(), embeddings, num_embeddings);
 		return std::move(ivf_index);
 	}
@@ -676,8 +800,8 @@ private:
 	void PromoteToIVF(PDXRowGroup &row_group, const PDX::FlatIndex &flat_index, PDX::ParallelExecutor *const executor) {
 		const auto row_ids = flat_index.GetRowIds();
 		const auto embeddings = flat_index.GetEmbeddings();
-		auto ivf_index = make_uniq<PDX::PDXIndex<Q>>(
-		    MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), row_group.is_closed, executor), *pruner);
+		auto ivf_index =
+		    MakeIVFIndex(MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), row_group.is_closed, executor));
 		ivf_index->BuildIndex(row_ids.data(), embeddings.get(), row_ids.size());
 		// The executor ends with the build: later appends and deletes run serially.
 		ivf_index->SetExecutor(nullptr);
@@ -772,5 +896,6 @@ private:
 
 using VSSWrapperF32 = VSSWrapperParallel<PDX::F32>;
 using VSSWrapperU8 = VSSWrapperParallel<PDX::U8>;
+using VSSWrapperSAQ = VSSWrapperParallel<PDX::SAQ>;
 
 } // namespace duckdb

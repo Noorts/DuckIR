@@ -400,6 +400,7 @@ static VSSBlockChain ReadChain(PDX::StreamReader &reader) {
 void VSSDirectory::Write(std::ostream &out) const {
 	PDX::WriteValue(out, num_dimensions);
 	WriteChain(out, rotation);
+	WriteChain(out, saq_model);
 	PDX::WriteValue(out, static_cast<uint64_t>(row_groups.size()));
 	for (const auto &row_group : row_groups) {
 		PDX::WriteValue(out, row_group.row_start);
@@ -414,6 +415,7 @@ VSSDirectory VSSDirectory::Read(std::istream &in) {
 	VSSDirectory directory;
 	directory.num_dimensions = PDX::ReadValue<uint32_t>(reader);
 	directory.rotation = ReadChain(reader);
+	directory.saq_model = ReadChain(reader);
 	directory.row_groups.resize(PDX::ReadValue<uint64_t>(reader));
 	for (auto &row_group : directory.row_groups) {
 		row_group.row_start = PDX::ReadValue<row_t>(reader);
