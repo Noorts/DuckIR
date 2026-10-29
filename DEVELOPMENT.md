@@ -1,199 +1,119 @@
 # Development
 
-> [!WARNING]
-> The instructions below are for Apple Silicon (M1-M5). We've had success with an Apple M4 Pro running macOS Sequoia 15.6.1. Instructions for other systems will be added at a later date.
+DuckIR builds on Linux (x86, ARM), macOS, Windows (x86) and Wasm. Our CI builds and tests it for all of them on every push (except Windows with MinGW and multithreaded Wasm). We develop on macOS and Linux, so the steps below are for those two.
 
-- [Development](#development)
-  - [Prerequisites](#prerequisites)
-    - [Install Clang](#install-clang)
-    - [Install CMake](#install-cmake)
-    - [Install vcpkg](#install-vcpkg)
-  - [Build](#build)
-    - [Building the Extension](#building-the-extension)
-    - [Clangd Language Server Support](#clangd-language-server-support)
-  - [Clean, Format, Tidy-Check](#clean-format-tidy-check)
-  - [Test](#test)
-  - [FAQ](#faq)
-
+DuckIR builds against DuckDB v2.0.0, pinned by the `duckdb` submodule. An extension only loads into the DuckDB version it was built for.
 
 ## Prerequisites
 
-- Clang (LLVM Clang 18)
-- CMake (>= 3.26)
-- vcpkg
+- A C++17 compiler: GCC or Clang on Linux, Apple Clang on macOS.
+- CMake 3.26 or newer.
+- Python 3, for the tests, formatting and tidy-check.
+- vcpkg, which provides Eigen.
+- *[Recommended]* Ninja and ccache, for faster builds. DuckDB picks up ccache by itself.
 
-Once you have these you can [build the extension](#build).
-
-### Install Clang
-
-```sh
-brew install llvm@18
-```
-
-> [!NOTE]
-> When building the extension (discussed below), explicitly pass the LLVM 18
-> compiler binaries to make sure LLVM@18 is used. For example:
-> `CC=$HOMEBREW_PREFIX/opt/llvm@18/bin/clang CXX=$HOMEBREW_PREFIX/opt/llvm@18/bin/clang++ make`.
-
-### Install CMake
-
-Versions >= 3.26 are supported.
+### macOS
 
 ```sh
-brew install cmake
+brew install cmake ninja ccache pkg-config
 ```
 
-Or instead build and install from the [source](https://gitlab.kitware.com/cmake/cmake).
-
-### Install vcpkg
-
-Install vcpkg prerequisite: pkg-config.
+### Linux (Ubuntu, Debian)
 
 ```sh
-brew install pkg-config
+sudo apt install build-essential git cmake ninja-build ccache pkg-config python3 curl zip unzip tar
 ```
 
-Install vcpkg using the instructions below, or check out the [extension template's instructions for vcpkg](https://github.com/duckdb/extension-template?tab=readme-ov-file#managing-dependencies).
+Ubuntu 24.04's CMake (3.28) is new enough. On older distributions, install a newer one with `pip install cmake`.
 
-Change to a directory where you want vcpkg to be installed.
+### vcpkg
+
+We use vcpkg to fetch Eigen. Check out the same commit as our CI, which provides Eigen 5.0.1:
 
 ```sh
-cd ~
+git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
+cd ~/vcpkg && git checkout cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+./bootstrap-vcpkg.sh -disableMetrics
+export VCPKG_TOOLCHAIN_PATH=~/vcpkg/scripts/buildsystems/vcpkg.cmake
 ```
 
-```sh
-git clone https://github.com/Microsoft/vcpkg.git
-```
+Add the `export` to your shell profile, so that every build finds vcpkg.
 
-Optionally check out the version we've used.
-
-```sh
-git checkout 4334d8b4c8
-```
-
-```sh
-./vcpkg/bootstrap-vcpkg.sh -disableMetrics
-```
-
-```sh
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
+If you already have Eigen installed, you can skip vcpkg and point the build to it instead: `EXT_FLAGS="-DEigen3_DIR=<directory with Eigen3Config.cmake>" make`.
 
 ## Build
 
-### Building the Extension
-
-1. Clone the repo and ensure the submodules are also cloned:
-
-    ```sh
-    git clone --recurse-submodules https://github.com/Noorts/DuckIR.git
-    ```
-
-2. Build the extension (the default is an optimized `release` build):
-
-    ```sh
-    cd DuckIR
-    ```
-
-    ```sh
-    make
-    ```
-
-    Other build modes include `debug` and `reldebug`. Include `DISABLE_SANITIZER=1` to avoid errors raised by the DuckDB core itself.
-
-    ```sh
-    DISABLE_SANITIZER=1 make debug
-    ```
-
-3. [Recommended] For faster builds, install [ccache](https://ccache.dev/) and [ninja](https://ninja-build.org/), and then set the generator when you build:
-
-    ```sh
-    brew install ccache ninja
-    ```
-
-    ```sh
-    GEN=ninja make
-    ```
-
-@Noorts personally uses
-
 ```sh
-GEN=ninja DISABLE_SANITIZER=1 CC=$HOMEBREW_PREFIX/opt/llvm@18/bin/clang CXX=$HOMEBREW_PREFIX/opt/llvm@18/bin/clang++ EXTRA_CMAKE_ARGS="-DCMAKE_EXPORT_COMPILE_COMMANDS=1" make
+git clone --recurse-submodules https://github.com/Noorts/DuckIR.git
+cd DuckIR
+GEN=ninja make
 ```
 
-The built extension artifact can be found at `DuckIR/build/release/extension/duckir/duckir.duckdb_extension`.
+`make` runs an optimized `release` build. The first build also compiles DuckDB, so it takes a few minutes. It produces:
+- `build/release/extension/duckir/duckir.duckdb_extension`: the loadable extension.
+- `build/release/duckdb`: a DuckDB shell with DuckIR already linked in.
+- `build/release/test/unittest`: the test runner.
 
-For DuckIR extension usage, please see to the [README.md](README.md).
+For a debug build, run `DISABLE_SANITIZER=1 make debug`. Without `DISABLE_SANITIZER=1`, DuckDB's own code trips the sanitizers. Other build modes are `reldebug` and `relassert`.
 
-### Clangd Language Server Support
-
-For
-[clangd](https://open-vsx.org/extension/llvm-vs-code-extensions/vscode-clangd)
-support in VSCode-based editors, ensure you build the compilation database.
-
-Include the following argument in your build command (each time you build):
+Extra CMake flags go in `EXT_FLAGS`. For example, to build against your local checkouts of PDX and SuperKMeans:
 
 ```sh
-EXTRA_CMAKE_ARGS="-DCMAKE_EXPORT_COMPILE_COMMANDS=1" make
+GEN=ninja EXT_FLAGS="-DFETCHCONTENT_SOURCE_DIR_PDX=$HOME/PDX -DFETCHCONTENT_SOURCE_DIR_SUPERKMEANS=$HOME/SuperKMeans" make
 ```
 
-Then in the DuckIR root directory, symlink the generated compilation database (once).
+For DuckIR usage, see the [README](README.md).
+
+### Clangd
+
+Every build writes a compilation database. For [clangd](https://clangd.llvm.org/) support, link it once from the repository root:
 
 ```sh
 ln -s ./build/release/compile_commands.json ./
 ```
 
-You might have to manually set the clangd executable path in the VSCode clangd extension configuration.
-
-## Clean, Format, Tidy-Check
-
-```sh
-make clean
-```
-
-```sh
-make format-fix
-```
-
-CI runs `make format-check`, which reports the files that need formatting. A test's `# description:` must fit on one
-line: the formatter cannot handle more.
-
-Portable `make format-fix` alternative:
-
-```sh
-uv run --with black --with clang_format==11.0.1 --with cmake-format duckdb/scripts/format.py --all --fix --noconfirm --directories src test
-```
-
-```sh
-make tidy-check
-```
-
-Tidy-check alternative that explicitly uses LLVM 18:
-
-```sh
-make tidy-check TIDY_BINARY=/opt/homebrew/opt/llvm@18/bin/clang-tidy
-```
-
 ## Test
-
-After building the extension you can run the tests. See
-[test/README.md](test/README.md) for more details.
 
 ```sh
 make test
 ```
 
-```sh
-make test_debug
-```
-
-Run one specific test:
+This runs every SQLLogicTest in `test/`, including the slow ones (`.test_slow`). `make test_debug` runs them on the debug build. To run a single test:
 
 ```sh
-./build/release/"/test/unittest" "test/sql/search/index_scan_uncommon_dimensions.test"
+build/release/test/unittest "test/sql/search/index_scan_monotonic_recall.test"
 ```
+
+See [test/README.md](test/README.md) for more details.
+
+## Format and Tidy
+
+CI checks the formatting of `src` and `test`:
+
+```sh
+make format-check
+make format-fix
+```
+
+These need `black`, `clang-format` 11.0.1 and `cmake-format`. With [uv](https://docs.astral.sh/uv/), you don't have to install them:
+
+```sh
+uv run --with black --with clang_format==11.0.1 --with cmake-format python3 duckdb/scripts/format.py --all --fix --noconfirm --workdir $PWD --directories src test
+```
+
+A test's `# description:` must fit on one line. The formatter can't handle more.
+
+`make tidy-check` runs clang-tidy over `src`. Use clang-tidy 18: on macOS, newer versions report errors in libc++ headers.
+
+```sh
+brew install llvm@18
+PATH="$(brew --prefix llvm@18)/bin:$PATH" make tidy-check
+```
+
+On Linux, pass the binary instead: `make tidy-check TIDY_BINARY=clang-tidy-18`.
+
+`make clean` removes all builds.
 
 ## FAQ
 
-- Q: I pulled the latest commits and now I run into compiler errors when I build the extension.
-  - A: Did the latest commits include the bump of a submodule? (e.g., DuckDB was updated) If this is the case, then when you run `git status` it will state `"modified: duckdb (new commits)"`. In the root DuckIR directory, run `git submodule update --init --recursive` to ensure your local submodules match the committed versions.
+- **I pulled the latest commits, and now the build fails.** Did they bump a submodule (e.g., DuckDB)? Then `git status` shows `modified: duckdb (new commits)`. Run `git submodule update --init --recursive` from the repository root.
