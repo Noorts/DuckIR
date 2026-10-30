@@ -12,25 +12,27 @@
 ## Why DuckIR?
 
 - **Search fully integrated with DuckDB**: Query execution, predicate pushdown, transactional correctness, checkpoints, and crash recovery. 
-- **Indexes larger than memory**: We can handle creating indexes and searching over embeddings larger than your memory.
-- **Maintenance**: Our vector index updates alongside your table.
-- **Morsel-driven parallelism**: Operators work one row group at a time, as DuckDB does. Our extension uses DuckDB's thread pool.
+- **Indexes larger than memory**: We handle creating indexes and searching over embeddings beyond memory limits.
+- **Maintenance**: Our vector index updates alongside your table. DuckIR never needs full index rebuilds because our index mirrors DuckDB's row groups.
+- **Morsel-driven parallelism**: Operators work one row group at a time, as DuckDB does. 
 - **Portable**: Linux (x86, ARM), macOS, Wasm, Windows (x86).
-- **Fast Vector Indexing and Search**: Index millions of vectors in seconds, search them in milliseconds.   
+- **Fast Vector Indexing and Search**: Index millions of vectors in seconds and search them in milliseconds.   
 - **Filtered Search** on any predicate DuckDB can evaluate.
 - *FTS and Hybrid Search are WIP*.
+
+> **Status: alpha.** Production use is not advised. Dropping and recreating indexes might be needed between updates. Check our known [limitations](/docs/LIMITATIONS.md).
 
 ## Usage
 
 ### From Hugging Face to DuckIR
 
-1. Start a DuckDB instance and allow loading unsigned extensions.
+1. Start a DuckDB v2.0.0 instance and allow loading unsigned extensions.
 
 ```bash
 duckdb -unsigned
 ```
 
-2. Load the locally built extension by providing a full path to it.
+2. Load the extension you built (see [DEVELOPMENT.md](DEVELOPMENT.md)) by providing a full path to it.
 
 ```sql
 LOAD '<Fill in>/DuckIR/build/release/extension/duckir/duckir.duckdb_extension';
@@ -101,14 +103,14 @@ WITH (metric = 'l2sq', quantization = 'f32');
 Available options:
 
 - `metric`
-  - `'l2sq'` (*default*; Squared Euclidean Distance, optimizes `array_distance`) 
-  - `'cosine'` (Cosine similarity distance, optimizes `array_cosine_distance`). 
+  - `'l2sq'` (*default*; squared Euclidean distance, optimizes `array_distance`) 
+  - `'cosine'` (cosine similarity, optimizes `array_cosine_distance`). 
 - `quantization`: The precision of the embeddings stored inside the index. 
-  - `f32`: full-precision, 4 bytes, no compression.
-  - `u8`: *default*; scalar quantization, 1 byte per dimension, ×4 compression; ~1% quality loss to `f32`.
-  - `u4`: SAQ, 4 bits per dimension, ×8 compression; needs at least 64 dimensions; <1% quality loss to `u8`.
-- `n_probe`: Increasing `n_probe` increases the effort spent during vector search, thus increasing recall, but also increasing search latency. You can set it at search time using `duckir_vss_n_probe` (see below).
-  - `[0, 2147483647]`. *Default* is `24`. This is per row group, which likely has 480 lists. Set `n_probe` to `0` to run a brute force search. 
+  - `f32`: full precision, no compression.
+  - `u8`: *default*; scalar quantization, 1 byte per dimension, ×4 compression; ~1% quality loss relative to `f32`.
+  - `u4`: SAQ, 4 bits per dimension, ×8 compression; needs at least 64 dimensions; <1% quality loss relative to `u8` in most embedding datasets (Cohere, MXBAI, OpenAI).
+- `n_probe`: Controls the effort spent during vector search: higher values increase recall, but also search latency. You can set it at search time using `duckir_vss_n_probe` (see below).
+  - `[0, 2147483647]`. *Default* is `24`. This is per row group, which typically has ~480 lists. Set `n_probe` to `0` to run a brute force search. 
 - `seed`
   - `[-2147483648, 2147483647]`. *Default* is random.
 
@@ -125,25 +127,24 @@ LIMIT k [OFFSET o]
 
 - `t`: Can be a table, view, or CTE.
 
-- `OFFSET o`: The index searches the `k + o` nearest neighbours and skips the first `o` results.    
+- `OFFSET o`: The index searches the `k + o` nearest neighbors and skips the first `o` results.    
 
-You can set the number of clusters to probe on a search using `SET duckir_vss_n_probe = 48`. Note that this will overwrite the value for subsequent searches. You can reset it by doing: `RESET duckir_vss_n_probe;`.
+You can set the number of clusters to probe per search using `SET duckir_vss_n_probe = 48`. Note that this will overwrite the value for subsequent searches. You can reset it by running: `RESET duckir_vss_n_probe;`.
 
-**Threading**: We use all the threads available in DuckDB. To force a number of threads, use `SET threads = 1;`. 
+**Threading**: We use all the threads available in DuckDB. To set the number of threads, use `SET threads = 1;`. 
 
 ### Filtered Vector Search
 
+We support arbitrary predicates: **any predicate DuckDB can evaluate on the table's columns**, including but not limited to: conjunctions, disjunctions, comparisons, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT EXISTS`, expressions over a column, volatile predicates, filters over `embedding[i]`, subqueries as filters, `IN (<subquery>)` (SEMI JOINs), and `list_contains`. 
 
-We support arbitrary predicates: **any predicate DuckDB can evaluate on the table's columns**. Including but not limited to: conjunctions, disjunctions, comparisons, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT EXISTS`, expressions over a column, volatile predicates, filter over `embedding[i]`, subqueries as filters, `IN (<subquery>)` (SEMI JOINs), `list_contains`. 
-
-Index search also kicks in if the predicate is rewritten as a `HASH JOIN` (e.g., `WHERE id IN (SELECT item_id FROM purchases)`). Even if it goes out-of-core or the join key is compressed. 
+Index search also kicks in if the predicate is rewritten as a `HASH JOIN` (e.g., `WHERE id IN (SELECT item_id FROM purchases)`), even if it goes out-of-core or the join key is compressed. 
 
 See [#27](https://github.com/Noorts/DuckIR/pull/27) for a full list of supported query shapes.   
 
 
 ### LATERAL JOIN (a.k.a. NEAREST, SIMILARITY JOIN)
 
-You can run many queries at a time
+You can run many queries at once:
 
 ```sql
 SELECT q.id, s.id 
@@ -159,19 +160,10 @@ FROM queries q, LATERAL (
 ) s;
 ```
 
-*[EXPERIMENTAL]* Mid-range selectivities are known to be hard for vector search. To tackle this on LATERAL JOINs, we build a temporary index at query time only with the passing tuples. You can enable this feature with `SET duckir_vss_experimental_on_the_fly_indexing = 'auto';` option. It is not available for `u4` indexes.
-
 ### Index Metadata
 
-Execute `CALL duckir_vss_index_info();` to print metadata about all vector indexes. This includes the index's size in-memory.
+Execute `CALL duckir_vss_index_info();` to print metadata about all vector indexes. This includes each index's in-memory size.
 
-### Persistence
-
-The index is saved with the database file. DuckDB's checkpoints persist the index, and the first query that uses it after the database opens loads the (small) part of the index that must stay in memory. A checkpoint only rewrites the row groups of the index that changed since the previous checkpoint. Changes committed after the last checkpoint are replayed from DuckDB's WAL into the table, and the index catches up on its next use.
-
-When the index is loaded, it is validated against the table, so it never misses committed rows or returns deleted ones, even when DuckDB could not replay its log into the index ([duckdb#26112](https://github.com/duckdb/duckdb/issues/26112)). If the database closes without a checkpoint right after `CREATE INDEX` (for example, after a crash), the index is built again from the table the first time it is used. 
-
-See [PR#35](https://github.com/Noorts/DuckIR/pull/35) for a more detailed explanation of persistence in DuckIR.
 
 ### Writing Queries
 
@@ -187,7 +179,7 @@ ORDER BY array_distance(
 LIMIT 10;
 ```
 
-However, DuckDB parses the list literal and binds it element by element. Funny enough, **that costs more than the vector search itself**. If you want the highest query throughput, pass the list literal as a string to `duckir_vss_encode_query` instead:
+However, DuckDB parses the list literal and binds it element by element. Funnily enough, **that costs more than the vector search itself**. If you want the highest query throughput, pass the list literal as a string to `duckir_vss_encode_query` instead:
 
 ```sql
 SELECT id
@@ -199,7 +191,7 @@ ORDER BY array_distance(
 LIMIT 10;
 ```
 
-`duckir_vss_encode_query` reads the string and returns its `float32` values as a `BLOB`, which the search uses directly. This bypass the bind overhead.
+`duckir_vss_encode_query` reads the string and returns its `float32` values as a `BLOB`, which the search uses directly. This bypasses the bind overhead.
 
 From a client, you can instead bind the vector's raw bytes as a parameter. For example, in Python:
 
@@ -210,73 +202,32 @@ con.execute("SELECT id FROM t ORDER BY array_distance(embedding, ?) LIMIT 10", [
 
 To issue queries in bulk, see [LATERAL JOIN](#lateral-join-aka-nearest-similarity-join).
 
+## Our Vector Index
+We create a local index per DuckDB row group, allowing for lightweight maintenance, morsel-driven parallelism, and pushing down SQL predicates onto the vector search. 
 
-## Operational Notes
+Our local indexes are `PDX-IVF` indexes, maintained with the [LIRE protocol](https://dl.acm.org/doi/pdf/10.1145/3600006.3613166). To learn more about PDX-IVF, check our [Vector Index](/docs/VECTOR_INDEX.md) doc. 
 
-- **In-Memory Databases**: We recommend using DuckDB with a database file. In an in-memory database (`:memory:`) nothing is ever checkpointed, so an index larger than `memory_limit` writes its parts to the temporary files every time DuckDB evicts them. 
-  
-- **Minimum Memory**: Building an index needs room for one DuckDB row group at a time: its float embeddings and about 1.1x its index (about 0.5 GB with `u8` and 0.8 GB with `f32` for 122,880 rows and embeddings of 768 dimensions). Row groups are built as concurrently as `memory_limit` allows. `CREATE INDEX` will fail with an out-of-memory error if not enough memory is available. 
-
-- **Concurrency**: An index can be searched concurrently. However, maintenance operations exclude all searches while they run. 
-
-- **Inserts and Deletes**: `DELETE`s are applied to the index when the transaction commits. `INSERT`ed rows are buffered. They are only indexed by the first search that runs after the commit, one DuckDB row group at a time. Thus, the first query after a bulk load pays the indexing cost of the new rows (a few seconds per million rows). You can manually trigger a sync doing: `CALL duckir_vss_sync_index('my_idx');` 
-
-- **Our index mirrors DuckDB's row groups**: when a checkpoint merges or drops row groups, the next search rebuilds the affected part of the index from the table. 
+## Maintenance, Persistence and Out-of-Core
+See our docs for:
+- [Maintenance](/docs/MAINTENANCE.md)
+- [Persistence](/docs/PERSISTENCE.md)
+- [Out-of-Core](/docs/OUT_OF_CORE.md)
 
 ## Limitations
+See [LIMITATIONS.md](/docs/LIMITATIONS.md)
 
-- **Late Materialization on CTEs**: A search inside a CTE that DuckDB inlines at more than one place (e.g. `NOT MATERIALIZED`) loses our opt-out of DuckDB's late materialization (when $k \leq 50$). DuckDB's late materialization adds a second scan of the table, joined back on rowid and sorted again. The results are the same, but slower.
-
-- **Maximum `k`**: In `LATERAL` joins, we only support a maximum `k` (`k + o` with an `OFFSET`) of DuckDB's `STANDARD_VECTOR_SIZE` (default: 2048).
-
-- **Only FLOAT[d]**: We don't support `DOUBLE[n]` or other `ARRAY` types. You can cast with `::FLOAT[n]`, as we do in our Hugging Face example.
-
-- **`INSERT` + `SEARCH` in the same transaction**: An uncommitted `INSERT` will not be reflected in a vector search result.
-
-- **Query vector cannot come from a scalar subquery**: Query vectors must be a constant, a parameter, or: 
-```sql
-SET VARIABLE q = (SELECT embedding FROM t2 WHERE id = 42); 
-
-SELECT id 
-FROM t1
-ORDER BY array_distance(
-  t1.embedding, 
-  getvariable('q')
-) LIMIT 100;
-```
-
-The following query would not do an index search: 
-```sql
-SELECT id 
-FROM t1
-ORDER BY array_distance(
-  t1.embedding, 
-  (SELECT embedding FROM t2 WHERE id = 42)
-) LIMIT 100;
-```
-
-- **What needs to fit in memory**: We are working on making DuckIR fully out-of-core. Right now, for vector indexes, the centroids and a rowid mapping must stay resident (about 20 bytes per row at 768 dimensions).
-
-**Query shapes that run without an index:**
-
-- `NULL` first orders (`NULLS FIRST`, or `SET default_null_order = 'nulls_first'`), descending orders
-- Additional `ORDER BY` keys
-- `IN`/`EXISTS` subqueries whose result is larger than the indexed table.
-- Correlated subqueries
-- Joins with other tables. This doesn't use the index: `JOIN categories c ON t.cat = c.id WHERE c.name = 'x' ORDER BY ... LIMIT 10`. This will: `WHERE t.cat IN (SELECT id FROM categories WHERE name = 'x')`.
-- Searches that read a value that a subquery computes (e.g. `id * 2 AS x`) with $k > 50$.
-
-You can check whether your query is currently being optimized by prepending the `EXPLAIN` keyword to your search query and checking if a `DUCKIR_VSS` operator is part of the query plan.
+## Roadmap
+- Q1'2027: Full Text Search and Hybrid Search with local indexes.
+- Q1'2027: Beta release
+- Q2'2027: Integration in [DuckLake](https://ducklake.select/).
 
 ## Acknowledgements
 
 The extension would not be possible without the underlying technologies and the lessons learned from other extensions.
 
-- **[PDX](https://github.com/cwida/pdx)**: We use the PDX data layout and PDXearch framework.
-
-- **[Super K-Means](https://github.com/lkuffo/SuperKMeans)**: We use the Super K-Means library for fast k-means clustering.
-
-- **[VSS](https://github.com/duckdb/duckdb-vss)**: We've taken inspiration from the VSS interface and we reuse parts of the VSS extension's code.
+- **[PDX](https://github.com/cwida/pdx)**: Our core vector search library.   
+- **[SuperKMeans](https://github.com/lkuffo/SuperKMeans)**: We use the SuperKMeans library for fast k-means clustering.   
+- **[DuckDB-VSS](https://github.com/duckdb/duckdb-vss)**: We've taken inspiration from the VSS interface, and we reuse parts of the VSS extension's code.
 
 ## License
 
