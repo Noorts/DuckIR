@@ -64,6 +64,10 @@ private:
 	// The clusters of a row group that still receives rows split at this size: the
 	// duckir_vss_experimental_max_cluster_size setting when the index was created or loaded.
 	const uint32_t max_cluster_size;
+	// The duckir_vss_build_cluster_sketches and duckir_vss_cluster_sketch_check settings when the index was created or
+	// loaded: whether new IVF row groups get cluster sketches, and when searches check them.
+	const bool build_cluster_sketches;
+	const PDX::ClusterSketchCheck cluster_sketch_check;
 
 protected:
 	PDX::MemoryAllocator &memory_allocator;
@@ -73,11 +77,13 @@ protected:
 
 public:
 	VSSWrapper(PDX::Quantization quantization, PDX::DistanceMetric distance_metric, uint32_t num_dimensions,
-	           uint32_t n_probe, int32_t seed, uint32_t max_cluster_size, unique_ptr<float[]> rotation_matrix_p,
+	           uint32_t n_probe, int32_t seed, uint32_t max_cluster_size, bool build_cluster_sketches,
+	           PDX::ClusterSketchCheck cluster_sketch_check, unique_ptr<float[]> rotation_matrix_p,
 	           std::optional<PDX::SAQModel> saq_model_p, PDX::MemoryAllocator &memory_allocator)
 	    : num_dimensions(num_dimensions), is_normalized(PDX::DistanceMetricRequiresNormalization(distance_metric)),
 	      distance_metric(distance_metric), quantization(quantization), n_probe(n_probe), seed(seed),
-	      max_cluster_size(max_cluster_size), memory_allocator(memory_allocator),
+	      max_cluster_size(max_cluster_size), build_cluster_sketches(build_cluster_sketches),
+	      cluster_sketch_check(cluster_sketch_check), memory_allocator(memory_allocator),
 	      rotation_matrix(std::move(rotation_matrix_p)), saq_model(std::move(saq_model_p)) {
 		if (!rotation_matrix) {
 			if (quantization == PDX::Quantization::SAQ) {
@@ -131,6 +137,12 @@ public:
 	}
 	uint32_t GetMaxClusterSize() const {
 		return max_cluster_size;
+	}
+	bool BuildsClusterSketches() const {
+		return build_cluster_sketches;
+	}
+	PDX::ClusterSketchCheck GetClusterSketchCheck() const {
+		return cluster_sketch_check;
 	}
 	float *GetRotationMatrix() const {
 		return rotation_matrix.get();
@@ -245,15 +257,19 @@ public:
 	static constexpr double MAX_UNWRITTEN_DELETES_RATIO = 0.1;
 
 	uint64_t EstimateBuildPeakBytes(const idx_t num_embeddings) const {
-		const idx_t bytes_per_embedding = GetNumDimensions() * sizeof(PDX::pdx_data_t<Q>) + sizeof(uint32_t);
+		idx_t bytes_per_embedding = GetNumDimensions() * sizeof(PDX::pdx_data_t<Q>) + sizeof(uint32_t);
+		if (BuildsClusterSketches()) {
+			bytes_per_embedding += PDX::ClusterSketchQuantizer(GetNumDimensions()).row_size_in_bytes;
+		}
 		return static_cast<uint64_t>(BUILD_PEAK_FACTOR * static_cast<double>(num_embeddings * bytes_per_embedding));
 	}
 
 	VSSWrapperParallel(PDX::DistanceMetric distance_metric, uint32_t num_dimensions, uint32_t n_probe, int32_t seed,
-	                   uint32_t max_cluster_size, idx_t row_group_size, unique_ptr<float[]> rotation_matrix,
-	                   std::optional<PDX::SAQModel> saq_model, PDX::MemoryAllocator &memory_allocator)
-	    : VSSWrapper(Q, distance_metric, num_dimensions, n_probe, seed, max_cluster_size, std::move(rotation_matrix),
-	                 std::move(saq_model), memory_allocator),
+	                   uint32_t max_cluster_size, bool build_cluster_sketches, PDX::ClusterSketchCheck cluster_sketch_check,
+	                   idx_t row_group_size, unique_ptr<float[]> rotation_matrix, std::optional<PDX::SAQModel> saq_model,
+	                   PDX::MemoryAllocator &memory_allocator)
+	    : VSSWrapper(Q, distance_metric, num_dimensions, n_probe, seed, max_cluster_size, build_cluster_sketches,
+	                 cluster_sketch_check, std::move(rotation_matrix), std::move(saq_model), memory_allocator),
 	      row_group_size(row_group_size) {
 	}
 
@@ -765,7 +781,8 @@ private:
 		return config;
 	}
 
-	unique_ptr<PDX::PDXIndex<Q>> MakeIVFIndex(const PDX::PDXIndexConfig &config) const {
+	unique_ptr<PDX::PDXIndex<Q>> MakeIVFIndex(PDX::PDXIndexConfig config) const {
+		config.build_cluster_sketches = BuildsClusterSketches();
 		if constexpr (Q == PDX::SAQ) {
 			if (!saq_model) {
 				throw InternalException(
@@ -794,6 +811,7 @@ private:
 		}
 		auto ivf_index = MakeIVFIndex(config);
 		ivf_index->BuildIndex(ids.data(), embeddings, num_embeddings);
+		ivf_index->SetClusterSketchCheck(GetClusterSketchCheck());
 		return std::move(ivf_index);
 	}
 
@@ -803,6 +821,7 @@ private:
 		auto ivf_index =
 		    MakeIVFIndex(MakeRowGroupIndexConfig(row_group.row_start, row_ids.size(), row_group.is_closed, executor));
 		ivf_index->BuildIndex(row_ids.data(), embeddings.get(), row_ids.size());
+		ivf_index->SetClusterSketchCheck(GetClusterSketchCheck());
 		// The executor ends with the build: later appends and deletes run serially.
 		ivf_index->SetExecutor(nullptr);
 		row_group.index = std::move(ivf_index);
@@ -849,6 +868,7 @@ private:
 				reader.Finish();
 			}
 		}
+		index->SetClusterSketchCheck(GetClusterSketchCheck());
 		// The old index points to the old cache: it goes first.
 		row_group.index = std::move(index);
 		row_group.cluster_cache = std::move(cluster_cache);
@@ -883,6 +903,7 @@ private:
 			if (row_group.is_closed) {
 				row_group.index->ShrinkToFit();
 			}
+			row_group.index->SetClusterSketchCheck(GetClusterSketchCheck());
 		} catch (...) {
 			// A failed load leaves the row group as it was: paged from its home.
 			reader.Close();

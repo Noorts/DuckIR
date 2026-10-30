@@ -43,6 +43,7 @@ public:
 
 	static const case_insensitive_map_t<PDX::DistanceMetric> DISTANCE_METRIC_MAP;
 	static const case_insensitive_map_t<PDX::Quantization> QUANTIZATION_MAP;
+	static const case_insensitive_map_t<PDX::ClusterSketchCheck> CLUSTER_SKETCH_CHECK_MAP;
 
 private:
 	// Null only when the index was not loaded from storage and paging is off.
