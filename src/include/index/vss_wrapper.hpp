@@ -414,10 +414,11 @@ public:
 	                       const idx_t limit, PDX::TopKHeap &top_k_heap,
 	                       const std::vector<size_t> *const passing_row_ids,
 	                       const std::vector<uint32_t> *const clusters_access_order = nullptr,
-	                       const PDX::CentroidRankingQuery *const ranking_query = nullptr) {
+	                       const PDX::CentroidRankingQuery *const ranking_query = nullptr,
+	                       const PDX::ClusterSketchQueryTable *const sketch_query_table = nullptr) {
 		auto search_cursor = row_groups[row_group_idx]->index->BeginIterativeSearch(
 		    preprocessed_query_embedding, static_cast<uint32_t>(limit), top_k_heap, passing_row_ids,
-		    /*is_query_transformed=*/true, clusters_access_order, ranking_query);
+		    /*is_query_transformed=*/true, clusters_access_order, ranking_query, sketch_query_table);
 		return unique_ptr<PDX::IIterativeSearch>(search_cursor.release());
 	}
 
@@ -427,6 +428,21 @@ public:
 	                                                        const PDX::CentroidRankingQuery *const ranking_query) {
 		return row_groups[row_group_idx]->index->GetClustersAccessOrder(preprocessed_query_embedding,
 		                                                                /*is_query_transformed=*/true, ranking_query);
+	}
+
+	unique_ptr<PDX::ClusterSketchQueryTable>
+	CreateSketchQueryTable(const float *const preprocessed_query_embedding) const {
+		// One table per query, from the first row group whose index has sketches (Flat ones and IVF ones built without
+		// sketches return nullptr before touching the query). Every row group shares the rotation (u4: also the sketch
+		// rotation, drawn from the seed), so the table serves all of them.
+		for (const auto &row_group : row_groups) {
+			auto table = row_group->index->CreateClusterSketchQueryTable(preprocessed_query_embedding,
+			                                                             /*is_query_transformed=*/true);
+			if (table) {
+				return unique_ptr<PDX::ClusterSketchQueryTable>(table.release());
+			}
+		}
+		return nullptr;
 	}
 
 	const PDX::IPDXIndex &GetRowGroupIndex(const idx_t row_group_idx) const {

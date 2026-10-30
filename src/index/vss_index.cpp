@@ -563,14 +563,26 @@ uint64_t VSSIndex::EstimateBuildPeakBytes(const idx_t num_embeddings) const {
 	return DispatchWrapper([&](auto &wrapper) { return wrapper.EstimateBuildPeakBytes(num_embeddings); });
 }
 
+unique_ptr<PDX::ClusterSketchQueryTable>
+VSSIndex::CreateSketchQueryTable(const float *const preprocessed_query_embedding) const {
+	const auto check = vss_wrapper->GetClusterSketchCheck();
+	// Without paging every cluster is in memory, so WHEN_CLUSTER_NOT_CACHED never checks
+	if (check == PDX::ClusterSketchCheck::NEVER ||
+	    (check == PDX::ClusterSketchCheck::WHEN_CLUSTER_NOT_CACHED && !cluster_paging)) {
+		return nullptr;
+	}
+	return DispatchWrapper([&](auto &wrapper) { return wrapper.CreateSketchQueryTable(preprocessed_query_embedding); });
+}
+
 unique_ptr<PDX::IIterativeSearch>
 VSSIndex::BeginSearchForRowGroup(const idx_t row_group_idx, const float *const preprocessed_query, const idx_t limit,
                                  PDX::TopKHeap &top_k_heap, const std::vector<size_t> *const passing_row_ids,
                                  const std::vector<uint32_t> *const clusters_access_order,
-                                 const PDX::CentroidRankingQuery *const ranking_query) {
+                                 const PDX::CentroidRankingQuery *const ranking_query,
+                                 const PDX::ClusterSketchQueryTable *const sketch_query_table) {
 	return DispatchWrapper([&](auto &wrapper) {
 		return wrapper.BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids,
-		                                      clusters_access_order, ranking_query);
+		                                      clusters_access_order, ranking_query, sketch_query_table);
 	});
 }
 
