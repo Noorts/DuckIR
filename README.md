@@ -205,7 +205,7 @@ To issue queries in bulk, see [LATERAL JOIN](#lateral-join-aka-nearest-similarit
 ## Our Vector Index
 We create a local index per DuckDB row group, allowing for lightweight maintenance, morsel-driven parallelism, and pushing down SQL predicates onto the vector search. 
 
-Our local indexes are `PDX-IVF` indexes, maintained with the `LIRE` protocol. To learn more about PDX-IVF, check our [Vector Index](/docs/VECTOR_INDEX.md) doc. 
+Our local indexes are `PDX-IVF` indexes, maintained with the [LIRE protocol](https://dl.acm.org/doi/pdf/10.1145/3600006.3613166). To learn more about PDX-IVF, check our [Vector Index](/docs/VECTOR_INDEX.md) doc. 
 
 ## Maintenance, Persistence and Out-of-Core
 See our docs for:

@@ -2,7 +2,7 @@
 
 DuckIR builds on Linux (x86, ARM), macOS, Windows (x86) and Wasm. Our CI builds and tests it for all of them on every push (except Windows with MinGW and multithreaded Wasm). We develop on macOS and Linux, so the steps below are for those two.
 
-DuckIR builds against DuckDB v2.0.0, pinned by the `duckdb` submodule. An extension only loads into the DuckDB version it was built for.
+DuckIR builds against **DuckDB v2.0.0**, pinned by the `duckdb` submodule. 
 
 ## Prerequisites
 
