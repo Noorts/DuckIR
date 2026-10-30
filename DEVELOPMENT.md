@@ -51,7 +51,7 @@ GEN=ninja make
 
 `make` runs an optimized `release` build. The first build also compiles DuckDB, so it takes a few minutes. It produces:
 - `build/release/extension/duckir/duckir.duckdb_extension`: the loadable extension.
-- `build/release/duckdb`: a DuckDB shell with DuckIR already linked in.
+- `build/release/duckdb`: a DuckDB shell built from the `duckdb` submodule. Start it with `-unsigned` to `LOAD` the extension.
 - `build/release/test/unittest`: the test runner.
 
 For a debug build, run `DISABLE_SANITIZER=1 make debug`. Without `DISABLE_SANITIZER=1`, DuckDB's own code trips the sanitizers. Other build modes are `reldebug` and `relassert`.
