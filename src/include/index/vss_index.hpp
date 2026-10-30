@@ -34,6 +34,9 @@ struct VSSIndexStats {
 	int64_t cluster_acquires;
 	int64_t cluster_cache_misses;
 	int64_t cluster_bytes_fetched;
+	int64_t cluster_sketch_acquires;
+	int64_t cluster_sketch_cache_misses;
+	int64_t cluster_sketch_bytes_fetched;
 	int64_t blocks_read;
 };
 

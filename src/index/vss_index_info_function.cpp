@@ -83,6 +83,18 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
      [](const IndexInfoColumnInput &input) {
 	     return Value::BIGINT(input.stats.cluster_bytes_fetched);
      }},
+    {"cluster_sketch_acquires", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_sketch_acquires);
+     }},
+    {"cluster_sketch_cache_misses", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_sketch_cache_misses);
+     }},
+    {"cluster_sketch_bytes_fetched", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_sketch_bytes_fetched);
+     }},
     {"blocks_read", LogicalType::BIGINT,
      [](const IndexInfoColumnInput &input) {
 	     return Value::BIGINT(input.stats.blocks_read);

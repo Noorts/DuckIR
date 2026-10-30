@@ -254,6 +254,15 @@ void VSSClusterCache::BindIndex(const PDX::IPDXIndex &index_p, const idx_t clust
 	clusters = make_uniq_array<CachedCluster>(num_clusters);
 }
 
+// offset: from the start of the cluster data, as PDX gives the ranges of the clusters and their sketches.
+void VSSClusterCache::ReadFromHome(const idx_t offset, const idx_t num_bytes, char *const dst) const {
+	if (temporary_chain) {
+		temporary_chain->ReadRange(buffer_manager, cluster_data_start + offset, num_bytes, dst);
+	} else {
+		reader.ReadRange(*chain, cluster_data_start + offset, num_bytes, dst);
+	}
+}
+
 // The thread that completes a period halves the counts: an access k periods old weighs 2^-k.
 void VSSClusterCache::RecordAccess(CachedCluster &cluster) {
 	if (!reader.cache_tiers) {
@@ -302,12 +311,7 @@ const char *VSSClusterCache::Acquire(const uint32_t cluster_id) {
 			}
 			auto new_block = buffer_manager.Allocate(MemoryTag::EXTENSION, range.second, /*can_destroy=*/true);
 			SetEvictionQueue(cluster, new_block);
-			const auto dst = char_ptr_cast(new_block.GetDataMutable());
-			if (temporary_chain) {
-				temporary_chain->ReadRange(buffer_manager, cluster_data_start + range.first, range.second, dst);
-			} else {
-				reader.ReadRange(*chain, cluster_data_start + range.first, range.second, dst);
-			}
+			ReadFromHome(range.first, range.second, char_ptr_cast(new_block.GetDataMutable()));
 			cluster.block = new_block.GetBlockHandle();
 			cluster.pinned_block = std::move(new_block);
 		}
@@ -322,6 +326,51 @@ void VSSClusterCache::Release(const uint32_t cluster_id) {
 	cluster.pin_count--;
 	if (cluster.pin_count == 0) {
 		cluster.pinned_block.Destroy();
+	}
+}
+
+// Without pinning it: DuckDB may evict it right after, so this is a hint.
+bool VSSClusterCache::IsClusterCached(const uint32_t cluster_id) const {
+	auto &cluster = clusters[cluster_id];
+	lock_guard<mutex> guard(cluster.lock);
+	return cluster.block && !cluster.block->GetMemory().IsUnloaded();
+}
+
+// As Acquire, for the cluster's sketch, which DuckDB evicts after every cluster.
+const char *VSSClusterCache::AcquireSketch(const uint32_t cluster_id) {
+	const bool record_counters = reader.counters.enabled.load(std::memory_order_relaxed);
+	if (record_counters) {
+		reader.counters.cluster_sketch_acquires++;
+	}
+	auto &cluster = clusters[cluster_id];
+	lock_guard<mutex> guard(cluster.lock);
+	if (cluster.sketch_pin_count == 0) {
+		if (cluster.sketch_block) {
+			cluster.pinned_sketch_block = buffer_manager.Pin(cluster.sketch_block);
+		}
+		if (!cluster.pinned_sketch_block.IsValid()) {
+			const auto range = index->GetClusterSketchRange(cluster_id);
+			if (record_counters) {
+				reader.counters.cluster_sketch_cache_misses++;
+				reader.counters.cluster_sketch_bytes_fetched += range.second;
+			}
+			auto new_block = buffer_manager.Allocate(MemoryTag::EXTENSION, range.second, /*can_destroy=*/true);
+			new_block.GetBlockHandle()->GetMemory().SetEvictionQueueIndex(CLUSTER_SKETCH_EVICTION_QUEUE);
+			ReadFromHome(range.first, range.second, char_ptr_cast(new_block.GetDataMutable()));
+			cluster.sketch_block = new_block.GetBlockHandle();
+			cluster.pinned_sketch_block = std::move(new_block);
+		}
+	}
+	cluster.sketch_pin_count++;
+	return const_char_ptr_cast(cluster.pinned_sketch_block.Ptr());
+}
+
+void VSSClusterCache::ReleaseSketch(const uint32_t cluster_id) {
+	auto &cluster = clusters[cluster_id];
+	lock_guard<mutex> guard(cluster.lock);
+	cluster.sketch_pin_count--;
+	if (cluster.sketch_pin_count == 0) {
+		cluster.pinned_sketch_block.Destroy();
 	}
 }
 

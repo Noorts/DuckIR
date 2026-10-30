@@ -74,6 +74,9 @@ struct VSSPagingCounters {
 	atomic<idx_t> cluster_acquires {0};
 	atomic<idx_t> cluster_cache_misses {0};
 	atomic<idx_t> cluster_bytes_fetched {0};
+	atomic<idx_t> cluster_sketch_acquires {0};
+	atomic<idx_t> cluster_sketch_cache_misses {0};
+	atomic<idx_t> cluster_sketch_bytes_fetched {0};
 	atomic<idx_t> blocks_read {0};
 };
 
@@ -173,16 +176,21 @@ public:
 
 	const char *Acquire(uint32_t cluster_id) override;
 	void Release(uint32_t cluster_id) override;
+	bool IsClusterCached(uint32_t cluster_id) const override;
+	const char *AcquireSketch(uint32_t cluster_id) override;
+	void ReleaseSketch(uint32_t cluster_id) override;
 
 	uint64_t GetInMemorySizeInBytes() const;
 
 private:
 	// duckir_vss_cache_tiers: the access counts halve every ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS acquires per cluster,
 	// and a cluster acquired at least HOT_ACCESS_FACTOR times the average when it is fetched goes to the eviction queue
-	// HOT_CLUSTER_EVICTION_QUEUE: evicted after the other clusters, before the temporary chains.
+	// HOT_CLUSTER_EVICTION_QUEUE: evicted after the other clusters, before the sketches (CLUSTER_SKETCH_EVICTION_QUEUE)
+	// and the temporary chains.
 	static constexpr idx_t ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS = 10;
 	static constexpr idx_t HOT_ACCESS_FACTOR = 2;
-	static constexpr idx_t HOT_CLUSTER_EVICTION_QUEUE = 1;
+	static constexpr idx_t HOT_CLUSTER_EVICTION_QUEUE = 2;
+	static constexpr idx_t CLUSTER_SKETCH_EVICTION_QUEUE = 1;
 
 	struct CachedCluster {
 		mutex lock;
@@ -190,11 +198,15 @@ private:
 		BufferHandle pinned_block;
 		idx_t pin_count = 0;
 		atomic<idx_t> access_count {0};
+		shared_ptr<BlockHandle> sketch_block;
+		BufferHandle pinned_sketch_block;
+		idx_t sketch_pin_count = 0;
 	};
 
 	void RecordAccess(CachedCluster &cluster);
 	void SetEvictionQueue(const CachedCluster &cluster, BufferHandle &new_block) const;
 	void BindIndex(const PDX::IPDXIndex &index, idx_t cluster_data_start);
+	void ReadFromHome(idx_t offset, idx_t num_bytes, char *dst) const;
 
 	const VSSBlockChainReader &reader;
 	BufferManager &buffer_manager;

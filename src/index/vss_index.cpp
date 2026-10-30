@@ -743,6 +743,9 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 		result->cluster_acquires = static_cast<int64_t>(counters.cluster_acquires.load());
 		result->cluster_cache_misses = static_cast<int64_t>(counters.cluster_cache_misses.load());
 		result->cluster_bytes_fetched = static_cast<int64_t>(counters.cluster_bytes_fetched.load());
+		result->cluster_sketch_acquires = static_cast<int64_t>(counters.cluster_sketch_acquires.load());
+		result->cluster_sketch_cache_misses = static_cast<int64_t>(counters.cluster_sketch_cache_misses.load());
+		result->cluster_sketch_bytes_fetched = static_cast<int64_t>(counters.cluster_sketch_bytes_fetched.load());
 		result->blocks_read = static_cast<int64_t>(counters.blocks_read.load());
 	}
 
@@ -1148,7 +1151,8 @@ void VSSModule::RegisterIndex(DatabaseInstance &db) {
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
 	db.config.AddExtensionOption("duckir_vss_paging_counters",
 	                             "indexes loaded with it on count their cluster cache's acquires, misses and bytes "
-	                             "read, and the blocks read, in duckir_vss_index_info (default: false)",
+	                             "read, of the clusters and of their sketches, and the blocks read, in "
+	                             "duckir_vss_index_info (default: false)",
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::GLOBAL);
 	db.config.AddExtensionOption("duckir_vss_cache_tiers",
 	                             "in indexes loaded with it on, the clusters searches read most often are the last "
