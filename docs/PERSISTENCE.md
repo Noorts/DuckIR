@@ -8,7 +8,9 @@ A checkpoint only rewrites the local indexes that changed since the previous che
 
 After a `CREATE INDEX`, we store chains of DuckDB segments per local index. A directory (stored in its own chain of segments) keeps pointers to each local index's chain. 
 
-![Persistence with Local Indexes](/docs/diagrams/persistence.png)
+<p align="center">
+        <img src="diagrams/persistence.png" alt="Persistence with Local Indexes" width=650>
+</p>
 
 Any change in the index only touches the chain of its local index. 
 

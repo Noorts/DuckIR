@@ -2,7 +2,7 @@
 
 DuckIR creates one local index per DuckDB row group, allowing for lightweight maintenance, morsel-driven parallelism, and pushing down SQL predicates onto the vector search. 
 
-Our local indexes are `PDX-IVF` indexes, maintained with the `LIRE` protocol. 
+Our local indexes are `PDX-IVF` indexes, maintained with the [LIRE protocol](https://dl.acm.org/doi/pdf/10.1145/3600006.3613166). 
 
 ## PDX-IVF
 
@@ -16,21 +16,19 @@ PDX codebase: https://github.com/cwida/PDX
 
 ## Quantization
 
-### Centroids
-In PDX-IVF, centroids are quantized to 8 bits using [LVQ](https://arxiv.org/pdf/2304.04759).  
+**Centroids**: In PDX-IVF, centroids are quantized to 8 bits using [LVQ](https://arxiv.org/pdf/2304.04759).  
 
-### Embeddings
-We support three quantization schemes:
+**Embeddings**: We support three quantization schemes:
 
-#### `f32`: No compression
+### `f32`: No compression
 `f32`, short for `float32`, means no compression. Embeddings are stored as-is in the [PDX layout](https://github.com/cwida/PDX#float32).
 
-#### `u8`: ×4 compression 
+### `u8`: ×4 compression 
 `u8` stores 1 byte per dimension, resulting in a small quality loss (measured at around 1% on modern embedding datasets). `u8` uses the simplest form of scalar quantization: each local index maps its values between the minimum and maximum of its embeddings. 
 
 Embeddings are stored in the [PDX layout for 8-bit values](https://github.com/cwida/PDX#8-bits).
 
-#### `u4`: ×8 compression 
+### `u4`: ×8 compression 
 `u4` stores 4 bits per dimension. Remarkably, the quality loss is measured at less than 1% relative to `u8` in embedding datasets (Cohere, MXBAI, OpenAI). `u4` is an implementation of [SAQ](https://dl.acm.org/doi/pdf/10.1145/3769824). 
 
 SAQ allocates more bits to more important dimensions. Vectors are PCA-rotated, and then a DP algorithm on a sample chooses how many bits to allocate to each segment.
@@ -52,11 +50,11 @@ Clusters are stored in **nearest-neighbor order**, so that a single fetch from s
 
 ## Small Row Groups
 
-When a row group has fewer than 2,048 rows, we keep the vectors in a buffer, and searches run without an index. Once a row group reaches 2,048 rows, we create an index.
+When a row group has fewer than 2,048 rows, searches run without an index. This means that all vectors in a row group are always searched (unless the pushed-down predicate skips the row group). Once a row group reaches 2,048 rows, we create an index for it.
 
 ## Indexing via Clustering
 
-We use hierarchical $k$-means with SuperKMeans. SuperKMeans uses the PDX layout and dimension pruning to accelerate the assignment phase of $k$-means by orders of magnitude. 
+We use hierarchical $k$-means with SuperKMeans. SuperKMeans uses the PDX layout and dimension pruning ([ADSampling](https://dl.acm.org/doi/pdf/10.1145/3589282)) to accelerate the assignment phase of $k$-means by orders of magnitude. 
 
 Our clustering algorithm is very fast. A row group can be indexed in a few seconds, mostly slowed down by materializing the clusters.
 
