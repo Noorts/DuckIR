@@ -19,6 +19,10 @@ SET checkpoint_threshold = '10GB';
 statement ok
 SET duckir_vss_paging_counters = true;
 
+# Read when the index loads: no sketch skips a probed cluster, so cluster_acquires counts every one.
+statement ok
+SET duckir_vss_cluster_sketch_check = 'never';
+
 statement ok
 SET duckir_vss_n_probe = 0;
 
