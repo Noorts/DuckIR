@@ -29,6 +29,7 @@ class VSSWrapper {
 public:
 	static constexpr PDX::DistanceMetric DEFAULT_DISTANCE_METRIC = PDX::DistanceMetric::L2SQ;
 	static constexpr PDX::Quantization DEFAULT_QUANTIZATION = PDX::Quantization::U8;
+	static constexpr PDX::CentroidQuantization CENTROID_QUANTIZATION = PDX::CentroidQuantization::LVQ8;
 	static constexpr int32_t DEFAULT_N_PROBE = 24; // 5% of the data in a full search
 	// Clusters average about 256 rows, one u8 block
 	static constexpr uint32_t DEFAULT_MAX_CLUSTER_SIZE = 384;
@@ -121,6 +122,7 @@ public:
 		config.allocator = &memory_allocator;
 		config.is_data_transformed = true;
 		config.base_row_id = static_cast<size_t>(base_row_id);
+		config.centroid_quantization = CENTROID_QUANTIZATION;
 		return config;
 	}
 
@@ -291,18 +293,20 @@ public:
 	BeginSearchForRowGroup(const idx_t row_group_idx, const float *const preprocessed_query_embedding,
 	                       const idx_t limit, PDX::TopKHeap &top_k_heap,
 	                       const std::vector<size_t> *const passing_row_ids,
-	                       const std::vector<uint32_t> *const clusters_access_order = nullptr) {
+	                       const std::vector<uint32_t> *const clusters_access_order = nullptr,
+	                       const PDX::CentroidRankingQuery *const ranking_query = nullptr) {
 		auto search_cursor = row_groups[row_group_idx]->index->BeginIterativeSearch(
 		    preprocessed_query_embedding, static_cast<uint32_t>(limit), top_k_heap, passing_row_ids,
-		    /*is_query_transformed=*/true, clusters_access_order);
+		    /*is_query_transformed=*/true, clusters_access_order, ranking_query);
 		return unique_ptr<PDX::IIterativeSearch>(search_cursor.release());
 	}
 
 	// The row group's clusters, nearest to the query first (searches of one query share it).
 	std::vector<uint32_t> GetClustersAccessOrderForRowGroup(const idx_t row_group_idx,
-	                                                        const float *const preprocessed_query_embedding) {
+	                                                        const float *const preprocessed_query_embedding,
+	                                                        const PDX::CentroidRankingQuery *const ranking_query) {
 		return row_groups[row_group_idx]->index->GetClustersAccessOrder(preprocessed_query_embedding,
-		                                                                /*is_query_transformed=*/true);
+		                                                                /*is_query_transformed=*/true, ranking_query);
 	}
 
 	const PDX::IPDXIndex &GetRowGroupIndex(const idx_t row_group_idx) const {

@@ -508,17 +508,20 @@ uint64_t VSSIndex::EstimateBuildPeakBytes(const idx_t num_embeddings) const {
 unique_ptr<PDX::IIterativeSearch>
 VSSIndex::BeginSearchForRowGroup(const idx_t row_group_idx, const float *const preprocessed_query, const idx_t limit,
                                  PDX::TopKHeap &top_k_heap, const std::vector<size_t> *const passing_row_ids,
-                                 const std::vector<uint32_t> *const clusters_access_order) {
+                                 const std::vector<uint32_t> *const clusters_access_order,
+                                 const PDX::CentroidRankingQuery *const ranking_query) {
 	return DispatchWrapper([&](auto &wrapper) {
 		return wrapper.BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids,
-		                                      clusters_access_order);
+		                                      clusters_access_order, ranking_query);
 	});
 }
 
-std::vector<uint32_t> VSSIndex::GetClustersAccessOrderForRowGroup(const idx_t row_group_idx,
-                                                                  const float *const preprocessed_query) {
-	return DispatchWrapper(
-	    [&](auto &wrapper) { return wrapper.GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query); });
+std::vector<uint32_t>
+VSSIndex::GetClustersAccessOrderForRowGroup(const idx_t row_group_idx, const float *const preprocessed_query,
+                                            const PDX::CentroidRankingQuery *const ranking_query) {
+	return DispatchWrapper([&](auto &wrapper) {
+		return wrapper.GetClustersAccessOrderForRowGroup(row_group_idx, preprocessed_query, ranking_query);
+	});
 }
 
 /******************************************************************
