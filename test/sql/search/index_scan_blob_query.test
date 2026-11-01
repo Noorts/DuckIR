@@ -10,76 +10,75 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 # ============================================
-# 1. Encode/decode round-trip (within quantization tolerance)
+# 1. Encoding: the float32 values of the text, as little-endian bytes
 # ============================================
 
-# Encode then decode, check max absolute error < 0.01
 query I
-SELECT max(abs(a - b)) < 0.01
-FROM (
-    SELECT unnest(duckir_vss_decode_blob(duckir_vss_encode_blob([1.0, -0.5, 0.001, 0.0, -0.001]::FLOAT[]))) AS a,
-           unnest([1.0, -0.5, 0.001, 0.0, -0.001]::FLOAT[]) AS b
-);
+SELECT duckir_vss_encode_query('[1.0, -0.5, 0.001, 0.0, -0.001]') = from_hex('0000803f000000bf6f12833a000000006f1283ba');
+----
+true
+
+# Values beyond the old 16-bit encoding's range stay exact.
+query I
+SELECT duckir_vss_encode_query('[184.95, 982.2845]') = from_hex('33f3384335927544');
 ----
 true
 
 # ============================================
-# 2. Base64 round-trip (exact)
+# 2. NULLs and malformed text
 # ============================================
 
 query I
-SELECT duckir_vss_base64_to_blob(duckir_vss_blob_to_base64(duckir_vss_encode_blob([1.0, -0.5, 0.25]::FLOAT[])))
-    = duckir_vss_encode_blob([1.0, -0.5, 0.25]::FLOAT[]);
+SELECT duckir_vss_encode_query(NULL) IS NULL;
 ----
 true
 
+statement error
+SELECT duckir_vss_encode_query('[1.0, NULL]');
+----
+the query vector can not contain NULL values
+
+statement error
+SELECT duckir_vss_encode_query('[1.0, abc]');
+----
+Could not convert string 'abc' to FLOAT
+
 # ============================================
-# 3. Distance function correctness with blob
+# 3. Distances equal those of the FLOAT[d] query, in both argument orders
 # ============================================
 
 statement ok
 CREATE TABLE t1 (id INTEGER, emb FLOAT[3]);
 
 statement ok
-INSERT INTO t1 VALUES (1, [1.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0]), (3, [0.0, 0.0, 1.0]);
+INSERT INTO t1 VALUES (1, [1.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0]), (3, [0.25, -0.5, 2.0]);
 
-# array_distance with blob on left
 query I
-SELECT round(array_distance(duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]), emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
+SELECT bool_and(
+    array_distance(duckir_vss_encode_query('[1.0, 0.5, -2.0]'), emb) = array_distance('[1.0, 0.5, -2.0]'::FLOAT[3], emb)
+    AND array_distance(emb, duckir_vss_encode_query('[1.0, 0.5, -2.0]')) = array_distance(emb, '[1.0, 0.5, -2.0]'::FLOAT[3])
+    AND array_distance(emb, duckir_vss_encode_query('[1.0, 0.5, -2.0]')) = array_distance(emb, [1.0, 0.5, -2.0]::FLOAT[3])
+    AND array_cosine_distance(duckir_vss_encode_query('[1.0, 0.5, -2.0]'), emb) = array_cosine_distance('[1.0, 0.5, -2.0]'::FLOAT[3], emb)
+    AND array_cosine_distance(emb, duckir_vss_encode_query('[1.0, 0.5, -2.0]')) = array_cosine_distance(emb, '[1.0, 0.5, -2.0]'::FLOAT[3])
+    AND (duckir_vss_encode_query('[1.0, 0.5, -2.0]') <-> emb) = ('[1.0, 0.5, -2.0]'::FLOAT[3] <-> emb)
+    AND (emb <=> duckir_vss_encode_query('[1.0, 0.5, -2.0]')) = (emb <=> '[1.0, 0.5, -2.0]'::FLOAT[3]))
+FROM t1;
 ----
-0.00
-1.41
-1.41
+true
 
-# array_distance with blob on right
-query I
-SELECT round(array_distance(emb, duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]))::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
+# Cosine on degenerate vectors as DuckDB: NaN for a zero vector, 0 for identical vectors whose norms underflow or overflow.
+query III
+SELECT isnan(array_cosine_distance(emb, duckir_vss_encode_query('[0.0, 0.0, 0.0]'))),
+       array_cosine_distance('[1e-30, 1e-30, 1e-30]'::FLOAT[3], duckir_vss_encode_query('[1e-30, 1e-30, 1e-30]')),
+       array_cosine_distance('[1e20, 1e20, 1e20]'::FLOAT[3], duckir_vss_encode_query('[1e20, 1e20, 1e20]'))
+FROM t1 WHERE id = 1;
 ----
-0.00
-1.41
-1.41
+true	0.0	0.0
 
-# array_cosine_distance with blob (identical=0, orthogonal=1)
-query I
-SELECT round(array_cosine_distance(duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]), emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
+statement error
+SELECT array_distance(emb, duckir_vss_encode_query('[1.0, 0.0]')) FROM t1;
 ----
-0.00
-1.00
-1.00
-
-# <-> operator with blob
-query I
-SELECT round((duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]) <-> emb)::DECIMAL(18,4), 2) FROM t1 ORDER BY id;
-----
-0.00
-1.41
-1.41
-
-# <=> operator with blob
-query I
-SELECT round((duckir_vss_encode_blob([1.0, 0.0, 0.0]::FLOAT[]) <=> emb)::DECIMAL(18,4), 4) FROM t1 WHERE id = 1;
-----
-0.0000
+BLOB of 8 bytes does not hold the 3 float32 values of the array
 
 statement ok
 DROP TABLE t1;
@@ -110,9 +109,18 @@ CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = '{metric_name}')
 
 # Index scan is used with blob query
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY {distance_func}(emb, duckir_vss_encode_blob({QUERY_EMB}::FLOAT[])) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY {distance_func}(emb, duckir_vss_encode_query('{QUERY_EMB}')) LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
+
+# The same nearest rows as the FLOAT[d] query.
+query I
+SELECT count(*) FROM (
+    (SELECT id FROM t2 ORDER BY {distance_func}(emb, duckir_vss_encode_query('{QUERY_EMB}')) LIMIT 10)
+    EXCEPT
+    (SELECT id FROM t2 ORDER BY {distance_func}(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10));
+----
+0
 
 endloop
 
@@ -127,7 +135,7 @@ statement ok
 CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq');
 
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY emb <-> duckir_vss_encode_blob({QUERY_EMB}::FLOAT[]) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY emb <-> duckir_vss_encode_query('{QUERY_EMB}') LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 
@@ -138,7 +146,7 @@ statement ok
 CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (metric = 'cosine');
 
 query II
-EXPLAIN SELECT * FROM t2 ORDER BY emb <=> duckir_vss_encode_blob({QUERY_EMB}::FLOAT[]) LIMIT 10;
+EXPLAIN SELECT * FROM t2 ORDER BY emb <=> duckir_vss_encode_query('{QUERY_EMB}') LIMIT 10;
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*
 

@@ -515,10 +515,10 @@ static bool TryReadQuery(const PhysicalVSSIndexJoin &op, DataChunk &input, const
 	const auto num_dimensions = state.num_dimensions;
 	if (query_vector.GetType().id() == LogicalTypeId::BLOB) {
 		const auto &blob = UnifiedVectorFormat::GetData<string_t>(state.query_format)[query_idx];
-		if (BlobDimensionCount(blob.GetSize()) != num_dimensions) {
+		if (blob.GetSize() != num_dimensions * sizeof(float)) {
 			// The error of the distance function, which gets the same query for each row we return.
-			throw InvalidInputException("BLOB dimension count (%llu) does not match array size (%llu)",
-			                            BlobDimensionCount(blob.GetSize()), num_dimensions);
+			throw InvalidInputException("BLOB of %llu bytes does not hold the %llu float32 values of the array",
+			                            blob.GetSize(), num_dimensions);
 		}
 		DecodeBlobToFloatArray(const_data_ptr_cast(blob.GetData()), blob.GetSize(), raw_query);
 		return true;

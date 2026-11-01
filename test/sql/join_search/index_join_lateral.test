@@ -31,7 +31,7 @@ CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[{DIMS}] AS em
 
 # The query rows: 10 SIFT vectors that are not in t, as FLOAT arrays and as BLOBs.
 statement ok
-CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[{DIMS}] AS vec, duckir_vss_encode_blob(emb::FLOAT[]) AS blob_vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
+CREATE TABLE q AS SELECT (id - 240000)::INTEGER AS qid, emb::FLOAT[{DIMS}] AS vec, duckir_vss_encode_query(emb::FLOAT[]::VARCHAR) AS blob_vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 240000 AND id < 240010;
 
 # The same query rows, the first three twice (qid + 100), and a row without a query vector.
 statement ok
