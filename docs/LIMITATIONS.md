@@ -1,7 +1,7 @@
 # Known Limitations
 
-- **Maximum Dimensionality**: 16,384.   
-  
+- **Maximum Dimensionality**: 16,384.
+
 - **Minimum Dimensionality**: 64 for `u4`; no minimum for `u8` and `f32`.
 
 - **No inner product**: `array_inner_product` and `array_negative_inner_product` queries run without the index.
@@ -16,27 +16,29 @@
 
 - **`u4` is NOT drift resilient**: The SAQ index (`u4`) is data-aware: it is fitted once and never refitted. The fit happens at `CREATE INDEX` if the table already has at least 2,048 rows; otherwise, on the rows of the first local index promoted to IVF. Later rows are encoded with that fit, so a strong shift in the data might drop recall. This doesn't happen in `u8` or `f32`, where drift is naturally handled by the fact that `INSERT`s always go into the last row group.
 
-- **Query vector cannot come from a scalar subquery**: Query vectors must be a constant, a parameter, or: 
-```sql
-SET VARIABLE q = (SELECT embedding FROM t2 WHERE id = 42); 
+- **Query vector cannot come from a scalar subquery**: Query vectors must be a constant, a parameter, or:
 
-SELECT id 
-FROM t1
-ORDER BY array_distance(
-  t1.embedding, 
-  getvariable('q')
-) LIMIT 100;
-```
+  ```sql
+  SET VARIABLE q = (SELECT embedding FROM t2 WHERE id = 42);
 
-The following query would not do an index search: 
-```sql
-SELECT id 
-FROM t1
-ORDER BY array_distance(
-  t1.embedding, 
-  (SELECT embedding FROM t2 WHERE id = 42)
-) LIMIT 100;
-```
+  SELECT id
+  FROM t1
+  ORDER BY array_distance(
+    t1.embedding,
+    getvariable('q')
+  ) LIMIT 100;
+  ```
+
+  The following query would not do an index search:
+
+  ```sql
+  SELECT id
+  FROM t1
+  ORDER BY array_distance(
+    t1.embedding,
+    (SELECT embedding FROM t2 WHERE id = 42)
+  ) LIMIT 100;
+  ```
 
 ### Query shapes that run without an index:
 

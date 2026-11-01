@@ -2,7 +2,7 @@
 
 DuckIR builds on Linux (x86, ARM), macOS, Windows (x86) and Wasm. Our CI builds and tests it for all of them on every push (except Windows with MinGW and multithreaded Wasm). We develop on macOS and Linux, so the steps below are for those two.
 
-DuckIR builds against **DuckDB v2.0.0**, pinned by the `duckdb` submodule. 
+DuckIR builds against **DuckDB v2.0.0**, pinned by the `duckdb` submodule.
 
 ## Prerequisites
 
@@ -50,6 +50,7 @@ GEN=ninja make
 ```
 
 `make` runs an optimized `release` build. The first build also compiles DuckDB, so it takes a few minutes. It produces:
+
 - `build/release/extension/duckir/duckir.duckdb_extension`: the loadable extension.
 - `build/release/duckdb`: a DuckDB shell built from the `duckdb` submodule. Start it with `-unsigned` to `LOAD` the extension.
 - `build/release/test/unittest`: the test runner.
