@@ -40,7 +40,7 @@ CREATE TABLE small AS SELECT (range * 7)::BIGINT AS x FROM range(2000);
 statement ok
 CREATE VIEW v AS SELECT * FROM t WHERE id % 3 = 0 OR cat = 4;
 
-foreach quantization f32 u8
+foreach quantization f32 u4 u8
 
 statement ok
 DROP INDEX IF EXISTS t_idx;

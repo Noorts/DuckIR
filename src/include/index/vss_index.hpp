@@ -63,7 +63,6 @@ private:
 	// Declared before the wrapper, whose PDX buffers it frees.
 	DuckDBMemoryAllocator memory_allocator;
 	unique_ptr<VSSWrapper> vss_wrapper;
-	unique_ptr<EmbeddingPreprocessor> embedding_preprocessor;
 
 	// Calls f with the wrapper as its quantization's VSSWrapperParallel, and returns what f returns.
 	template <class F>
@@ -73,6 +72,8 @@ private:
 			return f(*static_cast<VSSWrapperF32 *>(vss_wrapper.get()));
 		case PDX::U8:
 			return f(*static_cast<VSSWrapperU8 *>(vss_wrapper.get()));
+		case PDX::SAQ:
+			return f(*static_cast<VSSWrapperSAQ *>(vss_wrapper.get()));
 		default:
 			throw InternalException("Unsupported quantization in the DuckIR VSS index");
 		}
@@ -98,11 +99,11 @@ private:
 	                PDX::ParallelExecutor *executor);
 	void DeleteRow(row_t row_id);
 
-	// Returns the committed rows of [start, end) whose embedding is not NULL,
-	// We transform them (random rotation) and return how many were written to `embeddings`.
+	// Scans the committed rows of [start, end) whose embedding is not NULL into `embeddings`, normalized when the
+	// metric needs it and rotated if `rotate`, and their ids into `row_ids` unless it is null. Returns how many.
 	// `rows_returned` counts every committed row the table returned, NULL embeddings included.
-	idx_t FetchRows(DataTable &table, row_t start, row_t end, row_t *row_ids, float *embeddings, idx_t &rows_returned,
-	                PDX::ParallelExecutor *executor);
+	idx_t FetchRows(DataTable &table, row_t start, row_t end, float *embeddings, idx_t &rows_returned, row_t *row_ids,
+	                bool rotate, PDX::ParallelExecutor *executor);
 
 	// The committed rows of [start, end), ascending, written to `row_ids`. Scans only the row id column, so it reads no
 	// column data.
@@ -136,10 +137,12 @@ private:
 	// - Every mirrored row group matches its DuckDB row group.
 	bool IsInSyncWithTable(DataTable &table) const;
 
-	// The index's storage: the directory chain points to the rotation chain and to each row group's chain.
+	// The index's storage: the directory chain points to the rotation chain, the SAQ model chain and to each row
+	// group's chain.
 	unique_ptr<FixedSizeAllocator> allocator;
 	VSSBlockChain directory_chain;
 	VSSBlockChain rotation_chain;
+	VSSBlockChain saq_model_chain;
 
 	// Writes the allocator's dirty buffers to disk, which releases their memory.
 	void WritePartialBlocks(QueryContext context);
@@ -150,10 +153,11 @@ private:
 	void WriteTemporaryChains();
 	void AddRowGroupEntries(VSSDirectory &directory) const;
 	void ResetPersistedChains();
-	// Reads the directory and the rotation of a persisted index. The returned reader
+	// Reads the directory, the rotation and the SAQ model of a persisted index. The returned reader
 	// then reads the row groups' chains.
 	unique_ptr<VSSBlockChainReader> OpenStorage(const IndexStorageInfo &info, uint32_t num_dimensions,
-	                                            VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix);
+	                                            VSSDirectory &directory, unique_ptr<float[]> &rotation_matrix,
+	                                            std::optional<PDX::SAQModel> &saq_model);
 	void LoadRowGroups(VSSBlockChainReader &reader, const VSSDirectory &directory, bool page_clusters);
 	static IndexStorageInfo CopyStorageInfo(const IndexStorageInfo &info);
 
@@ -212,7 +216,10 @@ public:
 	// The row ids the index's row group at row_group_idx covers.
 	VSSRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
-	void SetUpIndexForRowGroup(const row_t *row_ids, const float *embeddings, idx_t num_embeddings, row_t row_start,
+	// CREATE INDEX fits a u4 index before its parallel builds when a row group could reach
+	// MIN_EMBEDDINGS_FOR_CLUSTERING rows, on committed rows sampled from every row group.
+	void FitSAQModelForCreate(ClientContext &context, DataTable &table);
+	void SetUpIndexForRowGroup(const row_t *row_ids, float *embeddings, idx_t num_embeddings, row_t row_start,
 	                           idx_t count, bool is_closed, PDX::ParallelExecutor *executor);
 	uint64_t EstimateBuildPeakBytes(idx_t num_embeddings) const;
 
@@ -318,6 +325,9 @@ public:
 	}
 
 	string GetQuantization() const;
+	PDX::Quantization GetQuantizationType() const {
+		return vss_wrapper->GetQuantization();
+	}
 
 	idx_t GetNumDimensions() const {
 		return vss_wrapper->GetNumDimensions();
@@ -352,6 +362,12 @@ public:
 
 	float *GetRotationMatrix() const {
 		return vss_wrapper->GetRotationMatrix();
+	}
+
+	// Warning: modifies the input_embeddings.
+	void PreprocessEmbeddings(float *const input_embeddings, float *const output_embeddings,
+	                          const size_t num_embeddings, PDX::ParallelExecutor *const executor = nullptr) const {
+		vss_wrapper->PreprocessEmbeddings(input_embeddings, output_embeddings, num_embeddings, executor);
 	}
 
 	PDX::PDXIndexConfig MakePDXIndexConfig(const idx_t num_clusters, PDX::ParallelExecutor *const executor,

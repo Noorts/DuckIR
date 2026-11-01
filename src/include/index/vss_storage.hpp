@@ -209,9 +209,9 @@ private:
 	atomic<idx_t> acquires_since_decay {0};
 };
 
-static constexpr uint32_t VSS_STORAGE_VERSION = 5;
+static constexpr uint32_t VSS_STORAGE_VERSION = 6;
 
-// The root chain: where the rotation and the row groups are.
+// The root chain: where the rotation, the SAQ model (empty when there is none) and the row groups are.
 struct VSSDirectory {
 	struct RowGroupEntry {
 		row_t row_start;
@@ -221,6 +221,7 @@ struct VSSDirectory {
 
 	uint32_t num_dimensions = 0;
 	VSSBlockChain rotation;
+	VSSBlockChain saq_model;
 	vector<RowGroupEntry> row_groups;
 
 	void Write(std::ostream &out) const;

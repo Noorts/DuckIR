@@ -30,10 +30,7 @@ public:
 	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), search_started(false),
 	      search_completed(false), vss_row_ids(nullptr), vss_row_ids_idx(0) {
 		// Preprocess the query embedding.
-		const EmbeddingPreprocessor embedding_preprocessor =
-		    EmbeddingPreprocessor(index.GetNumDimensions(), index.GetRotationMatrix(), index.GetMemoryAllocator());
-		embedding_preprocessor.PreprocessEmbedding(bind_data.query_embedding.get(), preprocessed_query_embedding.get(),
-		                                           index.IsNormalized());
+		index.PreprocessEmbeddings(bind_data.query_embedding.get(), preprocessed_query_embedding.get(), 1);
 		ranking_query = index.EncodeQueryForRanking(preprocessed_query_embedding.get());
 
 		// Determine number of clusters to probe per row group. The cluster count varies per row group, but a single

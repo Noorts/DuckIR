@@ -39,10 +39,7 @@ public:
 	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<VSSIndex>()),
 	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), vss_row_ids(nullptr) {
 		// Preprocess the query embedding.
-		EmbeddingPreprocessor embedding_preprocessor(index.GetNumDimensions(), index.GetRotationMatrix(),
-		                                             index.GetMemoryAllocator());
-		embedding_preprocessor.PreprocessEmbedding(bind_data.query_embedding.get(), preprocessed_query_embedding.get(),
-		                                           index.IsNormalized());
+		index.PreprocessEmbeddings(bind_data.query_embedding.get(), preprocessed_query_embedding.get(), 1);
 		ranking_query = index.EncodeQueryForRanking(preprocessed_query_embedding.get());
 
 		auto n_probe = index.GetEffectiveNProbe(context);
