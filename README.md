@@ -29,66 +29,67 @@
 
 1. Start a DuckDB v2.0.0 instance and allow loading unsigned extensions.
 
-```bash
-duckdb -unsigned
-```
+    ```bash
+    duckdb -unsigned
+    ```
 
 2. Load the extension you built (see [DEVELOPMENT.md](DEVELOPMENT.md)) by providing a full path to it.
 
-```sql
-LOAD '<Fill in>/DuckIR/build/release/extension/duckir/duckir.duckdb_extension';
-```
+    ```sql
+    LOAD '<Fill in>/DuckIR/build/release/extension/duckir/duckir.duckdb_extension';
+    ```
 
 3. Create a DuckDB table:
 
-```sql
-  CREATE TABLE movies (
-    title VARCHAR,
-    genres VARCHAR[],
-    rating DOUBLE,
-    embedding FLOAT[1536]
-  );
-  CREATE INDEX movies_idx
-  ON movies
-  USING DUCKIR_VSS (embedding)
-    WITH (metric = 'cosine');
-```
+    ```sql
+    CREATE TABLE movies (
+      title VARCHAR,
+      genres VARCHAR[],
+      rating DOUBLE,
+      embedding FLOAT[1536]
+    );
+    CREATE INDEX movies_idx
+    ON movies
+    USING DUCKIR_VSS (embedding)
+      WITH (metric = 'cosine');
+    ```
 
 4. Insert the data directly from Hugging Face:
-```sql
-  INSERT INTO movies
-      SELECT title, genres, imdb.rating, plot_embedding::FLOAT[1536]
-      FROM 'hf://datasets/MongoDB/embedded_movies@~parquet/default/train/0000.parquet';
-```
+
+    ```sql
+    INSERT INTO movies
+        SELECT title, genres, imdb.rating, plot_embedding::FLOAT[1536]
+        FROM 'hf://datasets/MongoDB/embedded_movies@~parquet/default/train/0000.parquet';
+    ```
 
 5. Run (filtered) vector search queries. The filters are evaluated first, pushing down the predicates whenever possible:
 
-```sql
-  SET VARIABLE q = (
-    SELECT embedding
-    FROM movies
-    WHERE title = 'The Matrix'
-  );
-  -- If q is NULL, the query runs without the vector search
+    ```sql
+    SET VARIABLE q = (
+      SELECT embedding
+      FROM movies
+      WHERE title = 'The Matrix'
+    );
+    -- If q is NULL, the query runs without the vector search
 
-  SELECT title, genres, rating
-  FROM movies
-  WHERE list_contains(genres, 'Comedy') AND rating > 7
-  ORDER BY array_cosine_distance(
-    embedding, getvariable('q')
-  )
-  LIMIT 5;
-```
+    SELECT title, genres, rating
+    FROM movies
+    WHERE list_contains(genres, 'Comedy') AND rating > 7
+    ORDER BY array_cosine_distance(
+      embedding, getvariable('q')
+    )
+    LIMIT 5;
+    ```
 
 6. Results:
 
-```
-The Gods Must Be Crazy         [Action, Comedy]            7.3
-True Lies                      [Action, Comedy, Thriller]  7.2
-Tai-Chi Master                 [Action, Comedy, Drama]     7.3
-The Blind Swordsman: Zatoichi  [Action, Comedy, Crime]     7.6
-The Legend of Drunken Master   [Action, Comedy]            7.6
-```
+    ```
+    The Gods Must Be Crazy         [Action, Comedy]            7.3
+    True Lies                      [Action, Comedy, Thriller]  7.2
+    Tai-Chi Master                 [Action, Comedy, Drama]     7.3
+    The Blind Swordsman: Zatoichi  [Action, Comedy, Crime]     7.6
+    The Legend of Drunken Master   [Action, Comedy]            7.6
+    ```
 
 ### Vector Index Creation
 
@@ -124,6 +125,7 @@ Available index options:
 ### Vector Search
 
 The index is used for queries of the form:
+
 ```sql
 SELECT *
 FROM t
@@ -148,7 +150,6 @@ Index search also kicks in if the predicate is rewritten as a `HASH JOIN` (e.g.,
 
 See [#27](https://github.com/Noorts/DuckIR/pull/27) for a full list of supported query shapes.
 
-
 ### LATERAL JOIN (a.k.a. NEAREST, SIMILARITY JOIN)
 
 You can run many queries at once:
@@ -170,7 +171,6 @@ FROM queries q, LATERAL (
 ### Index Metadata
 
 Execute `CALL duckir_vss_index_info();` to print metadata about all vector indexes. This includes each index's in-memory size.
-
 
 ### Writing Queries
 
@@ -210,20 +210,25 @@ con.execute("SELECT id FROM t ORDER BY array_distance(embedding, ?) LIMIT 10", [
 To issue queries in bulk, see [LATERAL JOIN](#lateral-join-aka-nearest-similarity-join).
 
 ## Our Vector Index
+
 We create a local index per DuckDB row group, allowing for lightweight maintenance, morsel-driven parallelism, and pushing down SQL predicates onto the vector search.
 
 Our local indexes are `PDX-IVF` indexes, maintained with the [LIRE protocol](https://dl.acm.org/doi/pdf/10.1145/3600006.3613166). To learn more about PDX-IVF, check our [Vector Index](/docs/VECTOR_INDEX.md) doc.
 
 ## Maintenance, Persistence and Out-of-Core
+
 See our docs for:
+
 - [Maintenance](/docs/MAINTENANCE.md)
 - [Persistence](/docs/PERSISTENCE.md)
 - [Out-of-Core](/docs/OUT_OF_CORE.md)
 
 ## Limitations
+
 See [LIMITATIONS.md](/docs/LIMITATIONS.md)
 
 ## Roadmap
+
 - Q1'2027: Full Text Search and Hybrid Search with local indexes.
 - Q1'2027: Beta release
 - Q2'2027: Integration in [DuckLake](https://ducklake.select/).
