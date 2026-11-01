@@ -20,7 +20,8 @@
 - **Filtered Search** on any predicate DuckDB can evaluate.
 - *FTS and Hybrid Search are WIP*.
 
-> **Status: alpha.** Production use is not advised. Dropping and recreating indexes might be needed between updates. Check our known [limitations](/docs/LIMITATIONS.md).
+> [!WARNING]
+> **Status: Alpha.** Production use is not advised. Dropping and recreating indexes might be needed between updates. Check our known [limitations](/docs/LIMITATIONS.md).
 
 ## Usage
 
@@ -38,7 +39,8 @@ duckdb -unsigned
 LOAD '<Fill in>/DuckIR/build/release/extension/duckir/duckir.duckdb_extension';
 ```
 
-3. Create a DuckDB table with an empty vector index
+3. Create a DuckDB table:
+
 ```sql
   CREATE TABLE movies (
     title VARCHAR,
@@ -88,11 +90,16 @@ The Blind Swordsman: Zatoichi  [Action, Comedy, Crime]     7.6
 The Legend of Drunken Master   [Action, Comedy]            7.6
 ```
 
-7. You can also build an index on a table that already has embeddings in it.
-
 ### Vector Index Creation
 
-You can set `CREATE INDEX` options using the `WITH` clause. These options cannot be modified after index creation. Drop and recreate the index instead.
+Create a `DuckIR_VSS` index on your table to speed up vector search queries. The
+index automatically [updates](/docs/MAINTENANCE.md) itself when rows are
+inserted or deleted from the underlying table. Both empty and non-empty tables
+are supported.
+
+Configure the index using the `CREATE INDEX` statement's `WITH` clause. The
+index options cannot be modified after index creation. Drop and recreate the
+index instead.
 
 ```sql
 CREATE INDEX t1_idx
@@ -100,7 +107,7 @@ ON t1 USING DUCKIR_VSS (embedding)
 WITH (metric = 'l2sq', quantization = 'f32');
 ```
 
-Available options:
+Available index options:
 
 - `metric`
   - `'l2sq'` (*default*; squared Euclidean distance, optimizes `array_distance`)
@@ -109,7 +116,7 @@ Available options:
   - `f32`: full precision, no compression.
   - `u8`: *default*; scalar quantization, 1 byte per dimension, ×4 compression; ~1% quality loss relative to `f32`.
   - `u4`: SAQ, 4 bits per dimension, ×8 compression; needs at least 64 dimensions; <1% quality loss relative to `u8` in most embedding datasets (Cohere, MXBAI, OpenAI).
-- `n_probe`: Controls the effort spent during vector search: higher values increase recall, but also search latency. You can set it at search time using `duckir_vss_n_probe` (see below).
+- `n_probe`: Controls the effort spent during vector search: higher values increase recall, but also increase search latency. This `n_probe` index option is remembered by the index. You can override it at search time using `duckir_vss_n_probe` (see below).
   - `[0, 2147483647]`. *Default* is `24`. This is per row group, which typically has ~480 lists. Set `n_probe` to `0` to run a brute force search.
 - `seed`
   - `[-2147483648, 2147483647]`. *Default* is random.
