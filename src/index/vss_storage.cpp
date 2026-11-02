@@ -288,6 +288,33 @@ void VSSClusterCache::SetEvictionQueue(const CachedCluster &cluster, BufferHandl
 	}
 }
 
+// As RecordAccess, for the sketch.
+void VSSClusterCache::RecordSketchAccess(CachedCluster &cluster) {
+	if (!reader.cache_tiers) {
+		return;
+	}
+	cluster.sketch_access_count++;
+	total_sketch_access_count++;
+	if (++sketch_acquires_since_decay == num_clusters * ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS) {
+		sketch_acquires_since_decay = 0;
+		for (idx_t i = 0; i < num_clusters; i++) {
+			clusters[i].sketch_access_count = clusters[i].sketch_access_count / 2;
+		}
+		total_sketch_access_count = total_sketch_access_count / 2;
+	}
+}
+
+// As SetEvictionQueue: a hot sketch goes to a queue DuckDB evicts after the other sketches.
+void VSSClusterCache::SetSketchEvictionQueue(const CachedCluster &cluster, BufferHandle &new_block) const {
+	const idx_t average_access_count = total_sketch_access_count / num_clusters;
+	idx_t queue = CLUSTER_SKETCH_EVICTION_QUEUE;
+	if (reader.cache_tiers && average_access_count > 0 &&
+	    cluster.sketch_access_count >= HOT_ACCESS_FACTOR * average_access_count) {
+		queue = HOT_CLUSTER_SKETCH_EVICTION_QUEUE;
+	}
+	new_block.GetBlockHandle()->GetMemory().SetEvictionQueueIndex(queue);
+}
+
 // Only the cluster's own lock is held while it is read, so searches of other clusters go on.
 const char *VSSClusterCache::Acquire(const uint32_t cluster_id) {
 	const bool record_counters = reader.counters.enabled.load(std::memory_order_relaxed);
@@ -343,6 +370,7 @@ const char *VSSClusterCache::AcquireSketch(const uint32_t cluster_id) {
 		reader.counters.cluster_sketch_acquires++;
 	}
 	auto &cluster = clusters[cluster_id];
+	RecordSketchAccess(cluster);
 	lock_guard<mutex> guard(cluster.lock);
 	if (cluster.sketch_pin_count == 0) {
 		if (cluster.sketch_block) {
@@ -355,7 +383,7 @@ const char *VSSClusterCache::AcquireSketch(const uint32_t cluster_id) {
 				reader.counters.cluster_sketch_bytes_fetched += range.second;
 			}
 			auto new_block = buffer_manager.Allocate(MemoryTag::EXTENSION, range.second, /*can_destroy=*/true);
-			new_block.GetBlockHandle()->GetMemory().SetEvictionQueueIndex(CLUSTER_SKETCH_EVICTION_QUEUE);
+			SetSketchEvictionQueue(cluster, new_block);
 			ReadFromHome(range.first, range.second, char_ptr_cast(new_block.GetDataMutable()));
 			cluster.sketch_block = new_block.GetBlockHandle();
 			cluster.pinned_sketch_block = std::move(new_block);
