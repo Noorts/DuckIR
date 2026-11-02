@@ -76,6 +76,11 @@ PhysicalOperator &VSSIndex::CreatePlan(PlanIndexInput &input) {
 	if (create_index.expressions.size() != 1) {
 		throw BinderException("DuckIR VSS indexes can only be created over a single column of keys.");
 	}
+	// Syncs read the column itself, not the expression: an expression key would mix the values of both.
+	if (create_index.unbound_expressions[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+		throw BinderException("DuckIR VSS index keys must be a FLOAT[N] column, not an expression: store the "
+		                      "expression's result in a FLOAT[N] column and index that column");
+	}
 	const auto &arr_type = create_index.expressions[0]->GetReturnType();
 	if (arr_type.id() != LogicalTypeId::ARRAY) {
 		throw BinderException("DuckIR VSS index keys must be of type FLOAT[N]");

@@ -12,7 +12,7 @@
 
 - **Maximum `k`**: In `LATERAL` joins, we only support a maximum `k` (`k + o` with an `OFFSET`) of DuckDB's `STANDARD_VECTOR_SIZE` (default: 2048).
 
-- **Only FLOAT[d]**: We don't support `DOUBLE[d]` or other `ARRAY` types. You can cast with `::FLOAT[d]`, as we do in our Hugging Face example.
+- **Only FLOAT[d]**: We don't support `DOUBLE[d]` or other `ARRAY` types. You can cast with `::FLOAT[d]` when you store the column, as we do in our Hugging Face example. The index key must be the column itself (expressions are rejected).
 
 - **`u4` is NOT drift resilient**: The SAQ index (`u4`) is data-aware: it is fitted once and never refitted. The fit happens at `CREATE INDEX` if the table already has at least 2,048 rows; otherwise, on the rows of the first local index promoted to IVF. Later rows are encoded with that fit, so a strong shift in the data might drop recall. This doesn't happen in `u8` or `f32`, where drift is naturally handled by the fact that `INSERT`s always go into the last row group.
 

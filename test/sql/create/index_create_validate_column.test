@@ -36,6 +36,12 @@ CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (emb);
 ----
 Binder Error: DuckIR VSS index key type must be FLOAT
 
+# Syncs read the column, not an expression over it.
+statement error
+CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS ((emb::FLOAT[128]));
+----
+Binder Error: DuckIR VSS index keys must be a FLOAT[N] column, not an expression
+
 # ============================================
 # Valid number of dimensions
 # ============================================
