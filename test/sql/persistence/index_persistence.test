@@ -127,6 +127,11 @@ SELECT count(*) FROM (SELECT id FROM p.t2 ORDER BY array_distance(emb, {QUERY_EM
 ----
 10
 
+query II
+EXPLAIN SELECT id FROM p.t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
+----
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
+
 statement ok
 DETACH p;
 
