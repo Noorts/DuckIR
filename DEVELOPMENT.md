@@ -1,6 +1,6 @@
 # Development
 
-DuckIR builds on Linux (x86, ARM), macOS, Windows (x86) and Wasm. Our CI builds and tests it for all of them on every push (except Windows with MinGW and multithreaded Wasm). We develop on macOS and Linux, so the steps below are for those two.
+DuckIR builds on Linux (x86, ARM), macOS, Windows (x86) and Wasm. Our CI builds it for all of them on every push (except Windows with MinGW and multithreaded Wasm), and runs the tests on Linux x86, macOS ARM and Windows. We develop on macOS and Linux, so the steps below are for those two.
 
 DuckIR builds against **DuckDB v2.0.0**, pinned by the `duckdb` submodule.
 
@@ -24,7 +24,7 @@ brew install cmake ninja ccache pkg-config
 sudo apt install build-essential git cmake ninja-build ccache pkg-config python3 curl zip unzip tar
 ```
 
-Ubuntu 24.04's CMake (3.28) is new enough. On older distributions, install a newer one with `pip install cmake`.
+Ubuntu 24.04's CMake (3.28) is new enough. On older distributions, install a newer one with `pipx install cmake`.
 
 ### vcpkg
 
@@ -32,14 +32,12 @@ We use vcpkg to fetch Eigen. Check out the same commit as our CI, which provides
 
 ```sh
 git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
-cd ~/vcpkg && git checkout cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
-./bootstrap-vcpkg.sh -disableMetrics
+git -C ~/vcpkg checkout cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 export VCPKG_TOOLCHAIN_PATH=~/vcpkg/scripts/buildsystems/vcpkg.cmake
 ```
 
 Add the `export` to your shell profile, so that every build finds vcpkg.
-
-If you already have Eigen installed, you can skip vcpkg and point the build to it instead: `EXT_FLAGS="-DEigen3_DIR=<directory with Eigen3Config.cmake>" make`.
 
 ## Build
 
@@ -57,7 +55,7 @@ GEN=ninja DUCKDB_VERSION=v2.0.0 make
 - `build/release/duckdb`: a DuckDB shell built from the `duckdb` submodule. Start it with `-unsigned` to `LOAD` the extension.
 - `build/release/test/unittest`: the test runner.
 
-For a debug build, run `DISABLE_SANITIZER=1 make debug`. Without `DISABLE_SANITIZER=1`, DuckDB's own code trips the sanitizers. Other build modes are `reldebug` and `relassert`.
+For a debug build, run `GEN=ninja DISABLE_SANITIZER=1 make debug`. Without `DISABLE_SANITIZER=1`, DuckDB's own code trips the sanitizers. Other build modes are `reldebug` and `relassert`.
 
 Extra CMake flags go in `EXT_FLAGS`. For example, to build against your local checkouts of PDX and SuperKMeans:
 
