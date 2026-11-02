@@ -386,8 +386,13 @@ void VSSIndex::ReconcileRowGroup(const row_t start, const row_t end, const row_t
 void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 	auto _lock = rwlock.GetExclusiveLock();
 
-	// The index failed to load when DuckDB bound it: the queries that use it raise the error.
+	// The index failed to load when DuckDB bound it: the queries that use it raise the error. Rethrowing an INTERNAL
+	// (or FATAL) error as it is would make DuckDB invalidate the whole database: every later query, on any table, would
+	// fail until a restart. It is rethrown as an IO error instead, so that only the queries on this index fail.
 	if (bind_error.HasError()) {
+		if (bind_error.Type() == ExceptionType::INTERNAL || bind_error.Type() == ExceptionType::FATAL) {
+			throw IOException("DuckIR VSS index %s could not be loaded: %s", name, bind_error.RawMessage());
+		}
 		bind_error.Throw();
 	}
 
@@ -790,6 +795,13 @@ unique_ptr<VSSBlockChainReader> VSSIndex::OpenStorage(const IndexStorageInfo &in
 	allocator->Init(allocator_info);
 
 	auto reader = make_uniq<VSSBlockChainReader>(table_io_manager.GetIndexBlockManager(), allocator_info);
+	// Only DuckDB's WAL replay of a READ_ONLY database sets transient_block_handles (ReplayIndexData), and the only
+	// index data this index writes to the WAL is the empty directory of SerializeToWAL (CREATE INDEX). Those buffers
+	// have no block to read: there is nothing to load, and the first sync builds the index from the table.
+	if (allocator_info.transient_block_handles) {
+		directory.num_dimensions = num_dimensions;
+		return reader;
+	}
 	VSSChainInputStream in(*reader);
 	VSSBlockChain root;
 	root.head.Set(info.root);
