@@ -2,10 +2,10 @@
   DuckIR
 </h1>
 <h4 align="center">
-  Information Retrieval suite for DuckDB
+  Information Retrieval suite in DuckDB
 </h4>
 <p align="center">
-  Vector Search ✅ | Full Text Search ⏱️ | Hybrid Search ⏱️
+  A DuckDB extension for: Vector Search ✅ | Full Text Search ⏱️ | Hybrid Search ⏱️
 </p>
 <br>
 
@@ -93,9 +93,9 @@
 
 ### Vector Index Creation
 
-Create a `DuckIR_VSS` index on your table to speed up vector search queries. The
+Create a `DUCKIR_VSS` index on your table to speed up vector search queries. The
 index automatically [updates](/docs/MAINTENANCE.md) itself when rows are
-inserted or deleted from the underlying table. Both empty and non-empty tables
+inserted into or deleted from the underlying table. Both empty and non-empty tables
 are supported.
 
 Configure the index using the `CREATE INDEX` statement's `WITH` clause. The
@@ -144,11 +144,11 @@ You can set the number of clusters to probe per search using `SET duckir_vss_n_p
 
 ### Filtered Vector Search
 
-We support arbitrary predicates: **any predicate DuckDB can evaluate on the table's columns**, including but not limited to: conjunctions, disjunctions, comparisons, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT EXISTS`, expressions over a column, volatile predicates, filters over `embedding[i]`, subqueries as filters, `IN (<subquery>)` (SEMI JOINs), and `list_contains`.
+We support arbitrary predicates: **any predicate DuckDB can evaluate on the table's columns**, including but not limited to: conjunctions, disjunctions, comparisons, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT EXISTS`, expressions over a column, volatile predicates, filters over `embedding[i]`, subqueries as filters, `IN (<subquery>)` (SEMI JOINs), and `list_contains`. 
 
 Index search also kicks in if the predicate is rewritten as a `HASH JOIN` (e.g., `WHERE id IN (SELECT item_id FROM purchases)`), even if it goes out-of-core or the join key is compressed.
 
-See [#27](https://github.com/Noorts/DuckIR/pull/27) for a full list of supported query shapes.
+See [our limitations doc](/docs/LIMITATIONS.md) for the query shapes we don't optimize.
 
 ### LATERAL JOIN (a.k.a. NEAREST, SIMILARITY JOIN)
 
@@ -209,16 +209,13 @@ con.execute("SELECT id FROM t ORDER BY array_distance(embedding, ?) LIMIT 10", [
 
 To issue queries in bulk, see [LATERAL JOIN](#lateral-join-aka-nearest-similarity-join).
 
-## Our Vector Index
+## Our Secret Sauce
 
-We create a local index per DuckDB row group, allowing for lightweight maintenance, morsel-driven parallelism, and pushing down SQL predicates onto the vector search.
+When you create a `DUCKIR_VSS` index, we internally create one local index per DuckDB row group (by default, one per 122,880 rows). This enables lightweight maintenance, morsel-driven parallelism, and pushing down SQL predicates onto the vector search.   
 
-Our local indexes are `PDX-IVF` indexes, maintained with the [LIRE protocol](https://dl.acm.org/doi/pdf/10.1145/3600006.3613166). To learn more about PDX-IVF, check our [Vector Index](/docs/VECTOR_INDEX.md) doc.
+To learn more about the techniques inside the `DUCKIR_VSS` index, check out the following docs:   
 
-## Maintenance, Persistence and Out-of-Core
-
-See our docs for:
-
+- [Vector Index](/docs/VECTOR_INDEX.md)
 - [Maintenance](/docs/MAINTENANCE.md)
 - [Persistence](/docs/PERSISTENCE.md)
 - [Out-of-Core](/docs/OUT_OF_CORE.md)
@@ -237,8 +234,7 @@ See [LIMITATIONS.md](/docs/LIMITATIONS.md)
 
 The extension would not be possible without the underlying technologies and the lessons learned from other extensions.
 
-- **[PDX](https://github.com/cwida/pdx)**: Our core vector search library.
-- **[SuperKMeans](https://github.com/lkuffo/SuperKMeans)**: We use the SuperKMeans library for fast k-means clustering.
+- **[Vector search research](/docs/VECTOR_INDEX.md)**: We take inspiration and ideas from many vector search research papers (e.g., [PDX](https://github.com/cwida/PDX), [SuperKMeans](https://github.com/cwida/SuperKMeans), [RaBitQ](https://github.com/VectorDB-NTU/RaBitQ-Library), [SPFresh](https://arxiv.org/abs/2410.14452), [SAQ](https://arxiv.org/abs/2509.12086)). 
 - **[DuckDB-VSS](https://github.com/duckdb/duckdb-vss)**: We've taken inspiration from the VSS interface, and we reuse parts of the VSS extension's code.
 
 ## License

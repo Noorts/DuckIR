@@ -16,7 +16,15 @@
 
 - **`u4` is NOT drift resilient**: The SAQ index (`u4`) is data-aware: it is fitted once and never refitted. The fit happens at `CREATE INDEX` if the table already has at least 2,048 rows; otherwise, on the rows of the first local index promoted to IVF. Later rows are encoded with that fit, so a strong shift in the data might drop recall. This doesn't happen in `u8` or `f32`, where drift is naturally handled by the fact that `INSERT`s always go into the last row group.
 
-- **Query vector cannot come from a scalar subquery**: Query vectors must be a constant, a parameter, or:
+### Query shapes that run without an index:
+
+- `NULL` first orders (`NULLS FIRST`, or `SET default_null_order = 'nulls_first'`), descending orders
+- Additional `ORDER BY` keys
+- `IN`/`EXISTS` subqueries whose result is larger than the indexed table.
+- Correlated subqueries
+- Joins with other tables. This doesn't use the index: `JOIN categories c ON t.cat = c.id WHERE c.name = 'x' ORDER BY ... LIMIT 10`. This will: `WHERE t.cat IN (SELECT id FROM categories WHERE name = 'x')`.
+- Searches that read a value that a subquery computes (e.g., `id * 2 AS x`) with $k > 50$.   
+- Query vector cannot come from a scalar subquery: Query vectors must be a constant, a parameter, or:
 
   ```sql
   SET VARIABLE q = (SELECT embedding FROM t2 WHERE id = 42);
@@ -40,13 +48,7 @@
   ) LIMIT 100;
   ```
 
-### Query shapes that run without an index:
-
-- `NULL` first orders (`NULLS FIRST`, or `SET default_null_order = 'nulls_first'`), descending orders
-- Additional `ORDER BY` keys
-- `IN`/`EXISTS` subqueries whose result is larger than the indexed table.
-- Correlated subqueries
-- Joins with other tables. This doesn't use the index: `JOIN categories c ON t.cat = c.id WHERE c.name = 'x' ORDER BY ... LIMIT 10`. This will: `WHERE t.cat IN (SELECT id FROM categories WHERE name = 'x')`.
-- Searches that read a value that a subquery computes (e.g., `id * 2 AS x`) with $k > 50$.
-
 You can check whether your query is currently being optimized by prepending the `EXPLAIN` keyword to your search query and checking if a `DUCKIR_VSS` or `Duckir Vss` operator is part of the query plan.
+
+See [#27](https://github.com/Noorts/DuckIR/pull/27) for a full list of supported query shapes.
+

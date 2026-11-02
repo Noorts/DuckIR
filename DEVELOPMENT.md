@@ -46,8 +46,10 @@ If you already have Eigen installed, you can skip vcpkg and point the build to i
 ```sh
 git clone --recurse-submodules https://github.com/Noorts/DuckIR.git
 cd DuckIR
-GEN=ninja make
+GEN=ninja DUCKDB_VERSION=v2.0.0 make
 ```
+
+`DUCKDB_VERSION` labels the build with DuckDB's release version. Without it, DuckDB labels a source build with its commit hash, and a released DuckDB v2.0.0 refuses to load the extension.
 
 `make` runs an optimized `release` build. The first build also compiles DuckDB, so it takes a few minutes. It produces:
 
@@ -60,7 +62,7 @@ For a debug build, run `DISABLE_SANITIZER=1 make debug`. Without `DISABLE_SANITI
 Extra CMake flags go in `EXT_FLAGS`. For example, to build against your local checkouts of PDX and SuperKMeans:
 
 ```sh
-GEN=ninja EXT_FLAGS="-DFETCHCONTENT_SOURCE_DIR_PDX=$HOME/PDX -DFETCHCONTENT_SOURCE_DIR_SUPERKMEANS=$HOME/SuperKMeans" make
+GEN=ninja DUCKDB_VERSION=v2.0.0 EXT_FLAGS="-DFETCHCONTENT_SOURCE_DIR_PDX=$HOME/PDX -DFETCHCONTENT_SOURCE_DIR_SUPERKMEANS=$HOME/SuperKMeans" make
 ```
 
 For DuckIR usage, see the [README](README.md).
