@@ -30,10 +30,14 @@ struct VSSIndexStats {
 	int64_t n_probe;
 	int64_t seed;
 	bool is_normalized;
+	bool cluster_sketches;
 	int64_t approximate_lower_bound_memory_usage_bytes;
 	int64_t cluster_acquires;
 	int64_t cluster_cache_misses;
 	int64_t cluster_bytes_fetched;
+	int64_t cluster_sketch_acquires;
+	int64_t cluster_sketch_cache_misses;
+	int64_t cluster_sketch_bytes_fetched;
 	int64_t blocks_read;
 };
 
@@ -43,6 +47,7 @@ public:
 
 	static const case_insensitive_map_t<PDX::DistanceMetric> DISTANCE_METRIC_MAP;
 	static const case_insensitive_map_t<PDX::Quantization> QUANTIZATION_MAP;
+	static const case_insensitive_map_t<PDX::ClusterSketchCheck> CLUSTER_SKETCH_CHECK_MAP;
 
 private:
 	// Null only when the index was not loaded from storage and paging is off.
@@ -225,13 +230,11 @@ public:
 
 	// !`passing_row_ids` are size_t because they go straight into PDX's IPDXIndex::BeginIterativeSearch.
 	// `clusters_access_order`: the row group's GetClustersAccessOrderForRowGroup for this query (nullptr: rank).
-	// `ranking_query`: the query's EncodeQueryForRanking.
-	unique_ptr<PDX::IIterativeSearch> BeginSearchForRowGroup(idx_t row_group_idx,
-	                                                         const float *preprocessed_query_embedding, idx_t limit,
-	                                                         PDX::TopKHeap &top_k_heap,
-	                                                         const std::vector<size_t> *passing_row_ids,
-	                                                         const std::vector<uint32_t> *clusters_access_order,
-	                                                         const PDX::CentroidRankingQuery *ranking_query);
+	// `ranking_query`: the query's EncodeQueryForRanking. `sketch_query_table`: its CreateSketchQueryTable.
+	unique_ptr<PDX::IIterativeSearch> BeginSearchForRowGroup(
+	    idx_t row_group_idx, const float *preprocessed_query_embedding, idx_t limit, PDX::TopKHeap &top_k_heap,
+	    const std::vector<size_t> *passing_row_ids, const std::vector<uint32_t> *clusters_access_order,
+	    const PDX::CentroidRankingQuery *ranking_query, const PDX::ClusterSketchQueryTable *sketch_query_table);
 	std::vector<uint32_t> GetClustersAccessOrderForRowGroup(idx_t row_group_idx,
 	                                                        const float *preprocessed_query_embedding,
 	                                                        const PDX::CentroidRankingQuery *ranking_query);
@@ -240,6 +243,7 @@ public:
 		return make_uniq<PDX::CentroidRankingQuery>(preprocessed_query_embedding, GetNumDimensions(),
 		                                            VSSWrapper::CENTROID_QUANTIZATION);
 	}
+	unique_ptr<PDX::ClusterSketchQueryTable> CreateSketchQueryTable(const float *preprocessed_query_embedding) const;
 
 	/******************************************************************
 	 * Index maintenance

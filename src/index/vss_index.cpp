@@ -75,10 +75,21 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 		seed = seed_opt->second.GetValue<int32_t>();
 	}
 
+	auto build_cluster_sketches = VSSWrapper::DEFAULT_CLUSTER_SKETCHES;
+	const auto cluster_sketches_opt = options.find("cluster_sketches");
+	if (cluster_sketches_opt != options.end()) {
+		build_cluster_sketches = cluster_sketches_opt->second.GetValue<bool>();
+	}
+
 	Value max_cluster_size_setting;
 	db.GetDatabase().TryGetCurrentSetting("duckir_vss_experimental_max_cluster_size", max_cluster_size_setting);
 	const auto max_cluster_size = max_cluster_size_setting.IsNull() ? VSSWrapper::DEFAULT_MAX_CLUSTER_SIZE
 	                                                                : max_cluster_size_setting.GetValue<uint32_t>();
+	Value cluster_sketch_check_setting;
+	db.GetDatabase().TryGetCurrentSetting("duckir_vss_cluster_sketch_check", cluster_sketch_check_setting);
+	const auto cluster_sketch_check = cluster_sketch_check_setting.IsNull()
+	                                      ? PDX::ClusterSketchCheck::WHEN_CLUSTER_NOT_CACHED
+	                                      : CLUSTER_SKETCH_CHECK_MAP.at(cluster_sketch_check_setting.ToString());
 
 	auto &block_manager = table_io_manager.GetIndexBlockManager();
 	allocator = make_uniq<FixedSizeAllocator>(VSSBlockChain::GetSegmentSize(block_manager), block_manager);
@@ -103,17 +114,17 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 	if (quantization == PDX::Quantization::F32) {
 		D_ASSERT(ArrayType::GetChildType(embedding_type).id() == LogicalTypeId::FLOAT);
 
-		vss_wrapper =
-		    make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
-		                             std::move(rotation_matrix), std::nullopt, memory_allocator);
+		vss_wrapper = make_uniq<VSSWrapperF32>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
+		                                       build_cluster_sketches, cluster_sketch_check, row_group_size,
+		                                       std::move(rotation_matrix), std::nullopt, memory_allocator);
 	} else if (quantization == PDX::Quantization::U8) {
-		vss_wrapper =
-		    make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
-		                            std::move(rotation_matrix), std::nullopt, memory_allocator);
+		vss_wrapper = make_uniq<VSSWrapperU8>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
+		                                      build_cluster_sketches, cluster_sketch_check, row_group_size,
+		                                      std::move(rotation_matrix), std::nullopt, memory_allocator);
 	} else if (quantization == PDX::Quantization::SAQ) {
-		vss_wrapper =
-		    make_uniq<VSSWrapperSAQ>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size, row_group_size,
-		                             std::move(rotation_matrix), std::move(saq_model), memory_allocator);
+		vss_wrapper = make_uniq<VSSWrapperSAQ>(dist_metric, num_dimensions, n_probe, seed, max_cluster_size,
+		                                       build_cluster_sketches, cluster_sketch_check, row_group_size,
+		                                       std::move(rotation_matrix), std::move(saq_model), memory_allocator);
 	} else {
 		throw InternalException("Unsupported quantization: %s", quantization);
 	}
@@ -554,14 +565,26 @@ uint64_t VSSIndex::EstimateBuildPeakBytes(const idx_t num_embeddings) const {
 	return DispatchWrapper([&](auto &wrapper) { return wrapper.EstimateBuildPeakBytes(num_embeddings); });
 }
 
+unique_ptr<PDX::ClusterSketchQueryTable>
+VSSIndex::CreateSketchQueryTable(const float *const preprocessed_query_embedding) const {
+	const auto check = vss_wrapper->GetClusterSketchCheck();
+	// Without paging every cluster is in memory, so WHEN_CLUSTER_NOT_CACHED never checks
+	if (!vss_wrapper->BuildsClusterSketches() || check == PDX::ClusterSketchCheck::NEVER ||
+	    (check == PDX::ClusterSketchCheck::WHEN_CLUSTER_NOT_CACHED && !cluster_paging)) {
+		return nullptr;
+	}
+	return DispatchWrapper([&](auto &wrapper) { return wrapper.CreateSketchQueryTable(preprocessed_query_embedding); });
+}
+
 unique_ptr<PDX::IIterativeSearch>
 VSSIndex::BeginSearchForRowGroup(const idx_t row_group_idx, const float *const preprocessed_query, const idx_t limit,
                                  PDX::TopKHeap &top_k_heap, const std::vector<size_t> *const passing_row_ids,
                                  const std::vector<uint32_t> *const clusters_access_order,
-                                 const PDX::CentroidRankingQuery *const ranking_query) {
+                                 const PDX::CentroidRankingQuery *const ranking_query,
+                                 const PDX::ClusterSketchQueryTable *const sketch_query_table) {
 	return DispatchWrapper([&](auto &wrapper) {
 		return wrapper.BeginSearchForRowGroup(row_group_idx, preprocessed_query, limit, top_k_heap, passing_row_ids,
-		                                      clusters_access_order, ranking_query);
+		                                      clusters_access_order, ranking_query, sketch_query_table);
 	});
 }
 
@@ -728,12 +751,16 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 	result->n_probe = static_cast<int64_t>(vss_wrapper->GetNProbe());
 	result->seed = static_cast<int64_t>(vss_wrapper->GetSeed());
 	result->is_normalized = IsNormalized();
+	result->cluster_sketches = vss_wrapper->BuildsClusterSketches();
 	result->approximate_lower_bound_memory_usage_bytes = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
 	if (storage_reader) {
 		const auto &counters = storage_reader->counters;
 		result->cluster_acquires = static_cast<int64_t>(counters.cluster_acquires.load());
 		result->cluster_cache_misses = static_cast<int64_t>(counters.cluster_cache_misses.load());
 		result->cluster_bytes_fetched = static_cast<int64_t>(counters.cluster_bytes_fetched.load());
+		result->cluster_sketch_acquires = static_cast<int64_t>(counters.cluster_sketch_acquires.load());
+		result->cluster_sketch_cache_misses = static_cast<int64_t>(counters.cluster_sketch_cache_misses.load());
+		result->cluster_sketch_bytes_fetched = static_cast<int64_t>(counters.cluster_sketch_bytes_fetched.load());
 		result->blocks_read = static_cast<int64_t>(counters.blocks_read.load());
 	}
 
@@ -859,6 +886,7 @@ IndexStorageInfo VSSIndex::MakeStorageInfo() const {
 	info.options.emplace("quantization", Value(GetQuantization()));
 	info.options.emplace("n_probe", Value::INTEGER(static_cast<int32_t>(vss_wrapper->GetNProbe())));
 	info.options.emplace("seed", Value::INTEGER(vss_wrapper->GetSeed()));
+	info.options.emplace("cluster_sketches", Value::BOOLEAN(vss_wrapper->BuildsClusterSketches()));
 	info.allocator_infos.push_back(allocator->GetInfo());
 	return info;
 }
@@ -1005,6 +1033,11 @@ const case_insensitive_map_t<PDX::Quantization> VSSIndex::QUANTIZATION_MAP = {
     {"u4", PDX::Quantization::SAQ},
 };
 
+const case_insensitive_map_t<PDX::ClusterSketchCheck> VSSIndex::CLUSTER_SKETCH_CHECK_MAP = {
+    {"never", PDX::ClusterSketchCheck::NEVER},
+    {"when_cluster_not_cached", PDX::ClusterSketchCheck::WHEN_CLUSTER_NOT_CACHED},
+};
+
 string VSSIndex::GetDistanceMetric() const {
 	switch (vss_wrapper->GetDistanceMetric()) {
 	case PDX::DistanceMetric::L2SQ:
@@ -1133,12 +1166,28 @@ void VSSModule::RegisterIndex(DatabaseInstance &db) {
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
 	db.config.AddExtensionOption("duckir_vss_paging_counters",
 	                             "indexes loaded with it on count their cluster cache's acquires, misses and bytes "
-	                             "read, and the blocks read, in duckir_vss_index_info (default: false)",
+	                             "read, of the clusters and of their sketches, and the blocks read, in "
+	                             "duckir_vss_index_info (default: false)",
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::GLOBAL);
 	db.config.AddExtensionOption("duckir_vss_cache_tiers",
 	                             "in indexes loaded with it on, the clusters searches read most often are the last "
 	                             "DuckDB evicts from memory (default: true)",
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
+	db.config.AddExtensionOption(
+	    "duckir_vss_cluster_sketch_check",
+	    "when searches of indexes loaded with it check a cluster's sketch before probing it: 'never' or "
+	    "'when_cluster_not_cached', when the cluster must be read from disk (default: when_cluster_not_cached)",
+	    LogicalType::VARCHAR, Value("when_cluster_not_cached"),
+	    [](ClientContext &, SetScope, Value &parameter) {
+		    const auto policy = StringUtil::Lower(parameter.ToString());
+		    if (VSSIndex::CLUSTER_SKETCH_CHECK_MAP.find(policy) == VSSIndex::CLUSTER_SKETCH_CHECK_MAP.end()) {
+			    throw InvalidInputException("duckir_vss_cluster_sketch_check must be 'never' or "
+			                                "'when_cluster_not_cached', not '%s'",
+			                                parameter.ToString());
+		    }
+		    parameter = Value(policy);
+	    },
+	    SetScope::GLOBAL);
 	db.config.AddExtensionOption(
 	    "duckir_vss_experimental_max_cluster_size",
 	    "incremental maintenance splits clusters when they reach this size, between 32 and 2048 (default: 384)",

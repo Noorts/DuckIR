@@ -121,6 +121,8 @@ Available index options:
   - `[0, 2147483647]`. *Default* is `24`. This is per row group, which typically has ~480 lists. Set `n_probe` to `0` to run a brute force search.
 - `seed`
   - `[-2147483648, 2147483647]`. *Default* is random.
+- `cluster_sketches`: Whether the index keeps a 1-bit sketch of every embedding, which makes searches faster when the index does not fit in memory (see [Out-of-Core](/docs/OUT_OF_CORE.md#pruning-via-1-bit-rabitq-sketches)).
+  - `true` (*default*) or `false`.
 
 ### Vector Search
 

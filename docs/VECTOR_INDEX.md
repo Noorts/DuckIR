@@ -52,6 +52,10 @@ Additionally, we opt out of SAQ's dynamic bit allocation at lower dimensionaliti
 
 Clusters are stored in **nearest-neighbor order**, so that a single fetch from storage brings clusters that are potentially needed together for a query. This design was inspired by RemoteANN: https://arxiv.org/abs/2610.25172
 
+## Cluster Sketches
+
+To accelerate out-of-core execution, we prune entire clusters via 1-bit RaBitQ sketches. Read more in our [out-of-core](/docs/OUT_OF_CORE.md#pruning-via-1-bit-rabitq-sketches) doc.
+
 ## Small Row Groups
 
 When a row group has fewer than 2,048 rows, searches run without an index. This means that all vectors in a row group are always searched (unless the pushed-down predicate skips the row group). Once a row group reaches 2,048 rows, we create an index for it.

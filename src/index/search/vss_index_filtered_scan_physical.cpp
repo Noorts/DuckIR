@@ -41,6 +41,7 @@ public:
 		// Preprocess the query embedding.
 		index.PreprocessEmbeddings(bind_data.query_embedding.get(), preprocessed_query_embedding.get(), 1);
 		ranking_query = index.EncodeQueryForRanking(preprocessed_query_embedding.get());
+		sketch_query_table = index.CreateSketchQueryTable(preprocessed_query_embedding.get());
 
 		auto n_probe = index.GetEffectiveNProbe(context);
 		// The cluster count varies per row group, but the iteration loop uses a single value across all row groups. We
@@ -74,6 +75,7 @@ public:
 
 	const unique_ptr<float[]> preprocessed_query_embedding;
 	unique_ptr<PDX::CentroidRankingQuery> ranking_query;
+	unique_ptr<PDX::ClusterSketchQueryTable> sketch_query_table;
 
 	// Top-k heap shared by the searches of all row groups (and threads).
 	PDX::TopKHeap top_k_heap {/*thread_safe=*/true};
@@ -146,7 +148,7 @@ static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(VSSIndex &
 	if (passing_rowids.size() <= g_sink.partitions_to_probe_per_row_group_on_first_iteration) {
 		auto search_cursor = index.BeginSearchForRowGroup(
 		    row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit, g_sink.top_k_heap, &passing_rowids,
-		    &g_sink.identity_clusters_access_order, g_sink.ranking_query.get());
+		    &g_sink.identity_clusters_access_order, g_sink.ranking_query.get(), g_sink.sketch_query_table.get());
 		search_cursor->Next(search_cursor->ClustersRemaining());
 		return search_cursor;
 	}
@@ -155,9 +157,9 @@ static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(VSSIndex &
 		clusters_access_order = index.GetClustersAccessOrderForRowGroup(
 		    row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.ranking_query.get());
 	});
-	auto search_cursor = index.BeginSearchForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get(),
-	                                                  g_sink.limit, g_sink.top_k_heap, &passing_rowids,
-	                                                  &clusters_access_order, g_sink.ranking_query.get());
+	auto search_cursor = index.BeginSearchForRowGroup(
+	    row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit, g_sink.top_k_heap, &passing_rowids,
+	    &clusters_access_order, g_sink.ranking_query.get(), g_sink.sketch_query_table.get());
 	search_cursor->Next(g_sink.partitions_to_probe_per_row_group_on_first_iteration);
 	return search_cursor;
 }

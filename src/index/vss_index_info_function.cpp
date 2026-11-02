@@ -67,6 +67,10 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
      [](const IndexInfoColumnInput &input) {
 	     return Value::BOOLEAN(input.stats.is_normalized);
      }},
+    {"cluster_sketches", LogicalType::BOOLEAN,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BOOLEAN(input.stats.cluster_sketches);
+     }},
     {"approx_lower_bound_memory_usage_bytes", LogicalType::BIGINT,
      [](const IndexInfoColumnInput &input) {
 	     return Value::BIGINT(input.stats.approximate_lower_bound_memory_usage_bytes);
@@ -82,6 +86,18 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
     {"cluster_bytes_fetched", LogicalType::BIGINT,
      [](const IndexInfoColumnInput &input) {
 	     return Value::BIGINT(input.stats.cluster_bytes_fetched);
+     }},
+    {"cluster_sketch_acquires", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_sketch_acquires);
+     }},
+    {"cluster_sketch_cache_misses", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_sketch_cache_misses);
+     }},
+    {"cluster_sketch_bytes_fetched", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.cluster_sketch_bytes_fetched);
      }},
     {"blocks_read", LogicalType::BIGINT,
      [](const IndexInfoColumnInput &input) {

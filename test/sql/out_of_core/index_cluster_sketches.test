@@ -1,0 +1,119 @@
+# name: test/sql/out_of_core/index_cluster_sketches.test
+# description: Searches of paged u8 and u4 indexes skip the clusters their sketches rule out and keep the top-k of searches that check none; an index created with cluster_sketches = false has none, also in row groups built after a reload.
+# group: [out_of_core]
+
+require parquet
+
+require duckir
+
+load {TEST_DIR}/index_cluster_sketches_main.db
+
+statement ok
+ATTACH '{TEST_DIR}/index_cluster_sketches.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+# Variables
+test-env DIMS 128
+
+# Ten full row groups and a partial one, indexed in u8 and in u4.
+statement ok
+CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 87536;
+
+statement ok
+CREATE TABLE p.t4 AS FROM p.t;
+
+statement ok
+CREATE TABLE p.q AS SELECT id AS qid, emb::FLOAT[{DIMS}] AS vec FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 200000 AND id < 200020;
+
+statement ok
+CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'u8');
+
+statement ok
+CREATE INDEX t4_idx ON p.t4 USING DUCKIR_VSS (emb) WITH (quantization = 'u4');
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+SET duckir_vss_paging_counters = true;
+
+statement ok
+SET duckir_vss_cluster_sketch_check = 'never';
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_cluster_sketches.db' AS p (ROW_GROUP_SIZE 8192);
+
+# Checking no sketch: the top-10s and the clusters read.
+statement ok
+CREATE TABLE never_u8 AS SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
+
+statement ok
+CREATE TABLE never_u4 AS SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t4 ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
+
+statement ok
+CREATE TABLE never_acquires AS SELECT index_name, cluster_acquires FROM duckir_vss_index_info();
+
+statement ok
+SET duckir_vss_cluster_sketch_check = 'when_cluster_not_cached';
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_cluster_sketches.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+CREATE TABLE checked_u8 AS SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
+
+statement ok
+CREATE TABLE checked_u4 AS SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t4 ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
+
+# Checking the sketches of the clusters not in memory keeps at least 99% of the top-10s.
+query II
+SELECT (SELECT count(*) FROM checked_u8 JOIN never_u8 USING (qid, id)) >= 0.99 * (SELECT count(*) FROM never_u8), (SELECT count(*) FROM checked_u4 JOIN never_u4 USING (qid, id)) >= 0.99 * (SELECT count(*) FROM never_u4);
+----
+true	true
+
+# It reads fewer clusters, and fetches sketches instead.
+query II
+SELECT i.index_name, i.cluster_acquires < n.cluster_acquires AND i.cluster_sketch_cache_misses > 0 FROM duckir_vss_index_info() i JOIN never_acquires n USING (index_name) ORDER BY ALL;
+----
+t4_idx	true
+t_idx	true
+
+statement ok
+CREATE TABLE p.t_off AS SELECT * FROM p.t WHERE id < 16384;
+
+statement ok
+CREATE INDEX t_off_idx ON p.t_off USING DUCKIR_VSS (emb) WITH (cluster_sketches = false);
+
+statement ok
+CHECKPOINT p;
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_cluster_sketches.db' AS p (ROW_GROUP_SIZE 8192);
+
+# A row group indexed after the reload.
+statement ok
+INSERT INTO p.t_off SELECT * FROM p.t WHERE id >= 16384 AND id < 24576;
+
+statement ok
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t_off ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
+
+# The option is saved with the index, and none of its row groups has sketches to check.
+query II
+SELECT index_name, cluster_sketches FROM duckir_vss_index_info() ORDER BY ALL;
+----
+t4_idx	true
+t_idx	true
+t_off_idx	false
+
+query I
+SELECT cluster_sketch_acquires FROM duckir_vss_index_info() WHERE index_name = 't_off_idx';
+----
+0

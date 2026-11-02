@@ -476,6 +476,7 @@ public:
 	const unique_ptr<float[]> raw_query;
 	const unique_ptr<float[]> query;
 	unique_ptr<PDX::CentroidRankingQuery> ranking_query;
+	unique_ptr<PDX::ClusterSketchQueryTable> sketch_query_table;
 	PDX::TopKHeap heap;
 	std::vector<unique_ptr<PDX::IIterativeSearch>> search_cursors;
 
@@ -555,10 +556,11 @@ static void BeginSearchAndRankClusters(const VSSIndexJoinSearch &search, VSSInde
 	    evaluator
 	        ? index.BeginIterativeSearchWithSharedEvaluator(state.query.get(), static_cast<uint32_t>(search.limit),
 	                                                        state.heap, *evaluator, /*is_query_transformed=*/true,
-	                                                        &clusters_access_order, state.ranking_query.get())
+	                                                        &clusters_access_order, state.ranking_query.get(),
+	                                                        state.sketch_query_table.get())
 	        : index.BeginIterativeSearch(state.query.get(), static_cast<uint32_t>(search.limit), state.heap, nullptr,
 	                                     /*is_query_transformed=*/true, &clusters_access_order,
-	                                     state.ranking_query.get());
+	                                     state.ranking_query.get(), state.sketch_query_table.get());
 	const idx_t cursor_idx = state.search_cursors.size();
 	state.search_cursors.push_back(unique_ptr<PDX::IIterativeSearch>(search_cursor.release()));
 	// The clusters the cursor queues: not empty and, when filtered, with passing rows.
@@ -621,7 +623,7 @@ static void ProbeNearestClustersPerRowGroup(const VSSIndexJoinSearch &search, VS
 		if (!search.is_filtered) {
 			search_cursor =
 			    search.index.BeginSearchForRowGroup(row_group_idx, state.query.get(), search.limit, state.heap, nullptr,
-			                                        nullptr, state.ranking_query.get());
+			                                        nullptr, state.ranking_query.get(), state.sketch_query_table.get());
 		} else {
 			const auto *evaluator = search.shared_predicate_evaluators[row_group_idx].get();
 			if (!evaluator) {
@@ -631,7 +633,8 @@ static void ProbeNearestClustersPerRowGroup(const VSSIndexJoinSearch &search, VS
 			    search.index.GetRowGroupIndex(row_group_idx)
 			        .BeginIterativeSearchWithSharedEvaluator(state.query.get(), static_cast<uint32_t>(search.limit),
 			                                                 state.heap, *evaluator, /*is_query_transformed=*/true,
-			                                                 nullptr, state.ranking_query.get())
+			                                                 nullptr, state.ranking_query.get(),
+			                                                 state.sketch_query_table.get())
 			        .release());
 		}
 		search_cursor->Next(search.clusters_to_probe_on_first_iteration);
@@ -648,6 +651,9 @@ static idx_t SearchQuery(const VSSIndexJoinSearch &search, VSSIndexJoinOperatorS
 
 	state.heap.Clear();
 	state.search_cursors.clear();
+	// The indexes built on the fly have no sketches
+	state.sketch_query_table =
+	    search.on_the_fly_indexes.empty() ? search.index.CreateSketchQueryTable(state.query.get()) : nullptr;
 	if (!search.on_the_fly_indexes.empty()) {
 		ProbeNearestClustersAcrossOnTheFlyIndexes(search, state);
 	} else if (search.rank_clusters_across_row_groups) {

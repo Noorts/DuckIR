@@ -14,6 +14,10 @@ ATTACH '{TEST_DIR}/index_cluster_paging.db' AS p (ROW_GROUP_SIZE 8192);
 statement ok
 SET checkpoint_threshold = '10GB';
 
+# Sketch checks are lossy and depend on which clusters are cached: a paged index checks them, a fully loaded one does not.
+statement ok
+SET duckir_vss_cluster_sketch_check = 'never';
+
 # Variables
 test-env DIMS 128
 
