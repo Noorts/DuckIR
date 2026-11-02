@@ -27,6 +27,18 @@ For now, DuckIR focuses on keeping recall as high as possible without a full-pre
 
 We build an in-memory cache of hot clusters using DuckDB's eviction queues. Hot clusters are clusters that are constantly probed by queries in the current workload. Therefore, **our index leverages the available memory as much as possible.**
 
+## Pruning via 1-bit RaBitQ Sketches
+
+While we cannot leverage a "1-bit RaBitQ + candidate reranking" strategy, we can still avoid fetching many 256 KiB blocks. For this, we use a technique from [RemoteANN](https://arxiv.org/abs/2610.25172). By storing a 1-bit RaBitQ code of every vector, we can determine with high confidence whether the vectors in a cluster can make it into the nearest neighbors of a search.
+
+These 1-bit sketches also live out-of-core and use a tiered cache (hot vs. cold). Under memory pressure, our cache design makes DuckDB evict data in this order: cold clusters (evicted first), hot clusters, cold sketches, hot sketches (evicted last).
+
+Sketches result in 2×-24× faster queries under memory pressure, while recall remains unchanged. However, note that sketches are not beneficial when a cluster's data is in memory, because PDX distance kernels are usually as fast as the 1-bit sketch check. Therefore, our default policy for checking sketches is `when_cluster_not_cached`. To turn sketch checks off, run `SET duckir_vss_cluster_sketch_check = 'never';` before issuing queries.
+
+By default, sketches are built and maintained alongside the index, adding some overhead to index creation (+4% for `f32`, +10% for `u8`, +20% for `u4`) and memory usage. If you know your embeddings will fit in memory, you can opt out of building sketches when you create the index: `CREATE INDEX ... USING DUCKIR_VSS (emb) WITH (cluster_sketches = false);`.
+
+Finally, note that sketches need additional space on disk (4% with `f32`, 14% with `u8`, and 28% with `u4`).
+
 ## `CREATE INDEX`
 
 Local indexes are created in parallel, one row group per DuckDB worker. Indexes are built as concurrently as `memory_limit` allows. `CREATE INDEX` will fail with an out-of-memory error if not enough memory is available.
