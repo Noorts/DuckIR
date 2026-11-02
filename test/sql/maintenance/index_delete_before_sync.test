@@ -161,6 +161,22 @@ SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
 ----
 true
 
+# Emptied again and reloaded with at least as many rows: the reload reuses the row ids, and its rows go into the
+# emptied mirror.
+statement ok
+DELETE FROM t2;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+INSERT INTO t2 SELECT * FROM sift WHERE id >= 20000 AND id < 25001 UNION ALL SELECT -2, {MARKER_B}::FLOAT[{DIMS}];
+
+query I
+SELECT id FROM t2 ORDER BY array_distance(emb, {MARKER_B}::FLOAT[{DIMS}]) LIMIT 1;
+----
+-2
+
 statement ok
 DROP INDEX t1_idx;
 

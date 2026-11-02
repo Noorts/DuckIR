@@ -213,6 +213,29 @@ EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 1[^0-9].*
 
+# A middle row group whose rows are all deleted is dropped too, leaving a row-id gap; its mirror goes with it.
+statement ok
+CREATE OR REPLACE TABLE t4 AS SELECT * FROM sift WHERE id < 24576;
+
+statement ok
+CREATE INDEX t4_idx ON t4 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
+
+statement ok
+DELETE FROM t4 WHERE rowid >= 8192 AND rowid < 16384;
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT count(*) FROM (SELECT id FROM t4 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT});
+----
+10
+
+query II
+EXPLAIN SELECT * FROM t4 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
+----
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
+
 # A row group whose embeddings are all NULL (no mirror) merged with a mirrored partial one: the mirror no longer
 # starts with its row group and is rebuilt. Observable through a filter whose DuckDB chunk starts in the NULL rows.
 statement ok
