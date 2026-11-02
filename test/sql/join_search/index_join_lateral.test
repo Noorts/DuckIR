@@ -26,6 +26,10 @@ test-env DIMS 128
 statement ok
 SET duckir_vss_n_probe = 0;
 
+# Sketch checks are lossy and depend on which clusters are cached, which differs between the join and the single searches.
+statement ok
+SET duckir_vss_cluster_sketch_check = 'never';
+
 statement ok
 CREATE TABLE t AS SELECT id, (id % 10)::INTEGER AS cat, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 32768;
 
