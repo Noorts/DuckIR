@@ -1,6 +1,6 @@
 extension:
   name: duckir
-  description: Information Retrieval suite for DuckDB. Fast vector search fully integrated with DuckDB, with filtered search on any predicate, indexes larger than memory, and an index that updates alongside your table.
+  description: A DuckDB extension for Information Retrieval. Fast vector search fully integrated with DuckDB, with filtered search on any predicate, indexes larger than memory, and an index that updates alongside your table.
   version: 0.1.0
   language: C++
   build: cmake
@@ -45,7 +45,7 @@ docs:
     SET duckir_vss_n_probe = 48;
 
   extended_description: |
-    DuckIR is an Information Retrieval suite for DuckDB. Vector Search is ready, and Full Text Search and Hybrid Search are on their way.
+    DuckIR is a DuckDB extension for Information Retrieval. Vector Search is ready, and Full Text Search and Hybrid Search are on their way.
 
     We create a local index per DuckDB row group. Each local index is a [PDX-IVF](https://github.com/cwida/PDX) index, maintained with the [LIRE protocol](https://dl.acm.org/doi/pdf/10.1145/3600006.3613166). This design gives DuckIR:
 
