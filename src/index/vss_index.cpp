@@ -75,14 +75,16 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 		seed = seed_opt->second.GetValue<int32_t>();
 	}
 
+	auto build_cluster_sketches = VSSWrapper::DEFAULT_CLUSTER_SKETCHES;
+	const auto cluster_sketches_opt = options.find("cluster_sketches");
+	if (cluster_sketches_opt != options.end()) {
+		build_cluster_sketches = cluster_sketches_opt->second.GetValue<bool>();
+	}
+
 	Value max_cluster_size_setting;
 	db.GetDatabase().TryGetCurrentSetting("duckir_vss_experimental_max_cluster_size", max_cluster_size_setting);
 	const auto max_cluster_size = max_cluster_size_setting.IsNull() ? VSSWrapper::DEFAULT_MAX_CLUSTER_SIZE
 	                                                                : max_cluster_size_setting.GetValue<uint32_t>();
-	Value build_cluster_sketches_setting;
-	db.GetDatabase().TryGetCurrentSetting("duckir_vss_build_cluster_sketches", build_cluster_sketches_setting);
-	const bool build_cluster_sketches =
-	    build_cluster_sketches_setting.IsNull() || build_cluster_sketches_setting.GetValue<bool>();
 	Value cluster_sketch_check_setting;
 	db.GetDatabase().TryGetCurrentSetting("duckir_vss_cluster_sketch_check", cluster_sketch_check_setting);
 	const auto cluster_sketch_check = cluster_sketch_check_setting.IsNull()
@@ -749,6 +751,7 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 	result->n_probe = static_cast<int64_t>(vss_wrapper->GetNProbe());
 	result->seed = static_cast<int64_t>(vss_wrapper->GetSeed());
 	result->is_normalized = IsNormalized();
+	result->cluster_sketches = vss_wrapper->BuildsClusterSketches();
 	result->approximate_lower_bound_memory_usage_bytes = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
 	if (storage_reader) {
 		const auto &counters = storage_reader->counters;
@@ -883,6 +886,7 @@ IndexStorageInfo VSSIndex::MakeStorageInfo() const {
 	info.options.emplace("quantization", Value(GetQuantization()));
 	info.options.emplace("n_probe", Value::INTEGER(static_cast<int32_t>(vss_wrapper->GetNProbe())));
 	info.options.emplace("seed", Value::INTEGER(vss_wrapper->GetSeed()));
+	info.options.emplace("cluster_sketches", Value::BOOLEAN(vss_wrapper->BuildsClusterSketches()));
 	info.allocator_infos.push_back(allocator->GetInfo());
 	return info;
 }
@@ -1168,11 +1172,6 @@ void VSSModule::RegisterIndex(DatabaseInstance &db) {
 	db.config.AddExtensionOption("duckir_vss_cache_tiers",
 	                             "in indexes loaded with it on, the clusters searches read most often are the last "
 	                             "DuckDB evicts from memory (default: true)",
-	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
-	db.config.AddExtensionOption("duckir_vss_build_cluster_sketches",
-	                             "the row groups that indexes created or loaded with it on cluster keep a 1-bit sketch "
-	                             "of every row, which lets searches skip the clusters that cannot hold a neighbour "
-	                             "without reading them (default: true)",
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
 	db.config.AddExtensionOption(
 	    "duckir_vss_cluster_sketch_check",

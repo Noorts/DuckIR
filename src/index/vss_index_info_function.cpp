@@ -67,6 +67,10 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
      [](const IndexInfoColumnInput &input) {
 	     return Value::BOOLEAN(input.stats.is_normalized);
      }},
+    {"cluster_sketches", LogicalType::BOOLEAN,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BOOLEAN(input.stats.cluster_sketches);
+     }},
     {"approx_lower_bound_memory_usage_bytes", LogicalType::BIGINT,
      [](const IndexInfoColumnInput &input) {
 	     return Value::BIGINT(input.stats.approximate_lower_bound_memory_usage_bytes);

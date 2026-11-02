@@ -35,6 +35,7 @@ public:
 	static constexpr uint32_t SAQ_BITS_PER_DIMENSION = 4;
 	static constexpr float SAQ_PRUNING_SIGNIFICANCE = 0.01f;
 	static constexpr int32_t DEFAULT_N_PROBE = 24; // 5% of the data in a full search
+	static constexpr bool DEFAULT_CLUSTER_SKETCHES = true;
 	// Clusters average about 256 rows, one u8 block
 	static constexpr uint32_t DEFAULT_MAX_CLUSTER_SIZE = 384;
 	static constexpr uint32_t MAX_CLUSTER_SIZE_UPPER_BOUND = 2048;
@@ -64,8 +65,8 @@ private:
 	// The clusters of a row group that still receives rows split at this size: the
 	// duckir_vss_experimental_max_cluster_size setting when the index was created or loaded.
 	const uint32_t max_cluster_size;
-	// The duckir_vss_build_cluster_sketches and duckir_vss_cluster_sketch_check settings when the index was created or
-	// loaded: whether new IVF row groups get cluster sketches, and when searches check them.
+	// The index's cluster_sketches option: whether its IVF row groups get cluster sketches. And the
+	// duckir_vss_cluster_sketch_check setting when the index was created or loaded: when searches check them.
 	const bool build_cluster_sketches;
 	const PDX::ClusterSketchCheck cluster_sketch_check;
 

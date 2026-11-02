@@ -1,5 +1,5 @@
 # name: test/sql/out_of_core/index_cluster_sketches.test
-# description: Searches of paged u8 and u4 indexes skip the clusters their sketches rule out and keep the top-k of searches that check none; an index built with duckir_vss_build_cluster_sketches off has none.
+# description: Searches of paged u8 and u4 indexes skip the clusters their sketches rule out and keep the top-k of searches that check none; an index created with cluster_sketches = false has none, also in row groups built after a reload.
 # group: [out_of_core]
 
 require parquet
@@ -85,18 +85,34 @@ t4_idx	true
 t_idx	true
 
 statement ok
-SET duckir_vss_build_cluster_sketches = false;
-
-statement ok
 CREATE TABLE p.t_off AS SELECT * FROM p.t WHERE id < 16384;
 
 statement ok
-CREATE INDEX t_off_idx ON p.t_off USING DUCKIR_VSS (emb);
+CREATE INDEX t_off_idx ON p.t_off USING DUCKIR_VSS (emb) WITH (cluster_sketches = false);
+
+statement ok
+CHECKPOINT p;
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_cluster_sketches.db' AS p (ROW_GROUP_SIZE 8192);
+
+# A row group indexed after the reload.
+statement ok
+INSERT INTO p.t_off SELECT * FROM p.t WHERE id >= 16384 AND id < 24576;
 
 statement ok
 SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t_off ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
 
-# Built with the setting off, the index has no sketches to check.
+# The option is saved with the index, and none of its row groups has sketches to check.
+query II
+SELECT index_name, cluster_sketches FROM duckir_vss_index_info() ORDER BY ALL;
+----
+t4_idx	true
+t_idx	true
+t_off_idx	false
+
 query I
 SELECT cluster_sketch_acquires FROM duckir_vss_index_info() WHERE index_name = 't_off_idx';
 ----

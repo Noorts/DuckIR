@@ -30,6 +30,7 @@ struct VSSIndexStats {
 	int64_t n_probe;
 	int64_t seed;
 	bool is_normalized;
+	bool cluster_sketches;
 	int64_t approximate_lower_bound_memory_usage_bytes;
 	int64_t cluster_acquires;
 	int64_t cluster_cache_misses;
