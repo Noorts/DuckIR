@@ -12,8 +12,8 @@
 ## Why DuckIR?
 
 - **Search fully integrated with DuckDB**: Query execution, predicate pushdown, transactional correctness, checkpoints, and crash recovery.
-- **Indexes larger than memory**: We handle creating indexes and searching over embeddings beyond memory limits.
-- **Maintenance**: Our vector index updates alongside your table. DuckIR never needs full index rebuilds because our index mirrors DuckDB's row groups.
+- **Indexes larger than memory**: We handle creating indexes and searching over embeddings [beyond memory limits](/docs/OUT_OF_CORE.md).
+- **Maintenance**: Our vector index [updates](/docs/MAINTENANCE.md) alongside your table. DuckIR never needs full index rebuilds because our index mirrors DuckDB's row groups.
 - **Morsel-driven parallelism**: Operators work one row group at a time, as DuckDB does.
 - **Portable**: Linux (x86, ARM), macOS, Wasm, Windows (x86).
 - **Fast Vector Indexing and Search**: Index millions of vectors in seconds and search them in milliseconds.

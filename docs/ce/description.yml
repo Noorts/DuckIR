@@ -18,9 +18,6 @@ repo:
 
 docs:
   hello_world: |
-    INSTALL duckir FROM community;
-    LOAD duckir;
-
     -- Create a table with an empty vector index
     CREATE TABLE movies (
       title VARCHAR,
@@ -70,7 +67,7 @@ docs:
     |---|---|
     | `metric` | `'l2sq'` (*default*, optimizes `array_distance`) or `'cosine'` (optimizes `array_cosine_distance`) |
     | `quantization` | `f32` (no compression), `u8` (*default*, ×4 compression) or `u4` ([SAQ](https://dl.acm.org/doi/pdf/10.1145/3769824), ×8 compression) |
-    | `n_probe` | Clusters to probe per row group. *Default* is `24`. You can change it at search time with `SET duckir_vss_n_probe = 48`. |
+    | `n_probe` | Clusters to probe per row group. *Default* is `24`. You can override this index option at search time with `SET duckir_vss_n_probe = 48`. |
     | `seed` | *Default* is random |
 
     ### Vector Search
