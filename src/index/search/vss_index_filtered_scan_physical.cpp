@@ -157,10 +157,9 @@ static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(VSSIndex &
 		clusters_access_order = index.GetClustersAccessOrderForRowGroup(
 		    row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.ranking_query.get());
 	});
-	auto search_cursor = index.BeginSearchForRowGroup(row_group_idx, g_sink.preprocessed_query_embedding.get(),
-	                                                  g_sink.limit, g_sink.top_k_heap, &passing_rowids,
-	                                                  &clusters_access_order, g_sink.ranking_query.get(),
-	                                                  g_sink.sketch_query_table.get());
+	auto search_cursor = index.BeginSearchForRowGroup(
+	    row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit, g_sink.top_k_heap, &passing_rowids,
+	    &clusters_access_order, g_sink.ranking_query.get(), g_sink.sketch_query_table.get());
 	search_cursor->Next(g_sink.partitions_to_probe_per_row_group_on_first_iteration);
 	return search_cursor;
 }

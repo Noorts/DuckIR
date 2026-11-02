@@ -1032,7 +1032,6 @@ const case_insensitive_map_t<PDX::Quantization> VSSIndex::QUANTIZATION_MAP = {
 const case_insensitive_map_t<PDX::ClusterSketchCheck> VSSIndex::CLUSTER_SKETCH_CHECK_MAP = {
     {"never", PDX::ClusterSketchCheck::NEVER},
     {"when_cluster_not_cached", PDX::ClusterSketchCheck::WHEN_CLUSTER_NOT_CACHED},
-    {"always", PDX::ClusterSketchCheck::ALWAYS},
 };
 
 string VSSIndex::GetDistanceMetric() const {
@@ -1177,14 +1176,14 @@ void VSSModule::RegisterIndex(DatabaseInstance &db) {
 	                             LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
 	db.config.AddExtensionOption(
 	    "duckir_vss_cluster_sketch_check",
-	    "when searches of indexes loaded with it check a cluster's sketch before probing it: 'never', "
-	    "'when_cluster_not_cached' (the cluster must be read from disk) or 'always' (default: when_cluster_not_cached)",
+	    "when searches of indexes loaded with it check a cluster's sketch before probing it: 'never' or "
+	    "'when_cluster_not_cached', when the cluster must be read from disk (default: when_cluster_not_cached)",
 	    LogicalType::VARCHAR, Value("when_cluster_not_cached"),
 	    [](ClientContext &, SetScope, Value &parameter) {
 		    const auto policy = StringUtil::Lower(parameter.ToString());
 		    if (VSSIndex::CLUSTER_SKETCH_CHECK_MAP.find(policy) == VSSIndex::CLUSTER_SKETCH_CHECK_MAP.end()) {
-			    throw InvalidInputException("duckir_vss_cluster_sketch_check must be 'never', "
-			                                "'when_cluster_not_cached' or 'always', not '%s'",
+			    throw InvalidInputException("duckir_vss_cluster_sketch_check must be 'never' or "
+			                                "'when_cluster_not_cached', not '%s'",
 			                                parameter.ToString());
 		    }
 		    parameter = Value(policy);

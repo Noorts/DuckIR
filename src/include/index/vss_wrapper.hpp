@@ -265,8 +265,9 @@ public:
 	}
 
 	VSSWrapperParallel(PDX::DistanceMetric distance_metric, uint32_t num_dimensions, uint32_t n_probe, int32_t seed,
-	                   uint32_t max_cluster_size, bool build_cluster_sketches, PDX::ClusterSketchCheck cluster_sketch_check,
-	                   idx_t row_group_size, unique_ptr<float[]> rotation_matrix, std::optional<PDX::SAQModel> saq_model,
+	                   uint32_t max_cluster_size, bool build_cluster_sketches,
+	                   PDX::ClusterSketchCheck cluster_sketch_check, idx_t row_group_size,
+	                   unique_ptr<float[]> rotation_matrix, std::optional<PDX::SAQModel> saq_model,
 	                   PDX::MemoryAllocator &memory_allocator)
 	    : VSSWrapper(Q, distance_metric, num_dimensions, n_probe, seed, max_cluster_size, build_cluster_sketches,
 	                 cluster_sketch_check, std::move(rotation_matrix), std::move(saq_model), memory_allocator),

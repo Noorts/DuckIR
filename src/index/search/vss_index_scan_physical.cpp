@@ -108,10 +108,9 @@ public:
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
 		auto &index = g_state.index;
 
-		auto search_cursor =
-		    index.BeginSearchForRowGroup(row_group_id, g_state.preprocessed_query_embedding.get(), g_state.limit,
-		                                 g_state.top_k_heap, nullptr, nullptr, g_state.ranking_query.get(),
-		                                 g_state.sketch_query_table.get());
+		auto search_cursor = index.BeginSearchForRowGroup(
+		    row_group_id, g_state.preprocessed_query_embedding.get(), g_state.limit, g_state.top_k_heap, nullptr,
+		    nullptr, g_state.ranking_query.get(), g_state.sketch_query_table.get());
 		search_cursor->Next(g_state.num_clusters_to_probe_per_row_group);
 
 		event->FinishTask();

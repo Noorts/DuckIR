@@ -85,9 +85,6 @@ t4_idx	true
 t_idx	true
 
 statement ok
-SET duckir_vss_cluster_sketch_check = 'always';
-
-statement ok
 SET duckir_vss_build_cluster_sketches = false;
 
 statement ok

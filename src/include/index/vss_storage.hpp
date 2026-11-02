@@ -186,8 +186,8 @@ private:
 	// duckir_vss_cache_tiers: the access counts halve every ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS acquires per cluster,
 	// and a cluster acquired at least HOT_ACCESS_FACTOR times the average when it is fetched goes to the eviction queue
 	// HOT_CLUSTER_EVICTION_QUEUE: evicted after the other clusters, before the sketches (CLUSTER_SKETCH_EVICTION_QUEUE)
-	// and the temporary chains. Sketches are counted the same way: a sketch hot in the same sense when it is fetched goes
-	// to HOT_CLUSTER_SKETCH_EVICTION_QUEUE, evicted after the other sketches.
+	// and the temporary chains. Sketches are counted the same way: a sketch hot in the same sense when it is fetched
+	// goes to HOT_CLUSTER_SKETCH_EVICTION_QUEUE, evicted after the other sketches.
 	static constexpr idx_t ACQUIRES_PER_CLUSTER_BETWEEN_DECAYS = 10;
 	static constexpr idx_t HOT_ACCESS_FACTOR = 2;
 	static constexpr idx_t HOT_CLUSTER_EVICTION_QUEUE = 3;
