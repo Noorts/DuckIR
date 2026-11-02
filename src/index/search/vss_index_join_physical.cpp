@@ -29,12 +29,8 @@ PhysicalVSSIndexJoin::PhysicalVSSIndexJoin(PhysicalPlan &physical_plan, vector<L
 	D_ASSERT(limit <= STANDARD_VECTOR_SIZE);
 	fetch_column_ids.reserve(column_ids.size());
 	for (auto &id : column_ids) {
-		if (id.IsRowIdColumn()) {
-			fetch_column_ids.emplace_back();
-		} else {
-			auto &col = table.GetColumn(LogicalIndex(id.GetPrimaryIndex()));
-			fetch_column_ids.emplace_back(col.StorageOid());
-		}
+		// Keeps the struct fields DuckDB pushed into the scan.
+		fetch_column_ids.emplace_back(table.GetStorageIndex(id));
 	}
 }
 

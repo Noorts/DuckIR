@@ -424,14 +424,8 @@ public:
 		// Set up column IDs for fetching data from storage.
 		column_ids.reserve(operator_column_ids.size());
 		for (auto &id : operator_column_ids) {
-			StorageIndex storage_id;
-			if (id.IsRowIdColumn()) {
-				storage_id = StorageIndex();
-			} else {
-				auto &col = bind_data.table.GetColumn(LogicalIndex(id.GetPrimaryIndex()));
-				storage_id = StorageIndex(col.StorageOid());
-			}
-			column_ids.emplace_back(storage_id);
+			// Keeps the struct fields DuckDB pushed into the scan.
+			column_ids.emplace_back(bind_data.table.GetStorageIndex(id));
 		}
 
 		// Initialize the storage scan state.

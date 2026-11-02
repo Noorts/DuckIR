@@ -29,6 +29,9 @@ void LogicalVSSIndexFilteredScan::ResolveTypes() {
 	for (auto &col_idx : column_ids) {
 		if (col_idx.IsRowIdColumn()) {
 			types.push_back(LogicalType::ROW_TYPE);
+		} else if (col_idx.HasType()) {
+			// A struct field DuckDB pushed into the scan: the scan returns the field.
+			types.push_back(col_idx.GetScanType());
 		} else {
 			auto logical_idx = col_idx.GetPrimaryIndex();
 			auto &col = table.GetColumn(LogicalIndex(logical_idx));
