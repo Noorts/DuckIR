@@ -569,7 +569,7 @@ unique_ptr<PDX::ClusterSketchQueryTable>
 VSSIndex::CreateSketchQueryTable(const float *const preprocessed_query_embedding) const {
 	const auto check = vss_wrapper->GetClusterSketchCheck();
 	// Without paging every cluster is in memory, so WHEN_CLUSTER_NOT_CACHED never checks
-	if (check == PDX::ClusterSketchCheck::NEVER ||
+	if (!vss_wrapper->BuildsClusterSketches() || check == PDX::ClusterSketchCheck::NEVER ||
 	    (check == PDX::ClusterSketchCheck::WHEN_CLUSTER_NOT_CACHED && !cluster_paging)) {
 		return nullptr;
 	}
