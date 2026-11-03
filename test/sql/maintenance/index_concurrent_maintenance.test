@@ -93,3 +93,67 @@ statement ok
 DROP INDEX t1_idx;
 
 endloop
+
+# One query with two searches on the same index, and an INSERT committed by another connection between them: the
+# second search shares the first one's lock instead of queueing behind the INSERT's (a deadlock).
+statement ok
+CREATE TABLE t2 AS FROM sift;
+
+statement ok
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+
+concurrentloop threadid 0 2
+
+statement ok
+USE conc;
+
+# Keeps the written order: the LATERAL search (the hash join's build side) runs before the other one starts.
+onlyif threadid=0
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side';
+
+onlyif threadid=0
+query I
+SELECT count(*) >= 0 FROM (SELECT id FROM t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT}) b
+JOIN (SELECT n.id FROM (SELECT emb FROM sift WHERE id < 16384) q,
+LATERAL (SELECT t2.id FROM t2 ORDER BY array_distance(t2.emb, q.emb) LIMIT {LIMIT}) n) a ON a.id = b.id;
+----
+true
+
+onlyif threadid=1
+statement ok
+SELECT count(*) FROM range(50000000) r WHERE r.range % 7 = 3;
+
+onlyif threadid=1
+statement ok
+INSERT INTO t2 SELECT id + 100000, emb FROM sift WHERE id < 10;
+
+endloop
+
+# DROP INDEX on another connection while a query that planned with the index waits for a slow pipeline: the query
+# fails cleanly, or DROP INDEX waits for it to end. It never searches a dropped index.
+concurrentloop threadid 0 2
+
+statement ok
+USE conc;
+
+onlyif threadid=0
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side';
+
+onlyif threadid=0
+statement maybe
+SELECT count(*) FROM (SELECT id FROM t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT}) s,
+(SELECT count(*) AS c FROM range(200000000) r WHERE r.range % 7 = 3) slow;
+----
+dropped by a concurrent transaction
+
+onlyif threadid=1
+statement ok
+SELECT count(*) FROM range(50000000) r WHERE r.range % 7 = 3;
+
+onlyif threadid=1
+statement ok
+DROP INDEX t2_idx;
+
+endloop
