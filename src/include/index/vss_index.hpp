@@ -86,13 +86,13 @@ private:
 		}
 	}
 
-	// Row ids committed to the table whose embeddings are not in the index yet: the sync's working list, only used under
-	// the exclusive search lock. Each sync indexes it and keeps the rows whose commit is still in flight.
+	// Row ids committed to the table whose embeddings are not in the index yet: the sync's working list, only used
+	// under the exclusive search lock. Each sync indexes it and keeps the rows whose commit is still in flight.
 	std::vector<VSSRowRange> unindexed_row_ranges;
 	std::atomic<bool> has_unindexed_rows {false};
 	// A commit never waits for the search lock. It stages its changes in an inbox under this small lock instead, which
-	// the next sync empties at its start: Insert's rows (staged_row_ranges, moved to unindexed_row_ranges), and Delete's
-	// rows when it cannot take the search lock at once (staged_deletes, applied first: ApplyStagedDeletes).
+	// the next sync empties at its start: Insert's rows (staged_row_ranges, moved to unindexed_row_ranges), and
+	// Delete's rows when it cannot take the search lock at once (staged_deletes, applied first: ApplyStagedDeletes).
 	std::mutex commit_staging_lock;
 	std::vector<VSSRowRange> staged_row_ranges;
 	std::vector<row_t> staged_deletes;
