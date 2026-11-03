@@ -92,3 +92,20 @@ SELECT COUNT(*) FROM t_idx_res WHERE id % 10 = 0;
 0
 
 endloop
+
+# u4 fits at CREATE INDEX on non-NULL rows: the first half of both (default-size) row groups is NULL.
+statement ok
+CREATE TABLE memory.t_u4 AS SELECT id, CASE WHEN id % 122880 < 61440 THEN NULL ELSE emb::FLOAT[{DIMS}] END AS emb
+FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet');
+
+statement ok
+CREATE TABLE memory.t_u4_bf AS FROM memory.t_u4;
+
+statement ok
+CREATE INDEX t_u4_idx ON memory.t_u4 USING DUCKIR_VSS (emb) WITH (quantization = 'u4', n_probe = 0, seed = 0);
+
+query I
+SELECT COUNT(*) >= 80 FROM (SELECT id FROM memory.t_u4 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100)
+JOIN (SELECT id FROM memory.t_u4_bf ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100) USING (id);
+----
+true
