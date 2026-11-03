@@ -232,6 +232,15 @@ vector<VSSRowGroupBounds> VSSIndex::GetPhysicalRowGroups(DataTable &table) const
 	return result;
 }
 
+idx_t VSSIndex::GetLargestRowGroupCount(DataTable &table) const {
+	// At least the attach's row group size, which an open row group can still grow to.
+	idx_t largest = GetRowGroupSize();
+	for (const auto &row_group : GetPhysicalRowGroups(table)) {
+		largest = MaxValue(largest, row_group.count);
+	}
+	return largest;
+}
+
 optional_idx VSSIndex::LookupRowGroup(const row_t row_id) const {
 	return DispatchWrapper([&](auto &wrapper) { return wrapper.LookupRowGroup(row_id); });
 }
@@ -364,7 +373,7 @@ idx_t VSSIndex::FetchCommittedRowIds(DataTable &table, const row_t start, const 
 
 // One DuckDB row group of row ids at a time
 void VSSIndex::ReconcileWithTable(DataTable &table) {
-	auto row_ids = make_uniq_array<row_t>(GetRowGroupSize());
+	auto row_ids = make_uniq_array<row_t>(GetLargestRowGroupCount(table));
 	const auto stage = [&](const row_t start, const row_t end) {
 		StageUnindexedRange({start, end});
 	};
@@ -406,7 +415,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		return buffer_manager.Allocate(MemoryTag::EXTENSION, num_rows * num_dimensions * sizeof(float),
 		                               /*can_destroy=*/false);
 	};
-	auto row_ids = make_uniq_array<row_t>(GetRowGroupSize());
+	auto row_ids = make_uniq_array<row_t>(GetLargestRowGroupCount(table));
 
 	// Row groups a checkpoint merged or dropped: their mirrors go, and the ones still in the table are rebuilt.
 	idx_t rows_returned;

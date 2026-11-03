@@ -223,7 +223,8 @@ SinkResultType PhysicalVSSIndexFilteredScan::Sink(ExecutionContext &context, Dat
 		}
 		l_sink.current_row_group_passing_rowids.push_back(static_cast<size_t>(row_id));
 	}
-	D_ASSERT(l_sink.current_row_group_passing_rowids.size() <= index.GetRowGroupSize());
+	D_ASSERT(l_sink.current_row_group_passing_rowids.size() <=
+	         static_cast<idx_t>(l_sink.current_row_group_range.end - l_sink.current_row_group_range.start));
 
 	return SinkResultType::NEED_MORE_INPUT;
 }

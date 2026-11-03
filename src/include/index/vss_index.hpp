@@ -215,6 +215,8 @@ public:
 
 	vector<VSSRowGroupBounds> GetPhysicalRowGroups(DataTable &table) const;
 
+	idx_t GetLargestRowGroupCount(DataTable &table) const;
+
 	// Position of the index's row group that holds row_id (the row_group_idx of the methods below).
 	optional_idx LookupRowGroup(row_t row_id) const;
 
