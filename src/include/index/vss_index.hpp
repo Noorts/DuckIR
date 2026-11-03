@@ -10,11 +10,13 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_lock.hpp"
 #include <atomic>
+#include <condition_variable>
 
 #include "pdx/common.hpp"
 #include "index/vss_memory_allocator.hpp"
 #include "index/vss_storage.hpp"
 #include "index/vss_wrapper.hpp"
+#include "index/search/vss_search_guard.hpp"
 
 namespace duckdb {
 
@@ -179,6 +181,14 @@ private:
 	// See the pull request this was introduced in for more context.
 	mutable StorageLock rwlock;
 
+	// The queries whose search guard pins the index. DROP INDEX calls ResetStorage right before it destroys the index:
+	// it sets is_retired and waits until no query pins the index.
+	std::mutex search_pins_lock;
+	std::condition_variable search_pins_released;
+	idx_t search_pins = 0;
+	bool is_retired = false;
+	friend class VSSSearchGuard;
+
 public:
 	VSSIndex(const Identifier &name, IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
 	         TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
@@ -274,6 +284,9 @@ public:
 	idx_t GetInMemorySize(IndexLock &state) const override;
 
 	unique_ptr<VSSIndexStats> GetStats(const ClientContext &context) const;
+
+	// What a plan keeps of the index (the optimizer, under the index's read handle): read under the search lock.
+	VSSIndexPlanInfo GetPlanInfo(idx_t oid) const;
 
 	/******************************************************************
 	 * Index persistence

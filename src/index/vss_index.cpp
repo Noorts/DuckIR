@@ -715,6 +715,12 @@ void VSSIndex::RemoveUnindexedRow(const row_t row_id) {
 // Called by DROP INDEX.
 // Dropping the allocator's buffers marks their blocks modified; DuckDB frees them at the next checkpoint.
 void VSSIndex::ResetStorage(IndexLock &lock) {
+	// DuckDB destroys the index next (it rebuilds only ART indexes in place): first, the queries searching it finish.
+	{
+		std::unique_lock<std::mutex> pins(search_pins_lock);
+		is_retired = true;
+		search_pins_released.wait(pins, [&] { return search_pins == 0; });
+	}
 	auto _lock = rwlock.GetExclusiveLock();
 
 	allocator->Reset();
@@ -756,6 +762,12 @@ idx_t VSSIndex::GetInMemorySize(IndexLock &state) const {
 }
 
 unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const {
+	// A concurrent sync changes the mirrors under the search lock. A query that searches this index holds it already:
+	// taking it again would wait for any writer queued behind the query.
+	unique_ptr<StorageLockKey> search_lock;
+	if (!HasSearchGuard(context, *this)) {
+		search_lock = rwlock.GetSharedLock();
+	}
 	auto result = make_uniq<VSSIndexStats>();
 
 	// Make sure to sync any changes made here to `vss_index_info_function.cpp`.
@@ -779,6 +791,19 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 	}
 
 	return result;
+}
+
+VSSIndexPlanInfo VSSIndex::GetPlanInfo(const idx_t oid) const {
+	auto _lock = rwlock.GetSharedLock();
+	VSSIndexPlanInfo info;
+	info.oid = oid;
+	info.name = GetIndexName().GetIdentifierName();
+	info.num_dimensions = GetNumDimensions();
+	info.total_num_clusters = GetTotalNumClusters();
+	info.num_row_groups = GetNumRowGroups();
+	// The allocator only holds the buffers that were not written to disk yet.
+	info.in_memory_size = vss_wrapper->GetInMemorySizeInBytes() + allocator->GetInMemorySize();
+	return info;
 }
 
 /******************************************************************
