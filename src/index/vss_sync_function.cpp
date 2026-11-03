@@ -36,8 +36,8 @@ static unique_ptr<GlobalTableFunctionState> VSSSyncIndexInitGlobal(ClientContext
 	return make_uniq<VSSSyncIndexGlobalState>();
 }
 
-static shared_ptr<IndexEntry> FindVSSIndex(ClientContext &context, const string &index_name,
-                                           optional_ptr<DataTable> &table) {
+static unique_ptr<VSSSearchGuard> FindVSSIndex(ClientContext &context, const string &index_name,
+                                               optional_ptr<DataTable> &table) {
 	optional_ptr<IndexCatalogEntry> index_entry;
 	for (auto &schema : Catalog::GetAllSchemas(context)) {
 		schema.get().Scan(context, CatalogType::INDEX_ENTRY, [&](CatalogEntry &entry) {
@@ -60,7 +60,11 @@ static shared_ptr<IndexEntry> FindVSSIndex(ClientContext &context, const string 
 	for (auto entry : table_info.GetIndexes().IndexEntries()) {
 		if (entry->GetBindState() == IndexBindState::BOUND && entry->GetIndexType() == VSSIndex::TYPE_NAME &&
 		    entry->GetName() == index_name) {
-			return entry;
+			// Pinned under the list's lock, like AcquireSearchGuard does: DROP INDEX removes the entry under it before
+			// it retires the index, and waits for the pin before it destroys the index.
+			auto index = entry->GetReadHandle<VSSIndex>();
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+			return make_uniq<VSSSearchGuard>(const_cast<VSSIndex &>(*index.operator->()));
 		}
 	}
 	throw BinderException("DuckIR VSS index '%s' is not bound", index_name);
@@ -73,11 +77,11 @@ static void VSSSyncIndexExecute(ClientContext &context, TableFunctionInput &data
 	}
 	auto &bind_data = data_p.bind_data->Cast<VSSSyncIndexBindData>();
 	optional_ptr<DataTable> table;
-	auto entry = FindVSSIndex(context, bind_data.index_name, table);
-	// Exclusive access while the sync rebuilds row groups. A checkpoint serializes the index under this same lock.
-	auto index = entry->GetWriteHandle<VSSIndex>();
-	const bool had_unindexed_rows = index->HasUnindexedRows();
-	index->SyncWithTable(context, *table);
+	auto guard = FindVSSIndex(context, bind_data.index_name, table);
+	auto &index = guard->index;
+	const bool had_unindexed_rows = index.HasUnindexedRows();
+	// SyncWithTable takes the search lock exclusively, as a checkpoint does to serialize the index.
+	index.SyncWithTable(context, *table);
 
 	output.data[0].Append(Value(bind_data.index_name));
 	output.data[1].Append(Value::BOOLEAN(had_unindexed_rows));
