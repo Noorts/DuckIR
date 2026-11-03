@@ -12,6 +12,7 @@ set(EXTENSION_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_join_physical.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_scan_logical.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_index_scan_physical.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/search/vss_search_guard.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/search/duckir_scan_optimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vss_blob_functions.cpp
     PARENT_SCOPE)
