@@ -58,7 +58,9 @@ namespace duckdb {
 	using RowMajorMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 	const auto n = static_cast<Eigen::Index>(num_embeddings);
 	Eigen::Map<Eigen::VectorXf>(squared_norms, n) =
-	    Eigen::Map<const RowMajorMatrix>(embeddings, n, static_cast<Eigen::Index>(num_dimensions)).rowwise().squaredNorm();
+	    Eigen::Map<const RowMajorMatrix>(embeddings, n, static_cast<Eigen::Index>(num_dimensions))
+	        .rowwise()
+	        .squaredNorm();
 	idx_t num_finite = 0;
 	for (size_t i = 0; i < num_embeddings; i++) {
 		num_finite += std::isfinite(squared_norms[i]);

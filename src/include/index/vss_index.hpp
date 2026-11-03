@@ -105,8 +105,8 @@ private:
 	void DeleteRow(row_t row_id);
 
 	// Scans the committed rows of [start, end) whose embedding is not NULL into `embeddings`, normalized when the
-	// metric needs it and rotated if `rotate`, and their ids into `row_ids` unless it is null. Returns how many (at most
-	// `max_rows`). `rows_returned` counts every committed row the table returned, NULL embeddings included.
+	// metric needs it and rotated if `rotate`, and their ids into `row_ids` unless it is null. Returns how many (at
+	// most `max_rows`). `rows_returned` counts every committed row the table returned, NULL embeddings included.
 	idx_t FetchRows(DataTable &table, row_t start, row_t end, float *embeddings, idx_t &rows_returned, row_t *row_ids,
 	                bool rotate, PDX::ParallelExecutor *executor, idx_t max_rows = NumericLimits<idx_t>::Maximum());
 
