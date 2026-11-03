@@ -7,6 +7,7 @@
 #include "duckdb/transaction/local_storage.hpp"
 #include "duckdb/catalog/catalog_entry/duck_index_entry.hpp"
 
+#include "index/search/vss_search_guard.hpp"
 #include "index/vss_index.hpp"
 #include "index/vss_module.hpp"
 
@@ -152,20 +153,23 @@ static void VSSIndexInfoExecute(ClientContext &context, TableFunctionInput &data
 		auto &table_info = *storage.GetDataTableInfo();
 
 		table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
-		unique_ptr<VSSIndexStats> stats;
+		unique_ptr<VSSSearchGuard> matched_index;
 		for (auto entry : table_info.GetIndexes().IndexEntries()) {
 			if (entry->GetBindState() != IndexBindState::BOUND || entry->GetIndexType() != VSSIndex::TYPE_NAME ||
 			    entry->GetName() != index_entry.name) {
 				continue;
 			}
 			auto index = entry->GetReadHandle<VSSIndex>();
-			stats = index->GetStats(context);
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+			matched_index = make_uniq<VSSSearchGuard>(const_cast<VSSIndex &>(*index.operator->()));
 			break;
 		}
 
-		if (!stats) {
+		if (!matched_index) {
 			throw BinderException("Index %s not found", index_entry.name);
 		}
+		// GetStats goes outside the loop, otherwise it contends with DuckDB's locks
+		auto stats = matched_index->index.GetStats(context);
 		IndexInfoColumnInput col_input {index_entry, table_entry, *stats};
 
 		for (idx_t col = 0; col < sizeof(INDEX_INFO_COLUMNS) / sizeof(INDEX_INFO_COLUMNS[0]); col++) {

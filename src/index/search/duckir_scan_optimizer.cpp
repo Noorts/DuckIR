@@ -818,6 +818,7 @@ public:
 	                          const std::function<bool(const Expression &)> &is_query_argument, IndexMatch &match) {
 		auto &table_info = *get.GetTable()->GetStorage().GetDataTableInfo();
 		vector<reference<Expression>> bindings;
+		unique_ptr<VSSSearchGuard> matched_index;
 
 		table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
 		for (auto entry : table_info.GetIndexes().IndexEntries()) {
@@ -866,7 +867,9 @@ public:
 					continue;
 				}
 			}
-			match.index_info = index->GetPlanInfo(entry->GetIndexOid());
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+			matched_index = make_uniq<VSSSearchGuard>(const_cast<VSSIndex &>(*index.operator->()));
+			match.index_info.oid = entry->GetIndexOid();
 			match.query_argument = query_expr_ref.get();
 			if (index_expr_ref.get().GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 				match.embedding_binding = index_expr_ref.get().Cast<BoundColumnRefExpression>().Binding();
@@ -874,10 +877,15 @@ public:
 				TryTraceToTableScan(chain, traced_binding);
 				match.embedding_column_position = traced_binding.column_index.GetIndex();
 			}
-			return true;
+			break;
 		}
-		// No index found
-		return false;
+		if (!matched_index) {
+			// No index found
+			return false;
+		}
+		// GetPlanInfo goes outside the loop, otherwise it contends with DuckDB's locks
+		match.index_info = matched_index->index.GetPlanInfo(match.index_info.oid);
+		return true;
 	}
 
 	// Copies a constant query vector (a FLOAT array, or a BLOB of our encoding) into a float array of the index's
