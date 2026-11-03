@@ -558,6 +558,9 @@ public:
 				if (mirror.row_end > physical.row_start) {
 					overlapping++;
 					aligned = aligned && mirror.row_start == physical.row_start && mirror.row_end <= physical_end;
+				} else {
+					// In a row-id gap before this row group: a checkpoint dropped its row group (all rows deleted).
+					stale.push_back({mirror.row_start, static_cast<idx_t>(mirror.row_end - mirror.row_start)});
 				}
 				if (mirror.row_end > physical_end) {
 					break; // Also overlaps the next row group, which is then flagged as well.
@@ -868,17 +871,16 @@ private:
 			VSSTemporaryChainReader temporary_reader(buffer_manager, row_group.temporary_chain);
 			VSSChainInputStream in(temporary_reader);
 			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get(), &memory_allocator);
-			// IVF index? The reader stopped where the non-resident data starts.
-			if (temporary_reader.GetBytesRead() < row_group.temporary_chain.num_bytes) {
+			if (!dynamic_cast<PDX::FlatIndex *>(index.get())) {
 				cluster_cache->Bind(*index, row_group.temporary_chain, temporary_reader.GetBytesRead());
-			} else { // Flat index? The reader stopped at the end of the chain.
+			} else {
 				cluster_cache.reset();
 			}
 		} else {
 			reader.Open(row_group.persisted_chain);
 			VSSChainInputStream in(reader);
 			index = PDX::LoadPDXIndexFromStream(in, *pruner, cluster_cache.get(), &memory_allocator);
-			if (reader.GetBytesRead() < row_group.persisted_chain.num_bytes) {
+			if (!dynamic_cast<PDX::FlatIndex *>(index.get())) {
 				cluster_cache->Bind(*index, row_group.persisted_chain, reader.GetBytesRead());
 				reader.Close();
 			} else {
