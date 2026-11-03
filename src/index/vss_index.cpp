@@ -185,7 +185,8 @@ void VSSIndex::UpdateReservedMemory(const int64_t delta) {
  ******************************************************************/
 
 bool VSSIndex::IsInSyncWithTable(DataTable &table) const {
-	return !bind_error.HasError() && !needs_reconciliation && !has_unindexed_rows && FindStaleRowGroups(table).empty();
+	return !bind_error.HasError() && !needs_reconciliation && !has_unindexed_rows && !has_staged_deletes &&
+	       FindStaleRowGroups(table).empty();
 }
 
 unique_ptr<StorageLockKey> VSSIndex::SyncAndLockForSearch(ClientContext &context, DataTable &table) {
@@ -350,6 +351,8 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 }
 
 idx_t VSSIndex::FetchCommittedRowIds(DataTable &table, const row_t start, const row_t end, row_t *const row_ids) {
+	const TransactionData committed(MAX_TRANSACTION_ID,
+	                                VisibilityBound::Through(DuckTransactionManager::Get(db).GetLastCommit()));
 	const vector<StorageIndex> column_ids {StorageIndex()};
 	TableScanState scan_state;
 	scan_state.Initialize(column_ids);
@@ -360,7 +363,7 @@ idx_t VSSIndex::FetchCommittedRowIds(DataTable &table, const row_t start, const 
 	idx_t count = 0;
 	while (true) {
 		chunk.Reset();
-		scan_state.table_state.Scan(chunk, TableScanType::TABLE_SCAN_COMMITTED_ROWS);
+		scan_state.table_state.Scan(ScanOptions(committed), chunk);
 		if (chunk.size() == 0) {
 			break;
 		}
@@ -375,7 +378,7 @@ idx_t VSSIndex::FetchCommittedRowIds(DataTable &table, const row_t start, const 
 void VSSIndex::ReconcileWithTable(DataTable &table) {
 	auto row_ids = make_uniq_array<row_t>(GetLargestRowGroupCount(table));
 	const auto stage = [&](const row_t start, const row_t end) {
-		StageUnindexedRange({start, end});
+		StageUnindexedRange(unindexed_row_ranges, {start, end});
 	};
 	for (const auto &physical : GetPhysicalRowGroups(table)) {
 		if (physical.count == 0) {
@@ -438,7 +441,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		} catch (...) {
 			// A failed rebuild leaves no mirror, and its rows staged: the next sync builds them.
 			RemoveRowGroupsOverlapping(bounds.row_start, bounds_end);
-			StageUnindexedRange({bounds.row_start, bounds_end});
+			StageUnindexedRange(unindexed_row_ranges, {bounds.row_start, bounds_end});
 			has_unindexed_rows = true;
 			throw;
 		}
@@ -448,6 +451,24 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 	if (needs_reconciliation) {
 		ReconcileWithTable(table);
 		needs_reconciliation = false;
+	}
+
+	// The commits' inbox. The deletes go first: the rebuilds and the reconcile above read the table as of the last
+	// published commit, where a row deleted by a commit in flight is still there, and the new row of a reused row id is
+	// in the inbox's ranges.
+	{
+		std::vector<VSSRowRange> committed_ranges;
+		std::vector<row_t> committed_deletes;
+		{
+			const lock_guard<mutex> staging(commit_staging_lock);
+			std::swap(committed_ranges, staged_row_ranges);
+			std::swap(committed_deletes, staged_deletes);
+			has_staged_deletes = false;
+		}
+		ApplyStagedDeletes(committed_deletes.data(), committed_deletes.size());
+		for (const auto &range : committed_ranges) {
+			StageUnindexedRange(unindexed_row_ranges, range);
+		}
 	}
 
 	// Unindexed rows, gathered per DuckDB row group: a row group without a mirror is clustered once from all of its
@@ -468,7 +489,11 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			num_unindexed_rows += static_cast<idx_t>(MinValue<row_t>(range.end, bounds_end) - range.start);
 		}
 		const auto row_group_idx = LookupRowGroup(bounds.row_start);
-		const row_t first_staged_row = unindexed_row_ranges[range_idx].start;
+		std::vector<VSSRowRange> row_group_ranges;
+		for (idx_t i = range_idx; i < unindexed_row_ranges.size() && unindexed_row_ranges[i].start < bounds_end; i++) {
+			row_group_ranges.push_back(
+			    {unindexed_row_ranges[i].start, MinValue<row_t>(unindexed_row_ranges[i].end, bounds_end)});
+		}
 		try {
 			auto embeddings_buffer = allocate_embeddings(num_unindexed_rows);
 			const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
@@ -504,13 +529,18 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			if (!row_group_idx.IsValid()) {
 				RemoveRowGroupsOverlapping(bounds.row_start, bounds_end);
 			}
-			StageUnindexedRange({first_staged_row, bounds_end});
+			for (const auto &range : row_group_ranges) {
+				StageUnindexedRange(unindexed_row_ranges, range);
+			}
 			has_unindexed_rows = true;
 			throw;
 		}
 	}
 	unindexed_row_ranges = std::move(still_unindexed);
-	has_unindexed_rows = !unindexed_row_ranges.empty();
+	{
+		const lock_guard<mutex> staging(commit_staging_lock);
+		has_unindexed_rows = !unindexed_row_ranges.empty() || !staged_row_ranges.empty();
+	}
 
 	// We need to close rowgroups before the temporary chains are written so that they are written without the appends
 	// headroom.
@@ -622,7 +652,8 @@ ErrorData VSSIndex::Append(IndexLock &lock, DataChunk &entries, Vector &row_ids)
 // Called by DuckDB at commit with the final row ids, before the rows enter the table's row groups. Which row group
 // they land in is not knowable here, so only the ids are recorded; SyncWithTable indexes them once the table knows.
 ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
-	auto _lock = rwlock.GetExclusiveLock();
+	// A commit never waits for a search
+	const lock_guard<mutex> staging(commit_staging_lock);
 
 	const idx_t count = data.size();
 	if (count == 0) {
@@ -638,10 +669,10 @@ ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
 			range.end++;
 			continue;
 		}
-		StageUnindexedRange(range);
+		StageUnindexedRange(staged_row_ranges, range);
 		range = {row_id_data[i], row_id_data[i] + 1};
 	}
-	StageUnindexedRange(range);
+	StageUnindexedRange(staged_row_ranges, range);
 	has_unindexed_rows = true;
 	return ErrorData();
 }
@@ -649,21 +680,33 @@ ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
 // Called by DuckDB at commit. Row ids that are not in the index (never indexed, or reverted before they were) are
 // skipped.
 void VSSIndex::Delete(IndexLock &lock, DataChunk &entries, Vector &row_ids) {
-	auto _lock = rwlock.GetExclusiveLock();
+	// A commit never waits for a search. Before the first sync after a load, deletes wait for it too: its reconcile
+	// reads the table as of the last published commit, where the rows of this commit are still there.
+	auto search_lock = rwlock.TryGetExclusiveLock();
+	if (search_lock && needs_reconciliation) {
+		search_lock.reset();
+	}
+	const lock_guard<mutex> staging(commit_staging_lock);
 
 	const idx_t count = entries.size();
 	row_ids.Flatten();
 	const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
 	for (idx_t i = 0; i < count; i++) {
-		// PDX Delete is idempotent: if the row was never indexed, it is a no-op
-		DeleteRow(row_id_data[i]);
-		RemoveUnindexedRow(row_id_data[i]);
+		RemoveUnindexedRow(staged_row_ranges, row_id_data[i]);
 	}
-	has_unindexed_rows = !unindexed_row_ranges.empty();
+	staged_deletes.insert(staged_deletes.end(), row_id_data, row_id_data + count);
+	if (!search_lock) {
+		has_staged_deletes = true;
+		return;
+	}
+	// Holding the lock: this commit's deletes, and those staged meanwhile.
+	ApplyStagedDeletes(staged_deletes.data(), staged_deletes.size());
+	staged_deletes.clear();
+	has_staged_deletes = false;
+	has_unindexed_rows = !unindexed_row_ranges.empty() || !staged_row_ranges.empty();
 }
 
-void VSSIndex::StageUnindexedRange(const VSSRowRange range) {
-	auto &ranges = unindexed_row_ranges;
+void VSSIndex::StageUnindexedRange(std::vector<VSSRowRange> &ranges, const VSSRowRange range) {
 	// The first staged range that starts after this one.
 	auto it = std::upper_bound(ranges.begin(), ranges.end(), range.start,
 	                           [](row_t start, const VSSRowRange &staged) { return start < staged.start; });
@@ -682,11 +725,11 @@ void VSSIndex::StageUnindexedRange(const VSSRowRange range) {
 }
 
 // A deleted row that was never indexed has nothing left to index: take it out of its staged range.
-void VSSIndex::RemoveUnindexedRow(const row_t row_id) {
+void VSSIndex::RemoveUnindexedRow(std::vector<VSSRowRange> &ranges, const row_t row_id) {
 	// Find staged range [start, end) that contains row_id, if any
-	auto it = std::upper_bound(unindexed_row_ranges.begin(), unindexed_row_ranges.end(), row_id,
+	auto it = std::upper_bound(ranges.begin(), ranges.end(), row_id,
 	                           [](row_t id, const VSSRowRange &range) { return id < range.start; });
-	if (it == unindexed_row_ranges.begin()) {
+	if (it == ranges.begin()) {
 		return;
 	}
 	--it;
@@ -703,12 +746,20 @@ void VSSIndex::RemoveUnindexedRow(const row_t row_id) {
 		// row_id is in the middle of the range, we split it into two ranges
 		const VSSRowRange tail {row_id + 1, it->end};
 		it->end = row_id;
-		unindexed_row_ranges.insert(it + 1, tail);
+		ranges.insert(it + 1, tail);
 		return;
 	}
 	// If the range is now empty, remove it
 	if (it->start == it->end) {
-		unindexed_row_ranges.erase(it);
+		ranges.erase(it);
+	}
+}
+
+void VSSIndex::ApplyStagedDeletes(const row_t *const row_ids, const idx_t count) {
+	for (idx_t i = 0; i < count; i++) {
+		// PDX Delete is idempotent: if the row was never indexed, it is a no-op
+		DeleteRow(row_ids[i]);
+		RemoveUnindexedRow(unindexed_row_ranges, row_ids[i]);
 	}
 }
 

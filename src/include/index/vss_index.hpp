@@ -86,9 +86,17 @@ private:
 		}
 	}
 
-	// Row ids committed to the table whose embeddings are not in the index yet
+	// Row ids committed to the table whose embeddings are not in the index yet: the sync's working list, only used under
+	// the exclusive search lock. Each sync indexes it and keeps the rows whose commit is still in flight.
 	std::vector<VSSRowRange> unindexed_row_ranges;
 	std::atomic<bool> has_unindexed_rows {false};
+	// A commit never waits for the search lock. It stages its changes in an inbox under this small lock instead, which
+	// the next sync empties at its start: Insert's rows (staged_row_ranges, moved to unindexed_row_ranges), and Delete's
+	// rows when it cannot take the search lock at once (staged_deletes, applied first: ApplyStagedDeletes).
+	std::mutex commit_staging_lock;
+	std::vector<VSSRowRange> staged_row_ranges;
+	std::vector<row_t> staged_deletes;
+	std::atomic<bool> has_staged_deletes {false};
 	// Set when the index is loaded from storage: its first sync reconciles it with the table (ReconcileWithTable).
 	bool needs_reconciliation = false;
 	// Why a persisted index failed to load when DuckDB bound it, raised on first use instead: DuckDB's
@@ -133,11 +141,15 @@ private:
 
 	void RemoveRowGroupsOverlapping(row_t start, row_t end);
 
-	// Adds the rows of one commit to unindexed_row_ranges, which needs to stay sorted and disjoint.
-	// A range that overlaps staged ones (DuckDB replaying a commit from the WAL) is merged with them.
-	void StageUnindexedRange(VSSRowRange range);
+	// Adds the rows of one commit to `ranges` (unindexed_row_ranges or staged_row_ranges), which needs to stay sorted
+	// and disjoint. A range that overlaps staged ones (DuckDB replaying a commit from the WAL) is merged with them.
+	static void StageUnindexedRange(std::vector<VSSRowRange> &ranges, VSSRowRange range);
 
-	void RemoveUnindexedRow(row_t row_id);
+	static void RemoveUnindexedRow(std::vector<VSSRowRange> &ranges, row_t row_id);
+
+	// Deletes these rows from the index and from unindexed_row_ranges, under the exclusive search lock. A sync applies
+	// the staged deletes before it moves the inbox's ranges to unindexed_row_ranges: a reused row id's new row stays.
+	void ApplyStagedDeletes(const row_t *row_ids, idx_t count);
 
 	// A table is in sync if:
 	// - No unindexed rows
