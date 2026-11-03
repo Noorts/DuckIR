@@ -177,6 +177,8 @@ private:
 	// cursors they own. DuckDB's IndexLock is also acquired implicitly in
 	// BoundIndex, but this is insufficient to guard 1+ index scans from the
 	// maintenance operations. Hence, we add this rwlock.
+	// The lock guards the index's state while it exists; a search guard's pin
+	// (search_pins) keeps the index alive until the query ends.
 	//
 	// See the pull request this was introduced in for more context.
 	mutable StorageLock rwlock;
