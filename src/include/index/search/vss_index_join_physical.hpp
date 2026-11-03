@@ -3,9 +3,10 @@
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/storage/storage_index.hpp"
 
+#include "index/search/vss_search_guard.hpp"
+
 namespace duckdb {
 
-class Index;
 class DuckTableEntry;
 
 // Runs the LogicalVSSIndexJoin. When the table is filtered (children[1]), it is a sink first: it collects the
@@ -16,12 +17,12 @@ public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::EXTENSION;
 
 public:
-	PhysicalVSSIndexJoin(PhysicalPlan &physical_plan, vector<LogicalType> types, DuckTableEntry &table, Index &index,
-	                     idx_t limit, idx_t query_column, const vector<ColumnIndex> &column_ids,
-	                     idx_t estimated_cardinality);
+	PhysicalVSSIndexJoin(PhysicalPlan &physical_plan, vector<LogicalType> types, DuckTableEntry &table,
+	                     VSSIndexPlanInfo index_info, idx_t limit, idx_t query_column,
+	                     const vector<ColumnIndex> &column_ids, idx_t estimated_cardinality);
 
 	DuckTableEntry &table;
-	Index &index;
+	VSSIndexPlanInfo index_info;
 	// The number of nearest rows per query (`k`).
 	// At most STANDARD_VECTOR_SIZE (the rows of a query fit in one output chunk)
 	const idx_t limit;

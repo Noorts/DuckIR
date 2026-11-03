@@ -22,10 +22,12 @@
 namespace duckdb {
 
 PhysicalVSSIndexJoin::PhysicalVSSIndexJoin(PhysicalPlan &physical_plan, vector<LogicalType> types,
-                                           DuckTableEntry &table, Index &index, idx_t limit, idx_t query_column,
-                                           const vector<ColumnIndex> &column_ids, idx_t estimated_cardinality)
+                                           DuckTableEntry &table, VSSIndexPlanInfo index_info, idx_t limit,
+                                           idx_t query_column, const vector<ColumnIndex> &column_ids,
+                                           idx_t estimated_cardinality)
     : PhysicalOperator(physical_plan, PhysicalVSSIndexJoin::TYPE, std::move(types), estimated_cardinality),
-      table(table), index(index), limit(limit), query_column(query_column), column_ids(column_ids) {
+      table(table), index_info(std::move(index_info)), limit(limit), query_column(query_column),
+      column_ids(column_ids) {
 	D_ASSERT(limit <= STANDARD_VECTOR_SIZE);
 	fetch_column_ids.reserve(column_ids.size());
 	for (auto &id : column_ids) {
@@ -41,8 +43,8 @@ enum class OnTheFlyIndexingMode : uint8_t { NEVER, ALWAYS, AUTO };
 class VSSIndexJoinSearch {
 public:
 	VSSIndexJoinSearch(ClientContext &context, const PhysicalVSSIndexJoin &op)
-	    : search_lock(op.index.Cast<VSSIndex>().SyncAndLockForSearch(context, op.table.GetStorage())),
-	      index(op.index.Cast<VSSIndex>()), limit(op.limit), buffer_manager(BufferManager::GetBufferManager(context)) {
+	    : guard(AcquireSearchGuard(context, op.table, op.index_info.oid)), index(guard->index), limit(op.limit),
+	      buffer_manager(BufferManager::GetBufferManager(context)) {
 		auto n_probe = index.GetEffectiveNProbe(context);
 		const idx_t max_num_clusters = index.GetMaxNumClusters();
 		clusters_to_probe_on_first_iteration =
@@ -95,9 +97,9 @@ public:
 		buffer_manager.FreeReservedMemory(reserved_memory_bytes);
 	}
 
-	// Held for the duration of execution to serialize searches against index maintenance.
-	// Taken once per operator: a thread must not take it again while it holds it.
-	unique_ptr<StorageLockKey> search_lock;
+	// The query's pin and shared search lock on the index, shared with its other operators on the index. Declared first
+	// so it is destroyed last, after the members that reference index state.
+	shared_ptr<VSSSearchGuard> guard;
 
 	VSSIndex &index;
 	// The number of nearest rows per query (`k`).
@@ -176,12 +178,12 @@ public:
 };
 
 unique_ptr<LocalSinkState> PhysicalVSSIndexJoin::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<VSSIndexJoinLocalSinkState>(index.Cast<VSSIndex>());
+	return make_uniq<VSSIndexJoinLocalSinkState>(sink_state->Cast<VSSIndexJoinGlobalSinkState>().search.index);
 }
 
 SinkResultType PhysicalVSSIndexJoin::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
 	auto &l_sink = input.local_state.Cast<VSSIndexJoinLocalSinkState>();
-	auto &vss_index = index.Cast<VSSIndex>();
+	auto &vss_index = input.global_state.Cast<VSSIndexJoinGlobalSinkState>().search.index;
 
 	D_ASSERT(chunk.ColumnCount() == 1);
 	D_ASSERT(chunk.data[0].GetType() == LogicalType::ROW_TYPE);
@@ -459,9 +461,8 @@ SinkFinalizeType PhysicalVSSIndexJoin::Finalize(Pipeline &pipeline, Event &event
 class VSSIndexJoinOperatorState : public OperatorState {
 public:
 	VSSIndexJoinOperatorState(ClientContext &context, const PhysicalVSSIndexJoin &op)
-	    : num_dimensions(op.index.Cast<VSSIndex>().GetNumDimensions()),
-	      raw_query(make_uniq_array<float>(num_dimensions)), query(make_uniq_array<float>(num_dimensions)),
-	      row_ids(LogicalType::ROW_TYPE) {
+	    : num_dimensions(op.index_info.num_dimensions), raw_query(make_uniq_array<float>(num_dimensions)),
+	      query(make_uniq_array<float>(num_dimensions)), row_ids(LogicalType::ROW_TYPE) {
 		// The operator's last columns are the fetched table columns.
 		const vector<LogicalType> fetch_types(op.types.end() - static_cast<std::ptrdiff_t>(op.fetch_column_ids.size()),
 		                                      op.types.end());
@@ -817,7 +818,7 @@ vector<const_reference<PhysicalOperator>> PhysicalVSSIndexJoin::GetSources() con
 InsertionOrderPreservingMap<string> PhysicalVSSIndexJoin::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
 	result["Table"] = table.name.GetIdentifierName();
-	result["DuckIR VSS Index"] = index.GetIndexName().GetIdentifierName();
+	result["DuckIR VSS Index"] = index_info.name;
 	result["Projections"] = ColumnNamesToString(table, column_ids);
 	result["K"] = StringUtil::Format("%llu", limit);
 	SetEstimatedCardinality(result, estimated_cardinality);

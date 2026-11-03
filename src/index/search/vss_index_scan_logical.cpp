@@ -6,7 +6,7 @@
 namespace duckdb {
 
 PhysicalOperator &LogicalVSSIndexScan::CreatePlan(ClientContext &context, PhysicalPlanGenerator &planner) {
-	auto bind_data = make_uniq<VSSIndexScanBindData>(table, index, limit, std::move(query_embedding));
+	auto bind_data = make_uniq<VSSIndexScanBindData>(table, index_info, limit, std::move(query_embedding));
 	auto &physical_op = planner.Make<PhysicalVSSIndexScan>(types, std::move(bind_data), column_ids, limit);
 
 	// This is a Source-only operator.
