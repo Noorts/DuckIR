@@ -118,6 +118,23 @@ CREATE TABLE p.t2_before_restart AS SELECT id FROM p.t2 ORDER BY array_distance(
 
 restart
 
+# A READ_ONLY attach, whose WAL replay keeps the index's buffers in memory, builds it the same way.
+statement ok
+ATTACH '{TEST_DIR}/index_persistence.db' AS p (READ_ONLY);
+
+query I
+SELECT count(*) FROM (SELECT id FROM p.t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT}) JOIN p.t2_before_restart USING (id);
+----
+10
+
+query II
+EXPLAIN SELECT id FROM p.t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
+----
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 2[^0-9].*
+
+statement ok
+DETACH p;
+
 statement ok
 ATTACH '{TEST_DIR}/index_persistence.db' AS p (ROW_GROUP_SIZE 8192);
 
