@@ -451,10 +451,15 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		}
 	}
 
-	// Only happens on the first query after the first index bind or CREATE INDEX
-	if (needs_reconciliation) {
-		ReconcileWithTable(table);
-		needs_reconciliation = false;
+	// The first query after the first index bind or CREATE INDEX, or after a change the index could not take (a merge
+	// that ran out of memory, a failed Insert or Delete). Taken before the reconcile: a request meanwhile stays set.
+	if (needs_reconciliation.exchange(false)) {
+		try {
+			ReconcileWithTable(table);
+		} catch (...) {
+			needs_reconciliation = true;
+			throw;
+		}
 	}
 
 	// The commits' inbox. The deletes go first: the rebuilds and the reconcile above read the table as of the last
@@ -535,9 +540,12 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			}
 		} catch (...) {
 			// The row group's staged rows stay staged: the next sync appends them again (rows already appended are
-			// skipped) or builds them. A failed build leaves no mirror.
+			// skipped) or builds them. A failed build leaves no mirror. A merge before the append that ran out of
+			// memory can have dropped rows of the mirror: the next sync reconciles them back.
 			if (!row_group_idx.IsValid()) {
 				RemoveRowGroupsOverlapping(bounds.row_start, bounds_end);
+			} else {
+				needs_reconciliation = true;
 			}
 			for (const auto &range : row_group_ranges) {
 				StageUnindexedRange(unindexed_row_ranges, range);
@@ -669,21 +677,26 @@ ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
 	if (count == 0) {
 		return ErrorData();
 	}
-	row_ids.Flatten();
-	const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
-	// Determine consecutive ranges of row ids.
-	// For example: `1, 2, 3, 5, 6 --> [1, 3] + [5, 6]`
-	VSSRowRange range {row_id_data[0], row_id_data[0] + 1};
-	for (idx_t i = 1; i < count; i++) {
-		if (row_id_data[i] == range.end) {
-			range.end++;
-			continue;
+	try {
+		row_ids.Flatten();
+		const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
+		// Determine consecutive ranges of row ids.
+		// For example: `1, 2, 3, 5, 6 --> [1, 3] + [5, 6]`
+		VSSRowRange range {row_id_data[0], row_id_data[0] + 1};
+		for (idx_t i = 1; i < count; i++) {
+			if (row_id_data[i] == range.end) {
+				range.end++;
+				continue;
+			}
+			StageUnindexedRange(staged_row_ranges, range);
+			range = {row_id_data[i], row_id_data[i] + 1};
 		}
 		StageUnindexedRange(staged_row_ranges, range);
-		range = {row_id_data[i], row_id_data[i] + 1};
+		has_unindexed_rows = true;
+	} catch (...) {
+		// DuckDB turns an exception here into a fatal error: the next sync reconciles with the table instead
+		RequireReconciliation();
 	}
-	StageUnindexedRange(staged_row_ranges, range);
-	has_unindexed_rows = true;
 	return ErrorData();
 }
 
@@ -698,22 +711,29 @@ void VSSIndex::Delete(IndexLock &lock, DataChunk &entries, Vector &row_ids) {
 	}
 	const lock_guard<mutex> staging(commit_staging_lock);
 
-	const idx_t count = entries.size();
-	row_ids.Flatten();
-	const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
-	for (idx_t i = 0; i < count; i++) {
-		RemoveUnindexedRow(staged_row_ranges, row_id_data[i]);
+	try {
+		const idx_t count = entries.size();
+		row_ids.Flatten();
+		const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
+		for (idx_t i = 0; i < count; i++) {
+			RemoveUnindexedRow(staged_row_ranges, row_id_data[i]);
+		}
+		staged_deletes.insert(staged_deletes.end(), row_id_data, row_id_data + count);
+		if (!search_lock) {
+			has_staged_deletes = true;
+			return;
+		}
+		// Holding the lock: this commit's deletes, and those staged meanwhile.
+		ApplyStagedDeletes(staged_deletes.data(), staged_deletes.size());
+		staged_deletes.clear();
+		has_staged_deletes = false;
+		has_unindexed_rows = !unindexed_row_ranges.empty() || !staged_row_ranges.empty();
+	} catch (...) {
+		// DuckDB turns an exception here into a fatal error: the staged deletes wait for the next sync, which also
+		// reconciles with the table
+		has_staged_deletes = !staged_deletes.empty();
+		RequireReconciliation();
 	}
-	staged_deletes.insert(staged_deletes.end(), row_id_data, row_id_data + count);
-	if (!search_lock) {
-		has_staged_deletes = true;
-		return;
-	}
-	// Holding the lock: this commit's deletes, and those staged meanwhile.
-	ApplyStagedDeletes(staged_deletes.data(), staged_deletes.size());
-	staged_deletes.clear();
-	has_staged_deletes = false;
-	has_unindexed_rows = !unindexed_row_ranges.empty() || !staged_row_ranges.empty();
 }
 
 void VSSIndex::StageUnindexedRange(std::vector<VSSRowRange> &ranges, const VSSRowRange range) {
@@ -948,10 +968,13 @@ IndexStorageInfo VSSIndex::CopyStorageInfo(const IndexStorageInfo &info) {
 }
 
 void VSSIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
-	DispatchWrapper([&](auto &wrapper) {
-		wrapper.PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
-		                              cluster_paging);
+	const bool merge_ran_out_of_memory = DispatchWrapper([&](auto &wrapper) {
+		return wrapper.PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
+		                                     cluster_paging);
 	});
+	if (merge_ran_out_of_memory) {
+		needs_reconciliation = true;
+	}
 }
 
 void VSSIndex::WriteTemporaryChains() {

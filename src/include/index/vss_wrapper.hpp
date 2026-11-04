@@ -513,6 +513,8 @@ public:
 		// The executor ends with the sync: later appends and deletes run serially.
 		row_group.index->SetExecutor(executor);
 		try {
+			// The merges its logical deletes left pending (a paged mirror ran them when it was materialized)
+			row_group.index->CheckClustersHealth();
 			row_group.index->BulkAppend(ids.data(), transformed_embeddings, ids.size());
 		} catch (...) {
 			row_group.index->SetExecutor(nullptr);
@@ -538,7 +540,8 @@ public:
 		auto &row_group = *row_groups[row_group_idx.GetIndex()];
 		// Rows the index does not hold (NULL embeddings, deletes replayed from the WAL) leave the row group clean. The
 		// others are persisted only once enough pile up: every load reconciles the index with the table.
-		if (row_group.index->Delete(static_cast<size_t>(row_id))) {
+		// Logical only, as on a paged mirror: the merges run before the next append or checkpoint rewrite.
+		if (row_group.index->Delete(static_cast<size_t>(row_id), /*logical_only=*/true)) {
 			row_group.num_unwritten_deletes++;
 			if (static_cast<double>(row_group.num_unwritten_deletes) >
 			    MAX_UNWRITTEN_DELETES_RATIO * static_cast<double>(row_group.row_end - row_group.row_start)) {
@@ -566,13 +569,7 @@ public:
 	}
 
 	bool IsEmptyRowGroup(const idx_t row_group_idx) const {
-		const auto &index = *row_groups[row_group_idx]->index;
-		for (uint32_t cluster_id = 0; cluster_id < index.GetNumClusters(); cluster_id++) {
-			if (index.GetClusterSize(cluster_id) > 0) {
-				return false;
-			}
-		}
-		return true;
+		return row_groups[row_group_idx]->index->GetNumEmbeddings() == 0;
 	}
 
 	std::vector<VSSRowGroupBounds> FindStaleRowGroups(const std::vector<VSSRowGroupBounds> &physical_row_groups) const {
@@ -648,9 +645,11 @@ public:
 	// without unwritten deletes is copied as it is. A paged row group is loaded fully first. With page_clusters,
 	// each rewritten row group is paged again from its new chain.
 	// This method is called from SerializeToDisk, at CHECKPOINT. So this never runs for an :memory: database.
-	void PersistDirtyRowGroups(FixedSizeAllocator &allocator, const std::function<void()> &write_partial_blocks,
+	// Returns whether a merge ran out of memory: its row group can then lack rows, which a reconcile brings back.
+	bool PersistDirtyRowGroups(FixedSizeAllocator &allocator, const std::function<void()> &write_partial_blocks,
 	                           optional_ptr<VSSBlockChainReader> reader, BufferManager &buffer_manager,
 	                           const bool page_clusters) {
+		bool merge_ran_out_of_memory = false;
 		for (auto &chain : orphaned_chains) {
 			chain.Free(allocator);
 		}
@@ -680,6 +679,17 @@ public:
 					persist_with_unwritten_deletes = true;
 				}
 			}
+			// The merges its logical deletes left pending, which a materialized row group's replay already ran
+			if (!copy_temporary_chain) {
+				try {
+					row_group->index->CheckClustersHealth();
+				} catch (std::exception &ex) {
+					if (ErrorData(ex).Type() != ExceptionType::OUT_OF_MEMORY) {
+						throw;
+					}
+					merge_ran_out_of_memory = true;
+				}
+			}
 			row_group->persisted_chain.Free(allocator);
 			VSSBlockChainWriter writer(allocator);
 			VSSChainOutputStream out(writer);
@@ -703,6 +713,7 @@ public:
 				}
 			}
 		}
+		return merge_ran_out_of_memory;
 	}
 
 	// Gives every index whose clusters are on the heap (built or changed by a sync) a temporary chain as its home.

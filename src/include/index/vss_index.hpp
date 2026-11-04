@@ -99,7 +99,7 @@ private:
 	std::atomic<bool> has_staged_deletes {false};
 	// Set when the index is loaded from storage or created: its first sync reconciles it with the table
 	// (ReconcileWithTable).
-	bool needs_reconciliation = false;
+	std::atomic<bool> needs_reconciliation {false};
 	// Why a persisted index failed to load when DuckDB bound it, raised on first use instead: DuckDB's
 	// TableIndexList::Bind is not exception-safe, and a bind that throws leaves the next one spinning forever.
 	ErrorData bind_error;
