@@ -228,7 +228,7 @@ private:
 	atomic<idx_t> sketch_acquires_since_decay {0};
 };
 
-static constexpr uint32_t VSS_STORAGE_VERSION = 7;
+static constexpr uint32_t VSS_STORAGE_VERSION = 8;
 
 // The root chain: where the rotation, the SAQ model (empty when there is none) and the row groups are.
 struct VSSDirectory {
