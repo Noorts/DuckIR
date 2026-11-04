@@ -340,7 +340,8 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 			}
 			rows_returned++;
 			// Like NULL embeddings, the ones CREATE INDEX rejects are not indexed.
-			if (!validity.RowIsValid(i) || !IsFiniteEmbedding(scanned_embeddings + i * num_dimensions, num_dimensions)) {
+			if (!validity.RowIsValid(i) ||
+			    !IsFiniteEmbedding(scanned_embeddings + i * num_dimensions, num_dimensions)) {
 				continue;
 			}
 			memcpy(batch_embeddings + batch_count * num_dimensions, scanned_embeddings + i * num_dimensions,

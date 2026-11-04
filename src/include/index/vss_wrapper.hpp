@@ -288,9 +288,8 @@ public:
 		}
 		const uint32_t d = GetNumDimensions();
 		skmeans::SerialExecutor serial_executor;
-		auto fit = PDX::SAQQuantizer::Fit(rows, num_rows, d, SAQ_BITS_PER_DIMENSION,
-		                                  static_cast<uint32_t>(GetSeed()), executor ? *executor : serial_executor,
-		                                  memory_allocator);
+		auto fit = PDX::SAQQuantizer::Fit(rows, num_rows, d, SAQ_BITS_PER_DIMENSION, static_cast<uint32_t>(GetSeed()),
+		                                  executor ? *executor : serial_executor, memory_allocator);
 		auto fitted_rotation = make_uniq_array<float>(static_cast<size_t>(d) * d);
 		memcpy(fitted_rotation.get(), fit.rotation.get(), static_cast<size_t>(d) * d * sizeof(float));
 		auto fitted_pruner = make_uniq<PDX::ADSamplingPruner>(d, fitted_rotation.get(), d, &memory_allocator);
