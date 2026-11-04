@@ -51,21 +51,10 @@ namespace duckdb {
 	return rotation_matrix;
 }
 
-// Writes each embedding's squared norm into `squared_norms` and returns how many are finite. A NaN or infinite value,
-// or values whose squares overflow, make an embedding's squared norm not finite.
-[[nodiscard]] inline idx_t CountFiniteEmbeddings(const float *const embeddings, const size_t num_embeddings,
-                                                 const size_t num_dimensions, float *const squared_norms) {
-	using RowMajorMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
-	const auto n = static_cast<Eigen::Index>(num_embeddings);
-	Eigen::Map<Eigen::VectorXf>(squared_norms, n) =
-	    Eigen::Map<const RowMajorMatrix>(embeddings, n, static_cast<Eigen::Index>(num_dimensions))
-	        .rowwise()
-	        .squaredNorm();
-	idx_t num_finite = 0;
-	for (size_t i = 0; i < num_embeddings; i++) {
-		num_finite += std::isfinite(squared_norms[i]);
-	}
-	return num_finite;
+// False when the embedding has a NaN or infinite value, or values whose squares overflow.
+[[nodiscard]] inline bool IsFiniteEmbedding(const float *const embedding, const size_t num_dimensions) {
+	return std::isfinite(
+	    Eigen::Map<const Eigen::VectorXf>(embedding, static_cast<Eigen::Index>(num_dimensions)).squaredNorm());
 }
 
 [[nodiscard]] inline string ConvertBytesToHumanReadableString(const uint64_t bytes) {

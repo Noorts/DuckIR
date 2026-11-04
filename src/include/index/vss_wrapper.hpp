@@ -287,27 +287,8 @@ public:
 			return;
 		}
 		const uint32_t d = GetNumDimensions();
-		// A row that is not finite would make the fit, and so every rotated row, NaN: the fit skips it.
-		auto squared_norms = skmeans::AllocateBuffer<float>(memory_allocator, num_rows);
-		const idx_t num_finite_rows = CountFiniteEmbeddings(rows, num_rows, d, squared_norms.get());
-		if (num_finite_rows == 0) {
-			throw InvalidInputException("DuckIR VSS: a u4 index cannot be fitted on embeddings that are all NaN, "
-			                            "infinite or too large");
-		}
-		const float *fit_rows = rows;
-		skmeans::AllocatedBuffer<float> finite_rows;
-		if (num_finite_rows < num_rows) {
-			finite_rows = skmeans::AllocateBuffer<float>(memory_allocator, num_finite_rows * d);
-			idx_t num_copied = 0;
-			for (idx_t i = 0; i < num_rows; i++) {
-				if (std::isfinite(squared_norms.get()[i])) {
-					memcpy(finite_rows.get() + num_copied++ * d, rows + i * d, d * sizeof(float));
-				}
-			}
-			fit_rows = finite_rows.get();
-		}
 		skmeans::SerialExecutor serial_executor;
-		auto fit = PDX::SAQQuantizer::Fit(fit_rows, num_finite_rows, d, SAQ_BITS_PER_DIMENSION,
+		auto fit = PDX::SAQQuantizer::Fit(rows, num_rows, d, SAQ_BITS_PER_DIMENSION,
 		                                  static_cast<uint32_t>(GetSeed()), executor ? *executor : serial_executor,
 		                                  memory_allocator);
 		auto fitted_rotation = make_uniq_array<float>(static_cast<size_t>(d) * d);
