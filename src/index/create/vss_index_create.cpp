@@ -229,6 +229,9 @@ SinkFinalizeType PhysicalCreateVSSIndex::Finalize(Pipeline &pipeline, Event &eve
 
 	index.initial_index_size = g_sink.global_index->GetInMemorySize();
 
+	// Commits that ran during the build skipped the index: its first sync reconciles them.
+	g_sink.global_index->Cast<VSSIndex>().RequireReconciliation();
+
 	// Add the index to the storage.
 	storage.AddIndex(std::move(g_sink.global_index), index.oid);
 	return SinkFinalizeType::READY;

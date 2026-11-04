@@ -1,5 +1,5 @@
 # name: test/sql/maintenance/index_transactions_isolation.test
-# description: Two connections: a search under an old snapshot syncs rows committed after the snapshot but never returns them; a transaction's own uncommitted inserts are not in the index yet, and its own uncommitted deletes are dropped when the results are materialized.
+# description: Two connections: a search under an old snapshot syncs rows committed after the snapshot but never returns them; a transaction's own uncommitted inserts are not in the index yet, and its own uncommitted deletes are dropped when the results are materialized; CREATE INDEX catches up with rows other connections commit or delete during its build.
 # group: [maintenance]
 
 require parquet
@@ -129,3 +129,57 @@ statement ok
 DROP INDEX t1_idx;
 
 endloop
+
+# CREATE INDEX while an older snapshot still sees rows another connection deleted: the index drops them.
+statement ok
+CREATE TABLE t2 AS SELECT * FROM sift WHERE id < 16384;
+
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT COUNT(*) FROM t2;
+----
+16384
+
+statement ok
+DELETE FROM t2 WHERE id % 2 = 0;
+
+statement ok con2
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+
+statement ok con1
+COMMIT;
+
+query II
+SELECT COUNT(*), COUNT(*) FILTER (WHERE id % 2 = 0) FROM (SELECT id FROM t2 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 100);
+----
+100	0
+
+# CREATE INDEX while another connection commits rows: the index catches up with them.
+statement ok
+CREATE TABLE t3 AS SELECT * FROM sift WHERE id < 16384;
+
+concurrentloop threadid 0 2
+
+statement ok
+USE iso;
+
+onlyif threadid=0
+statement ok
+CREATE INDEX t3_idx ON t3 USING DUCKIR_VSS (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+
+loop i 0 500
+
+onlyif threadid=1
+statement ok
+INSERT INTO t3 SELECT * FROM sift WHERE id = 16384 + {i};
+
+endloop
+
+endloop
+
+query I
+SELECT COUNT(*) FROM (SELECT id FROM t3 WHERE id >= 16384 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1000);
+----
+500

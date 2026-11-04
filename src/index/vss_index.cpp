@@ -447,7 +447,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		}
 	}
 
-	// Only happens on the first query after the first index bind
+	// Only happens on the first query after the first index bind or CREATE INDEX
 	if (needs_reconciliation) {
 		ReconcileWithTable(table);
 		needs_reconciliation = false;
@@ -680,8 +680,8 @@ ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
 // Called by DuckDB at commit. Row ids that are not in the index (never indexed, or reverted before they were) are
 // skipped.
 void VSSIndex::Delete(IndexLock &lock, DataChunk &entries, Vector &row_ids) {
-	// A commit never waits for a search. Before the first sync after a load, deletes wait for it too: its reconcile
-	// reads the table as of the last published commit, where the rows of this commit are still there.
+	// A commit never waits for a search. Before the first sync after a load or CREATE INDEX, deletes wait for it too:
+	// its reconcile reads the table as of the last published commit, where the rows of this commit are still there.
 	auto search_lock = rwlock.TryGetExclusiveLock();
 	if (search_lock && needs_reconciliation) {
 		search_lock.reset();
