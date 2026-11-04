@@ -213,6 +213,54 @@ EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]
 ----
 physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Row Groups: 1[^0-9].*
 
+# A partial row group followed by a bulk insert's row groups is built closed. Once the bulk is deleted and its row
+# groups dropped, DuckDB appends to the partial row group again: its mirror grows without splitting a cluster per row.
+statement ok
+CREATE OR REPLACE TABLE t6 AS SELECT * FROM sift WHERE id < 5000;
+
+statement ok
+INSERT INTO t6 SELECT * FROM sift WHERE id >= 5000 AND id < 25000;
+
+statement ok
+CREATE INDEX t6_idx ON t6 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
+
+statement ok
+DELETE FROM t6 WHERE id >= 5000;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+CALL duckir_vss_sync_index('t6_idx');
+
+loop i 0 20
+
+statement ok
+INSERT INTO t6 SELECT * FROM sift WHERE id >= 25000 + 40 * {i} AND id < 25040 + 40 * {i};
+
+statement ok
+CALL duckir_vss_sync_index('t6_idx');
+
+endloop
+
+query II
+SELECT row_group_id, sum(count) FROM pragma_storage_info('t6') WHERE column_name = 'id' AND segment_type <> 'VALIDITY' GROUP BY 1 ORDER BY 1;
+----
+0	5800
+
+statement ok
+SET VARIABLE q = (SELECT emb FROM sift WHERE id = 25799);
+
+query I
+SELECT id FROM t6 ORDER BY array_distance(emb, getvariable('q')) LIMIT 1;
+----
+25799
+
+query II
+EXPLAIN SELECT * FROM t6 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
+----
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 120[^0-9].*Row Groups: 1[^0-9].*
+
 # A middle row group whose rows are all deleted is dropped too, leaving a row-id gap; its mirror goes with it.
 statement ok
 CREATE OR REPLACE TABLE t4 AS SELECT * FROM sift WHERE id < 24576;
@@ -385,5 +433,8 @@ DROP INDEX t4_idx;
 
 statement ok
 DROP INDEX t5_idx;
+
+statement ok
+DROP INDEX t6_idx;
 
 endloop

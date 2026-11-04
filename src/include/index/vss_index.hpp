@@ -252,6 +252,9 @@ public:
 	// The row ids the index's row group at row_group_idx covers.
 	VSSRowRange GetRowGroupRange(idx_t row_group_idx) const;
 
+	// Every row of the index's row group at row_group_idx was deleted.
+	bool IsEmptyRowGroup(idx_t row_group_idx) const;
+
 	// CREATE INDEX fits a u4 index before its parallel builds when a row group could reach
 	// MIN_EMBEDDINGS_FOR_CLUSTERING rows, on committed rows sampled from every row group.
 	void FitSAQModelForCreate(ClientContext &context, DataTable &table);

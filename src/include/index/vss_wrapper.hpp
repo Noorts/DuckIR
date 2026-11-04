@@ -501,9 +501,12 @@ public:
 		if (ids.empty()) {
 			return;
 		}
+		// DuckDB can append to a row group it had closed: it is open again, with an open row group's limit
+		row_group.is_closed = false;
 		if (row_group.cluster_cache) {
 			MaterializeRowGroup(row_group, *reader, buffer_manager);
 		}
+		row_group.index->SetMaxClusterSize(GetMaxClusterSize());
 		// Before the append: a BulkAppend that throws may have appended part of the rows.
 		row_group.row_end = MaxValue<row_t>(row_group.row_end, max_row_id + 1);
 		row_group.is_dirty = true;
@@ -560,6 +563,16 @@ public:
 
 	const PDXRowGroup &GetRowGroup(const idx_t row_group_idx) const {
 		return *row_groups[row_group_idx];
+	}
+
+	bool IsEmptyRowGroup(const idx_t row_group_idx) const {
+		const auto &index = *row_groups[row_group_idx]->index;
+		for (uint32_t cluster_id = 0; cluster_id < index.GetNumClusters(); cluster_id++) {
+			if (index.GetClusterSize(cluster_id) > 0) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	std::vector<VSSRowGroupBounds> FindStaleRowGroups(const std::vector<VSSRowGroupBounds> &physical_row_groups) const {
