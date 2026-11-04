@@ -1,5 +1,5 @@
 # name: test/sql/maintenance/index_concurrent_maintenance.test
-# description: Connections inserting, searching and deleting at the same time: every search triggers a sync under the exclusive lock while other searches hold the shared one, and nothing is lost or duplicated.
+# description: Connections inserting, searching and deleting at the same time: every search triggers a sync under the exclusive lock while other searches hold the shared one, and nothing is lost or duplicated; a rebuild during a DELETE commit leaves out the rows it deleted.
 # group: [maintenance]
 
 require parquet
@@ -185,3 +185,86 @@ statement ok
 DROP INDEX t2_idx;
 
 endloop
+
+# A search rebuilds a mirror a checkpoint re-cut while another connection commits a large DELETE: the rebuild reads
+# the table as of the last published commit, so it must leave out the rows the DELETE already removed from the index.
+statement ok
+SET threads = 8;
+
+statement ok
+CREATE TABLE t3 AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 5000;
+
+statement ok
+INSERT INTO t3 SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 5000 AND id < 23192;
+
+statement ok
+INSERT INTO t3 SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 23192 AND id < 244376;
+
+statement ok
+CREATE INDEX t3_idx ON t3 USING DUCKIR_VSS (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+
+# The first sync after CREATE INDEX: the DELETE below then reaches the index at commit.
+statement ok
+CALL duckir_vss_sync_index('t3_idx');
+
+statement ok
+CREATE TABLE t3_dels AS SELECT * FROM t3 WHERE rowid < 23192 AND id % 10 = 0;
+
+# The checkpoint re-cuts the first row groups (5000 / 8192 / 8192 / 1808 -> 8192 / 8192 / 6808): their mirrors go
+# stale, and no search rebuilds them before the DELETE.
+statement ok
+CHECKPOINT conc;
+
+query II
+SELECT row_group_id, sum(count) FROM pragma_storage_info('t3') WHERE column_name = 'id' AND segment_type <> 'VALIDITY' AND row_group_id < 3 GROUP BY 1 ORDER BY 1;
+----
+0	8192
+1	8192
+2	6808
+
+# Connection 1 starts its transaction first (a new one waits for the commit), then searches while the DELETE commits.
+concurrentloop threadid 0 2
+
+statement ok
+USE conc;
+
+onlyif threadid=1
+statement ok
+BEGIN;
+
+onlyif threadid=1
+statement ok
+SELECT id FROM t3_dels LIMIT 1;
+
+onlyif threadid=0
+statement ok
+BEGIN;
+
+onlyif threadid=0
+statement ok
+DELETE FROM t3 WHERE id % 2 = 0;
+
+onlyif threadid=0
+statement ok
+COMMIT;
+
+sleep 40 milliseconds
+
+onlyif threadid=1
+statement ok
+SELECT id FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 1;
+
+onlyif threadid=1
+statement ok
+COMMIT;
+
+endloop
+
+statement ok
+CALL duckir_vss_sync_index('t3_idx');
+
+# Each deleted row's vector finds a live row: a deleted row still in the index would take the slot.
+query I
+SELECT (SELECT COUNT(*) FROM t3_dels) - COUNT(*) FROM t3_dels AS q, LATERAL (SELECT r.id FROM t3 AS r ORDER BY array_distance(r.emb, q.emb) LIMIT 1) s;
+----
+0
