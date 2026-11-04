@@ -41,7 +41,8 @@ FetchContent_Declare(
   GIT_TAG cddd7bfa06a89cb02866b9fe217030ed1cebe704)
 FetchContent_MakeAvailable(pdx)
 
-# DuckDB's debug flags (-Werror=vla) reach cpuinfo, whose Linux sources declare VLA parameters.
+# DuckDB's debug flags (-Werror=vla) reach cpuinfo, whose Linux sources declare
+# VLA parameters.
 foreach(CPUINFO_TARGET cpuinfo cpuinfo_internals)
   if(TARGET ${CPUINFO_TARGET} AND NOT MSVC)
     target_compile_options(${CPUINFO_TARGET} PRIVATE -Wno-vla)
