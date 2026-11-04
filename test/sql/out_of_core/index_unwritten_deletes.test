@@ -1,5 +1,5 @@
 # name: test/sql/out_of_core/index_unwritten_deletes.test
-# description: A checkpoint keeps the chains of row groups with few deletes: after a restart, reconciliation deletes the rows again and the index gives the same results.
+# description: A checkpoint keeps the chains of row groups with few deletes: after a restart, reconciliation deletes the rows again and the index gives the same results; rows the chains still hold when DuckDB drops their row group never shadow the new rows that reuse their ids.
 # group: [out_of_core]
 
 require parquet
@@ -49,3 +49,61 @@ ATTACH '{TEST_DIR}/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
 query II nosort deleted
 SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
 ----
+
+# After another restart the chains hold the 2% again. The rest of the last row group is deleted and checkpointed
+# before any search: DuckDB drops it while its mirror still holds the 2%, and the INSERT reuses their row ids.
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
+
+statement ok
+DELETE FROM p.t WHERE id >= 16384;
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+INSERT INTO p.t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 100000 AND id < 105616;
+
+# Every new row finds itself: no stale row shadows it.
+query I
+SELECT count(*) FROM p.t q, LATERAL (SELECT array_distance(emb, q.emb) AS distance FROM p.t ORDER BY array_distance(emb, q.emb) LIMIT 1) s WHERE q.id >= 100000 AND s.distance = 0;
+----
+5616
+
+# A trailing row group of mostly NULL embeddings: deleting it does not dirty its mirror, so the checkpoint that drops
+# it keeps the mirror's chain with its rows. The INSERT reuses their ids and is checkpointed before any search.
+statement ok
+CREATE TABLE p.u AS SELECT id, CASE WHEN id < 8192 OR id % 40 = 0 THEN emb::FLOAT[{DIMS}] END AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 12288;
+
+statement ok
+CREATE INDEX u_idx ON p.u USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+CALL duckir_vss_sync_index('u_idx');
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+DELETE FROM p.u WHERE id >= 8192;
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+INSERT INTO p.u SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 110000 AND id < 114096;
+
+statement ok
+CHECKPOINT p;
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_unwritten_deletes.db' AS p (ROW_GROUP_SIZE 8192);
+
+query I
+SELECT count(*) FROM p.u q, LATERAL (SELECT array_distance(emb, q.emb) AS distance FROM p.u ORDER BY array_distance(emb, q.emb) LIMIT 1) s WHERE q.id >= 110000 AND s.distance = 0;
+----
+4096

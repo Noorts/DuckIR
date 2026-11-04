@@ -142,6 +142,10 @@ private:
 
 	void RemoveRowGroupsOverlapping(row_t start, row_t end);
 
+	// Staged rows that a mirror already holds reuse the ids of a row group DuckDB dropped (all its rows deleted): the
+	// mirror's stale rows would shadow them. Deletes those, so the append indexes the new rows.
+	void DeleteStaleRowIds(const std::vector<VSSRowRange> &ranges);
+
 	// Adds the rows of one commit to `ranges` (unindexed_row_ranges or staged_row_ranges), which needs to stay sorted
 	// and disjoint. A range that overlaps staged ones (DuckDB replaying a commit from the WAL) is merged with them.
 	static void StageUnindexedRange(std::vector<VSSRowRange> &ranges, VSSRowRange range);

@@ -550,6 +550,27 @@ public:
 		}
 	}
 
+	// Deletes the rows of [start, end) that a mirror holds. Each mirror the range overlaps is dirty, even below
+	// MAX_UNWRITTEN_DELETES_RATIO and when its stale rows are only tombstoned: its chain must not keep them, as no
+	// reconcile can tell them from the new rows at their ids.
+	void DeleteStaleRowIds(const row_t start, const row_t end) {
+		if (row_groups.empty() || start >= row_groups.back()->row_end) {
+			return;
+		}
+		const row_t stale_end = MinValue<row_t>(end, row_groups.back()->row_end);
+		for (row_t row_id = start; row_id < stale_end; row_id++) {
+			const auto row_group_idx = LookupRowGroup(row_id);
+			if (!row_group_idx.IsValid()) {
+				continue;
+			}
+			auto &row_group = *row_groups[row_group_idx.GetIndex()];
+			row_group.is_dirty = true;
+			if (row_group.index->Delete(static_cast<size_t>(row_id), /*logical_only=*/true)) {
+				row_group.num_unwritten_deletes++;
+			}
+		}
+	}
+
 	// Position in `row_groups` of the row group holding row_id.
 	optional_idx LookupRowGroup(const row_t row_id) const {
 		auto it = std::upper_bound(row_groups.begin(), row_groups.end(), row_id,
