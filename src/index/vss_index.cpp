@@ -487,11 +487,11 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			has_staged_deletes = false;
 		}
 		ApplyStagedDeletes(committed_deletes.data(), committed_deletes.size());
-		// New rows at reused ids replace the stale ones a mirror still holds
-		DeleteStaleRowIds(committed_ranges);
 		for (const auto &range : committed_ranges) {
 			StageUnindexedRange(unindexed_row_ranges, range);
 		}
+		// New rows at reused ids replace the stale ones a mirror still holds
+		DeleteStaleRowIds(unindexed_row_ranges);
 	}
 
 	// Unindexed rows, gathered per DuckDB row group: a row group without a mirror is clustered once from all of its
