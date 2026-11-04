@@ -116,8 +116,8 @@ private:
 	void DeleteRow(row_t row_id);
 
 	// Scans the committed rows of `ranges` (sorted, disjoint) whose embedding is not NULL into `embeddings`, normalized
-	// when the metric needs it and rotated if `rotate`, and their ids into `row_ids` unless it is null. Returns how many
-	// (at most `max_rows`). `rows_returned[i]` counts every committed row the table returned in ranges[i], NULL
+	// when the metric needs it and rotated if `rotate`, and their ids into `row_ids` unless it is null. Returns how
+	// many (at most `max_rows`). `rows_returned[i]` counts every committed row the table returned in ranges[i], NULL
 	// embeddings included. Ranges less than a vector apart share one scan. As of the last published commit, or with
 	// `all_committed` of every commit, published or not.
 	idx_t FetchRows(DataTable &table, const std::vector<VSSRowRange> &ranges, float *embeddings,
