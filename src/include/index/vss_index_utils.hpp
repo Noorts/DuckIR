@@ -59,7 +59,7 @@ namespace duckdb {
 
 static constexpr idx_t MAX_SELECTIVITY_N_PROBE_SCALE = 4;
 
-// n_probe scaled by the inverse selectivity (capped): a filtered search examines about as many rows as an unfiltered one.
+// n_probe scaled by the inverse selectivity (capped): filtered searches examine as many rows as unfiltered ones.
 [[nodiscard]] inline idx_t ScaleNProbeBySelectivity(const idx_t n_probe, const idx_t num_rows,
                                                     const idx_t num_passing_rows) {
 	const idx_t scale = num_passing_rows == 0 ? 1 : num_rows / num_passing_rows;
