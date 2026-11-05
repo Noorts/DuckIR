@@ -167,6 +167,7 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 		    BufferManager::GetBufferManager(context.client)
 		        .Allocate(MemoryTag::EXTENSION, row_group.count * g_sink.num_dimensions * sizeof(float),
 		                  /*can_destroy=*/false);
+		l_sink.row_group_row_ids.resize(row_group.count);
 		l_sink.row_group = row_group;
 		l_sink.row_group_is_closed = vss_index.IsClosedRowGroup(table.GetStorage(), row_group);
 		l_sink.has_row_group = true;
