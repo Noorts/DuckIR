@@ -134,17 +134,13 @@ public:
 // Holds the search state when the table is filtered (the sink runs first).
 class VSSIndexJoinGlobalSinkState : public GlobalSinkState {
 public:
-	VSSIndexJoinGlobalSinkState(ClientContext &context, const PhysicalVSSIndexJoin &op) : op(op) {
-	}
-
 	// Takes the guard when the index search starts.
-	void StartSearch(ClientContext &client) {
+	void StartSearch(ClientContext &client, const PhysicalVSSIndexJoin &op) {
 		search = make_uniq<VSSIndexJoinSearch>(client, op);
 		search->is_filtered = true;
 		search->passing_row_ids_per_row_group.resize(search->index.GetNumRowGroups());
 	}
 
-	const PhysicalVSSIndexJoin &op;
 	std::once_flag start_search_once;
 	unique_ptr<VSSIndexJoinSearch> search;
 };
@@ -161,7 +157,7 @@ unique_ptr<GlobalOperatorState> PhysicalVSSIndexJoin::GetGlobalOperatorState(Cli
 }
 
 unique_ptr<GlobalSinkState> PhysicalVSSIndexJoin::GetGlobalSinkState(ClientContext &context) const {
-	return make_uniq<VSSIndexJoinGlobalSinkState>(context, *this);
+	return make_uniq<VSSIndexJoinGlobalSinkState>();
 }
 
 // ------------------------------
@@ -184,7 +180,7 @@ unique_ptr<LocalSinkState> PhysicalVSSIndexJoin::GetLocalSinkState(ExecutionCont
 SinkResultType PhysicalVSSIndexJoin::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
 	auto &l_sink = input.local_state.Cast<VSSIndexJoinLocalSinkState>();
 	auto &g_sink = input.global_state.Cast<VSSIndexJoinGlobalSinkState>();
-	std::call_once(g_sink.start_search_once, [&]() { g_sink.StartSearch(context.client); });
+	std::call_once(g_sink.start_search_once, [&]() { g_sink.StartSearch(context.client, *this); });
 	auto &vss_index = g_sink.search->index;
 	l_sink.passing_row_ids_per_row_group.resize(vss_index.GetNumRowGroups());
 
@@ -811,6 +807,7 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 // Drops the guard once every query was searched.
 OperatorFinalResultType PhysicalVSSIndexJoin::OperatorFinalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                                                OperatorFinalizeInput &input) const {
+	// Filtered: the search lives in the sink state; not filtered: in the operator state.
 	if (IsSink()) {
 		sink_state->Cast<VSSIndexJoinGlobalSinkState>().search.reset();
 	} else {
