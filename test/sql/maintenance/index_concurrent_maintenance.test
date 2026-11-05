@@ -1,5 +1,5 @@
 # name: test/sql/maintenance/index_concurrent_maintenance.test
-# description: Connections inserting, searching and deleting at the same time: every search triggers a sync under the exclusive lock while other searches hold the shared one, and nothing is lost or duplicated; a rebuild during a DELETE commit leaves out the rows it deleted.
+# description: Connections inserting, searching and deleting at the same time: every search triggers a sync under the exclusive lock while other searches hold the shared one, and nothing is lost or duplicated; a rebuild during a DELETE commit leaves out the rows it deleted; searches never deadlock with checkpoints.
 # group: [maintenance]
 
 require parquet
@@ -268,3 +268,50 @@ query I
 SELECT (SELECT COUNT(*) FROM t3_dels) - COUNT(*) FROM t3_dels AS q, LATERAL (SELECT r.id FROM t3 AS r ORDER BY array_distance(r.emb, q.emb) LIMIT 1) s;
 ----
 0
+
+# Searches joined back to their table, filtered searches and LATERAL searches never deadlock with checkpoints.
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+CREATE TABLE t4 AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet');
+
+statement ok
+CREATE INDEX t4_idx ON t4 USING DUCKIR_VSS (emb) WITH (quantization = 'u8');
+
+statement ok
+CREATE TABLE u (i INTEGER);
+
+statement ok
+CHECKPOINT conc;
+
+concurrentloop threadid 0 4
+
+statement ok
+USE conc;
+
+loop i 0 60
+
+onlyif threadid=0
+statement ok
+SELECT t.* FROM (SELECT id FROM t4 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10) s JOIN t4 t ON s.id = t.id;
+
+onlyif threadid=1
+statement ok
+SELECT id FROM t4 WHERE id % 3 = 0 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 5;
+
+onlyif threadid=2
+statement ok
+SELECT count(*) FROM (SELECT id, emb FROM t4 WHERE id < 5) q, LATERAL (SELECT t4.id FROM t4 ORDER BY array_distance(t4.emb, q.emb) LIMIT 3);
+
+onlyif threadid=3
+statement ok
+INSERT INTO u VALUES (${i});
+
+onlyif threadid=3
+statement ok
+CHECKPOINT conc;
+
+endloop
+
+endloop

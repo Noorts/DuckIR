@@ -134,28 +134,30 @@ public:
 // Holds the search state when the table is filtered (the sink runs first).
 class VSSIndexJoinGlobalSinkState : public GlobalSinkState {
 public:
-	VSSIndexJoinGlobalSinkState(ClientContext &context, const PhysicalVSSIndexJoin &op) : search(context, op) {
-		search.is_filtered = true;
-		search.passing_row_ids_per_row_group.resize(search.index.GetNumRowGroups());
+	VSSIndexJoinGlobalSinkState(ClientContext &context, const PhysicalVSSIndexJoin &op) : op(op) {
 	}
 
-	VSSIndexJoinSearch search;
+	// Takes the guard when the index search starts.
+	void StartSearch(ClientContext &client) {
+		search = make_uniq<VSSIndexJoinSearch>(client, op);
+		search->is_filtered = true;
+		search->passing_row_ids_per_row_group.resize(search->index.GetNumRowGroups());
+	}
+
+	const PhysicalVSSIndexJoin &op;
+	std::once_flag start_search_once;
+	unique_ptr<VSSIndexJoinSearch> search;
 };
 
 // Holds the search state when the table is not filtered (there is no sink).
 class VSSIndexJoinGlobalOperatorState : public GlobalOperatorState {
 public:
-	VSSIndexJoinGlobalOperatorState(ClientContext &context, const PhysicalVSSIndexJoin &op) {
-		if (!op.IsSink()) {
-			search = make_uniq<VSSIndexJoinSearch>(context, op);
-		}
-	}
-
+	std::once_flag start_search_once;
 	unique_ptr<VSSIndexJoinSearch> search;
 };
 
 unique_ptr<GlobalOperatorState> PhysicalVSSIndexJoin::GetGlobalOperatorState(ClientContext &context) const {
-	return make_uniq<VSSIndexJoinGlobalOperatorState>(context, *this);
+	return make_uniq<VSSIndexJoinGlobalOperatorState>();
 }
 
 unique_ptr<GlobalSinkState> PhysicalVSSIndexJoin::GetGlobalSinkState(ClientContext &context) const {
@@ -169,21 +171,22 @@ unique_ptr<GlobalSinkState> PhysicalVSSIndexJoin::GetGlobalSinkState(ClientConte
 
 class VSSIndexJoinLocalSinkState : public LocalSinkState {
 public:
-	explicit VSSIndexJoinLocalSinkState(const VSSIndex &index)
-	    : passing_row_ids_per_row_group(index.GetNumRowGroups()) {
-	}
 	idx_t current_row_group_id {0};
 	VSSRowRange current_row_group_range {0, 0};
+	// Sized at the thread's first Sink, once the search started.
 	vector<std::vector<size_t>> passing_row_ids_per_row_group;
 };
 
 unique_ptr<LocalSinkState> PhysicalVSSIndexJoin::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<VSSIndexJoinLocalSinkState>(sink_state->Cast<VSSIndexJoinGlobalSinkState>().search.index);
+	return make_uniq<VSSIndexJoinLocalSinkState>();
 }
 
 SinkResultType PhysicalVSSIndexJoin::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
 	auto &l_sink = input.local_state.Cast<VSSIndexJoinLocalSinkState>();
-	auto &vss_index = input.global_state.Cast<VSSIndexJoinGlobalSinkState>().search.index;
+	auto &g_sink = input.global_state.Cast<VSSIndexJoinGlobalSinkState>();
+	std::call_once(g_sink.start_search_once, [&]() { g_sink.StartSearch(context.client); });
+	auto &vss_index = g_sink.search->index;
+	l_sink.passing_row_ids_per_row_group.resize(vss_index.GetNumRowGroups());
 
 	D_ASSERT(chunk.ColumnCount() == 1);
 	D_ASSERT(chunk.data[0].GetType() == LogicalType::ROW_TYPE);
@@ -214,7 +217,7 @@ SinkCombineResultType PhysicalVSSIndexJoin::Combine(ExecutionContext &context, O
 	const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
 	for (idx_t row_group_idx = 0; row_group_idx < l_sink.passing_row_ids_per_row_group.size(); row_group_idx++) {
 		auto &local_row_ids = l_sink.passing_row_ids_per_row_group[row_group_idx];
-		auto &global_row_ids = g_sink.search.passing_row_ids_per_row_group[row_group_idx];
+		auto &global_row_ids = g_sink.search->passing_row_ids_per_row_group[row_group_idx];
 		global_row_ids.insert(global_row_ids.end(), local_row_ids.begin(), local_row_ids.end());
 	}
 	return SinkCombineResultType::FINISHED;
@@ -393,7 +396,12 @@ static idx_t GetOnTheFlyIndexWindowSizeWithinMemoryBudget(ClientContext &context
 
 SinkFinalizeType PhysicalVSSIndexJoin::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                                 OperatorSinkFinalizeInput &input) const {
-	auto &search = input.global_state.Cast<VSSIndexJoinGlobalSinkState>().search;
+	auto &g_sink = input.global_state.Cast<VSSIndexJoinGlobalSinkState>();
+	// No row reached the sink.
+	if (!g_sink.search) {
+		return SinkFinalizeType::NO_OUTPUT_POSSIBLE;
+	}
+	auto &search = *g_sink.search;
 	const auto &passing_row_ids_per_row_group = search.passing_row_ids_per_row_group;
 	const bool any_row_passes = std::any_of(passing_row_ids_per_row_group.begin(), passing_row_ids_per_row_group.end(),
 	                                        [](const std::vector<size_t> &row_ids) { return !row_ids.empty(); });
@@ -680,6 +688,10 @@ static idx_t SearchQuery(const VSSIndexJoinSearch &search, VSSIndexJoinOperatorS
 		row_ids[i] =
 		    search.on_the_fly_indexes.empty() ? nearest[i].index : search.on_the_fly_indexes_row_ids[nearest[i].index];
 	}
+	// The state keeps nothing of the index: OperatorFinalize can drop the guard before DuckDB destroys the state.
+	state.search_cursors.clear();
+	state.sketch_query_table.reset();
+	state.ranking_query.reset();
 	return nearest.size();
 }
 
@@ -716,8 +728,18 @@ static void SearchChunkInBulk(const PhysicalVSSIndexJoin &op, const VSSIndexJoin
 OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                  GlobalOperatorState &gstate, OperatorState &state_p) const {
 	auto &state = state_p.Cast<VSSIndexJoinOperatorState>();
-	const auto &search = IsSink() ? sink_state->Cast<VSSIndexJoinGlobalSinkState>().search
-	                              : *gstate.Cast<VSSIndexJoinGlobalOperatorState>().search;
+	auto &g_op = gstate.Cast<VSSIndexJoinGlobalOperatorState>();
+	if (!IsSink()) {
+		// Takes the guard when the index search starts.
+		std::call_once(g_op.start_search_once,
+		               [&]() { g_op.search = make_uniq<VSSIndexJoinSearch>(context.client, *this); });
+	}
+	const auto search_ptr = IsSink() ? sink_state->Cast<VSSIndexJoinGlobalSinkState>().search.get() : g_op.search.get();
+	// No row reached the sink.
+	if (!search_ptr) {
+		return OperatorResultType::NEED_MORE_INPUT;
+	}
+	const auto &search = *search_ptr;
 	if (!search.is_filtered && search.index.GetNumRowGroups() == 0) {
 		return OperatorResultType::NEED_MORE_INPUT;
 	}
@@ -784,6 +806,17 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 	}
 	state.input_started = false;
 	return OperatorResultType::NEED_MORE_INPUT;
+}
+
+// Drops the guard once every query was searched.
+OperatorFinalResultType PhysicalVSSIndexJoin::OperatorFinalize(Pipeline &pipeline, Event &event, ClientContext &context,
+                                                               OperatorFinalizeInput &input) const {
+	if (IsSink()) {
+		sink_state->Cast<VSSIndexJoinGlobalSinkState>().search.reset();
+	} else {
+		input.global_state.Cast<VSSIndexJoinGlobalOperatorState>().search.reset();
+	}
+	return OperatorFinalResultType::FINISHED;
 }
 
 // ------------------------------

@@ -35,41 +35,58 @@ class PhysicalFilteredScanGlobalSinkState : public GlobalSinkState {
 public:
 	PhysicalFilteredScanGlobalSinkState(ClientContext &context, const PhysicalVSSIndexFilteredScan &op,
 	                                    const VSSIndexPhysicalScanBindData &bind_data)
-	    : guard(AcquireSearchGuard(context, bind_data.table, bind_data.index_info.oid)), context(context), op(op),
-	      limit(bind_data.limit), index(guard->index),
-	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), vss_row_ids(nullptr) {
-		// Preprocess the query embedding.
-		index.PreprocessEmbeddings(bind_data.query_embedding.get(), preprocessed_query_embedding.get(), 1);
-		ranking_query = index.EncodeQueryForRanking(preprocessed_query_embedding.get());
-		sketch_query_table = index.CreateSketchQueryTable(preprocessed_query_embedding.get());
+	    : context(context), op(op), bind_data(bind_data), limit(bind_data.limit),
+	      preprocessed_query_embedding(make_uniq_array<float>(bind_data.index_info.num_dimensions)),
+	      vss_row_ids(nullptr) {
+	}
 
-		auto n_probe = index.GetEffectiveNProbe(context);
+	// Takes the guard when the index search starts.
+	void StartSearch(ClientContext &client) {
+		guard = AcquireSearchGuard(client, bind_data.table, bind_data.index_info.oid);
+		index = &guard->index;
+		// Preprocess the query embedding.
+		index->PreprocessEmbeddings(bind_data.query_embedding.get(), preprocessed_query_embedding.get(), 1);
+		ranking_query = index->EncodeQueryForRanking(preprocessed_query_embedding.get());
+		sketch_query_table = index->CreateSketchQueryTable(preprocessed_query_embedding.get());
+
+		auto n_probe = index->GetEffectiveNProbe(client);
 		// The cluster count varies per row group, but the iteration loop uses a single value across all row groups. We
 		// use the largest row group's count as the upper bound: for smaller row groups the per-row-group searcher
 		// clamps internally.
-		const idx_t max_num_clusters = index.GetMaxNumClusters();
+		const idx_t max_num_clusters = index->GetMaxNumClusters();
 		partitions_to_probe_per_row_group_on_first_iteration =
 		    (n_probe == 0 || n_probe > max_num_clusters) ? max_num_clusters : n_probe;
 
 		identity_clusters_access_order.resize(max_num_clusters);
 		std::iota(identity_clusters_access_order.begin(), identity_clusters_access_order.end(), 0);
 
-		search_cursors.reserve(index.GetNumRowGroups());
-		clusters_access_orders.resize(index.GetNumRowGroups());
-		clusters_access_orders_once = make_uniq_array<std::once_flag>(index.GetNumRowGroups());
-		search_started = make_uniq_array<std::atomic<bool>>(index.GetNumRowGroups());
-		late_passing_rowids.resize(index.GetNumRowGroups());
+		search_cursors.reserve(index->GetNumRowGroups());
+		clusters_access_orders.resize(index->GetNumRowGroups());
+		clusters_access_orders_once = make_uniq_array<std::once_flag>(index->GetNumRowGroups());
+		search_started = make_uniq_array<std::atomic<bool>>(index->GetNumRowGroups());
+		late_passing_rowids.resize(index->GetNumRowGroups());
+	}
+
+	// Drops the guard once the result row ids are known.
+	void EndSearch() {
+		search_cursors.clear();
+		sketch_query_table.reset();
+		ranking_query.reset();
+		index = nullptr;
+		guard.reset();
 	}
 
 	// The query's pin and shared search lock on the index, shared with its other operators on the index. Declared first
-	// so it is constructed first and destroyed last, after the members that reference index state.
+	// so it is destroyed last, after the members that reference index state.
 	shared_ptr<VSSSearchGuard> guard;
+	std::once_flag start_search_once;
 
 	const ClientContext &context;
 	const PhysicalVSSIndexFilteredScan &op;
+	const VSSIndexPhysicalScanBindData &bind_data;
 	// The limit (the K in KNN search).
 	const idx_t limit;
-	VSSIndex &index;
+	optional_ptr<VSSIndex> index;
 
 	const unique_ptr<float[]> preprocessed_query_embedding;
 	unique_ptr<PDX::CentroidRankingQuery> ranking_query;
@@ -115,8 +132,8 @@ unique_ptr<GlobalSinkState> PhysicalVSSIndexFilteredScan::GetGlobalSinkState(Cli
 
 class PhysicalFilteredScanLocalSinkState : public LocalSinkState {
 public:
-	explicit PhysicalFilteredScanLocalSinkState(const VSSIndex &index) : current_row_group_passing_rowids() {
-		current_row_group_passing_rowids.reserve(index.GetRowGroupSize());
+	explicit PhysicalFilteredScanLocalSinkState(const idx_t row_group_size) : current_row_group_passing_rowids() {
+		current_row_group_passing_rowids.reserve(row_group_size);
 	}
 
 	// Temporary row group staging area.
@@ -132,7 +149,7 @@ public:
 };
 
 unique_ptr<LocalSinkState> PhysicalVSSIndexFilteredScan::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<PhysicalFilteredScanLocalSinkState>(sink_state->Cast<PhysicalFilteredScanGlobalSinkState>().index);
+	return make_uniq<PhysicalFilteredScanLocalSinkState>(bind_data->table.GetStorage().GetRowGroupSize());
 }
 
 // Starts the filtered search of a row group with the row ids that passed the SQL predicate, and runs its first
@@ -181,11 +198,12 @@ SinkResultType PhysicalVSSIndexFilteredScan::Sink(ExecutionContext &context, Dat
                                                   OperatorSinkInput &input) const {
 	auto &l_sink = input.local_state.Cast<PhysicalFilteredScanLocalSinkState>();
 	auto &g_sink = input.global_state.Cast<PhysicalFilteredScanGlobalSinkState>();
-	auto &index = g_sink.index;
 
 	if (input_chunk.size() == 0) {
 		return SinkResultType::NEED_MORE_INPUT;
 	}
+	std::call_once(g_sink.start_search_once, [&]() { g_sink.StartSearch(context.client); });
+	auto &index = *g_sink.index;
 
 	// We control the query plan, so the input chunk format should always be valid.
 	D_ASSERT(input_chunk.ColumnCount() == 1);
@@ -231,11 +249,10 @@ SinkCombineResultType PhysicalVSSIndexFilteredScan::Combine(ExecutionContext &co
                                                             OperatorSinkCombineInput &input) const {
 	auto &g_sink = input.global_state.Cast<PhysicalFilteredScanGlobalSinkState>();
 	auto &l_sink = input.local_state.Cast<PhysicalFilteredScanLocalSinkState>();
-	auto &index = g_sink.index;
 
 	// The run of this thread's last row group ended: start its filtered search, or buffer its row ids.
 	if (!l_sink.current_row_group_passing_rowids.empty()) {
-		BeginSearchForRowGroupOrBufferRowIds(index, g_sink, l_sink);
+		BeginSearchForRowGroupOrBufferRowIds(*g_sink.index, g_sink, l_sink);
 	}
 
 	// Merge this thread's search cursors into the global sink state.
@@ -318,7 +335,7 @@ public:
 
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
 		auto &late_passing_rowids = g_sink.late_passing_rowids[row_group_idx];
-		auto search_cursor = BeginSearchForStagedRowGroup(g_sink.index, g_sink, row_group_idx, late_passing_rowids);
+		auto search_cursor = BeginSearchForStagedRowGroup(*g_sink.index, g_sink, row_group_idx, late_passing_rowids);
 		// The search keeps its own copy of the filter.
 		std::vector<size_t>().swap(late_passing_rowids);
 		{
@@ -403,6 +420,7 @@ void PhysicalFilteredScanGlobalSinkState::TryFinalizeSinkPhase(Pipeline &pipelin
 		for (size_t i = 0; i < result_rowids.size(); i++) {
 			(*this->vss_row_ids)[i] = result_rowids[i].index;
 		}
+		EndSearch();
 		// We return such that the Sink phase completes, allowing the Source phase to start.
 		return;
 	}
