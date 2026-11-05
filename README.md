@@ -152,23 +152,9 @@ Index search also kicks in if the predicate is rewritten as a `HASH JOIN` (e.g.,
 
 See [our limitations doc](/docs/LIMITATIONS.md) for the query shapes we don't optimize.
 
-### LATERAL JOIN (a.k.a. NEAREST, SIMILARITY JOIN)
+### Bulk Queries
 
-You can run many queries at once:
-
-```sql
-SELECT q.id, s.id
-FROM queries q, LATERAL (
-  SELECT id
-  FROM t1
-  WHERE id < 500
-  ORDER BY array_distance(
-    embedding,
-    q.embedding
-  )
-  LIMIT 100
-) s;
-```
+You can get better performance by issuing many queries at once as a `LATERAL JOIN`. See our [optimization guide](/docs/OPTIMIZATION_GUIDE.md#bulk-queries-lateral-join) for more information.
 
 ### Index Metadata
 
@@ -188,28 +174,7 @@ ORDER BY array_distance(
 LIMIT 10;
 ```
 
-However, DuckDB parses the list literal and binds it element by element. Funnily enough, **that costs more than the vector search itself**. If you want the highest query throughput, pass the list literal as a string to `duckir_vss_encode_query` instead:
-
-```sql
-SELECT id
-FROM t
-ORDER BY array_distance(
-  embedding,
-  duckir_vss_encode_query('[0.2502, 0.7944, ..., -0.5050]')
-)
-LIMIT 10;
-```
-
-`duckir_vss_encode_query` reads the string and returns its `float32` values as a `BLOB`, which the search uses directly. This bypasses the bind overhead.
-
-From a client, you can instead bind the vector's raw bytes as a parameter. For example, in Python:
-
-```python
-q = np.asarray(vec, dtype='<f4')
-con.execute("SELECT id FROM t ORDER BY array_distance(embedding, ?) LIMIT 10", [q.tobytes()])
-```
-
-To issue queries in bulk, see [LATERAL JOIN](#lateral-join-aka-nearest-similarity-join).
+However, by doing so, your query throughput will be capped by DuckDB's query planning. See our [optimization guide](/docs/OPTIMIZATION_GUIDE.md#highest-query-throughput) for more information and alternatives to get the highest query throughput.
 
 ## Our Secret Sauce
 
