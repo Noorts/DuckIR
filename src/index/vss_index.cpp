@@ -283,7 +283,7 @@ void VSSIndex::RemoveRowGroupsOverlapping(const row_t start, const row_t end) {
 
 idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, float *const embeddings,
                           idx_t &rows_returned, row_t *const row_ids, const bool rotate,
-                          PDX::ParallelExecutor *const executor) {
+                          PDX::ParallelExecutor *const executor, const idx_t max_rows) {
 	rows_returned = 0;
 	if (start >= end) {
 		return 0;
@@ -303,7 +303,7 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 	auto raw_embeddings = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
 
 	idx_t count = 0;
-	while (true) {
+	while (count < max_rows) {
 		chunk.Reset();
 		// Deleted rows are gone, NULL embeddings are NULL.
 		scan_state.table_state.Scan(ScanOptions(committed), chunk);
@@ -319,7 +319,7 @@ idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, 
 		// Without a rotation, the rows go straight to the output.
 		float *const batch_embeddings = rotate ? raw_embeddings.get() : embeddings + count * num_dimensions;
 		idx_t batch_count = 0;
-		for (idx_t i = 0; i < chunk.size(); i++) {
+		for (idx_t i = 0; i < chunk.size() && count + batch_count < max_rows; i++) {
 			// The scan starts at the vector that holds `start`.
 			if (scanned_row_ids[i] < start) {
 				continue;
@@ -534,7 +534,7 @@ void VSSIndex::FitSAQModelForCreate(ClientContext &context, DataTable &table) {
 	if (!vss_wrapper->NeedsSAQFit() || table.GetTotalRows() < VSSWrapperSAQ::MIN_EMBEDDINGS_FOR_CLUSTERING) {
 		return;
 	}
-	// The first rows of every row group, SAQ_FIT_SAMPLE_SIZE in all.
+	// The first non-NULL rows of every row group, SAQ_FIT_SAMPLE_SIZE in all.
 	const auto physical_row_groups = GetPhysicalRowGroups(table);
 	const idx_t rows_per_row_group =
 	    (PDX::SAQ_FIT_SAMPLE_SIZE + physical_row_groups.size() - 1) / physical_row_groups.size();
@@ -549,11 +549,11 @@ void VSSIndex::FitSAQModelForCreate(ClientContext &context, DataTable &table) {
 	idx_t num_sampled = 0;
 	idx_t rows_returned;
 	for (const auto &row_group : physical_row_groups) {
-		const row_t end =
-		    row_group.row_start + static_cast<row_t>(MinValue<idx_t>(row_group.count, rows_per_row_group));
+		const row_t end = row_group.row_start + static_cast<row_t>(row_group.count);
 		// The identity rotation of an index not fitted yet leaves the rows as they are.
 		num_sampled += FetchRows(table, row_group.row_start, end, sample.get() + num_sampled * num_dimensions,
-		                         rows_returned, /*row_ids=*/nullptr, /*rotate=*/false, &executor);
+		                         rows_returned, /*row_ids=*/nullptr, /*rotate=*/false, &executor,
+		                         MinValue<idx_t>(row_group.count, rows_per_row_group));
 	}
 	if (num_sampled == 0) {
 		return;
