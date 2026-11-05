@@ -731,7 +731,7 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 		               [&]() { g_op.search = make_uniq<VSSIndexJoinSearch>(context.client, *this); });
 	}
 	const auto search_ptr = IsSink() ? sink_state->Cast<VSSIndexJoinGlobalSinkState>().search.get() : g_op.search.get();
-	// No row reached the sink.
+	// Filtered, and no row passed the filter: no search was started, so no query has neighbours.
 	if (!search_ptr) {
 		return OperatorResultType::NEED_MORE_INPUT;
 	}
