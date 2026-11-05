@@ -134,3 +134,36 @@ ATTACH '{TEST_DIR}/index_cluster_paging.db' AS p (ROW_GROUP_SIZE 8192);
 query II nosort written
 SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
 ----
+
+# The open row group stays on the heap: syncs that append to it do not reload it, and searches read none of its clusters.
+statement ok
+SET duckir_vss_cluster_paging = true;
+
+statement ok
+SET duckir_vss_paging_counters = true;
+
+statement ok
+CREATE TABLE p.u AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 4096;
+
+statement ok
+CREATE INDEX u_idx ON p.u USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+SET VARIABLE query_vector = (SELECT vec FROM p.q WHERE qid = 200000);
+
+loop i 0 3
+
+statement ok
+INSERT INTO p.u SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id = 4096 + ${i};
+
+query I
+SELECT count(*) FROM (SELECT id FROM p.u ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 10);
+----
+10
+
+endloop
+
+query I
+SELECT cluster_acquires FROM duckir_vss_index_info() WHERE index_name = 'u_idx';
+----
+0

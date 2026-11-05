@@ -595,7 +595,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 	// headroom.
 	MarkClosedRowGroups(table);
 
-	// The appends loaded their row groups fully: they go back to temporary chains.
+	// The closed row groups the sync loaded fully go back to temporary chains; the open one stays on the heap.
 	if (cluster_paging) {
 		WriteTemporaryChains();
 	}

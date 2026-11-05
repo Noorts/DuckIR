@@ -384,7 +384,7 @@ public:
 			row_group->index = BuildRowGroupIndex(*row_group, row_ids, embeddings, num_embeddings, executor);
 			// The executor ends with the build: later appends and deletes run serially.
 			row_group->index->SetExecutor(nullptr);
-			if (reader) {
+			if (reader && row_group->is_closed) {
 				WriteTemporaryChain(*row_group, *reader, buffer_manager);
 			}
 			return static_cast<int64_t>(row_group->GetSelfManagedMemorySizeInBytes());
@@ -405,7 +405,7 @@ public:
 			row_group->index->Append(static_cast<size_t>(row_ids[i]), embeddings + i * GetNumDimensions());
 		}
 		row_group->is_dirty = true;
-		if (reader) {
+		if (reader && row_group->is_closed) {
 			WriteTemporaryChain(*row_group, *reader, buffer_manager);
 		}
 		return static_cast<int64_t>(row_group->GetSelfManagedMemorySizeInBytes()) - size_before;
@@ -709,7 +709,8 @@ public:
 			if (page_clusters) {
 				// The new chain has its blocks now, and writing them can have moved other chains' segments.
 				reader->UpdateBlockPointers(allocator.GetInfo());
-				if (!persist_with_unwritten_deletes) {
+				// An open row group on the heap stays there
+				if (!persist_with_unwritten_deletes && (row_group->is_closed || row_group->cluster_cache)) {
 					PageRowGroup(*row_group, *reader, buffer_manager);
 				}
 			}
@@ -717,10 +718,11 @@ public:
 		return merge_ran_out_of_memory;
 	}
 
-	// Gives every index whose clusters are on the heap (built or changed by a sync) a temporary chain as its home.
+	// Gives every closed row group whose clusters are on the heap (built or changed by a sync) a temporary chain as its
+	// home. The open row group, which receives the appends, stays on the heap.
 	void WriteTemporaryChains(VSSBlockChainReader &reader, BufferManager &buffer_manager) {
 		for (auto &row_group : row_groups) {
-			if (!row_group->cluster_cache) {
+			if (!row_group->cluster_cache && row_group->is_closed) {
 				WriteTemporaryChain(*row_group, reader, buffer_manager);
 			}
 		}

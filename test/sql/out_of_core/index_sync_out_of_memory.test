@@ -17,12 +17,23 @@ SET checkpoint_threshold = '10GB';
 # Variables
 test-env DIMS 128
 
-# One partial row group of 100,000 rows, paged.
+# One partial row group of 100,000 rows, paged: a loaded index pages every row group, the open one too.
 statement ok
 CREATE TABLE p.t AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 100000;
 
 statement ok
 CREATE INDEX t_idx ON p.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+CHECKPOINT p;
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_sync_out_of_memory.db' AS p;
+
+statement ok
+SET checkpoint_threshold = '10GB';
 
 statement ok
 INSERT INTO p.t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 100000 AND id < 101500;
