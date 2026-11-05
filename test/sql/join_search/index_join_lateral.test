@@ -330,6 +330,66 @@ SELECT count(*) FROM ((FROM k10_result WHERE qid % 2 = 0 EXCEPT ALL FROM join_re
 0
 
 # ============================================
+# Query rows DuckDB inlines (a VALUES list, a constant subquery) and a recursive CTE whose step has a WHERE: no CTE scan
+# below the distinct query rows. Their queries' rows are those of K = 10 above, and the walk's those of single searches.
+# ============================================
+
+statement ok
+SET VARIABLE q0 = (SELECT vec FROM q WHERE qid = 0);
+
+statement ok
+SET VARIABLE q1 = (SELECT vec FROM q WHERE qid = 1);
+
+query II
+EXPLAIN SELECT v.qid, s.id FROM (VALUES (0, getvariable('q0')), (1, getvariable('q1'))) v(qid, vec), LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, v.vec) LIMIT 10) s;
+----
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
+
+statement ok
+CREATE OR REPLACE TABLE join_result AS SELECT v.qid, s.id FROM (VALUES (0, getvariable('q0')), (1, getvariable('q1'))) v(qid, vec), LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, v.vec) LIMIT 10) s;
+
+query I
+SELECT count(*) FROM ((FROM k10_result WHERE qid < 2 EXCEPT ALL FROM join_result) UNION ALL (FROM join_result EXCEPT ALL FROM k10_result WHERE qid < 2));
+----
+0
+
+query II
+EXPLAIN SELECT s.id FROM (SELECT getvariable('q0') AS vec) v, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, v.vec) LIMIT 10) s;
+----
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
+
+statement ok
+CREATE OR REPLACE TABLE join_result AS SELECT 0 AS qid, s.id FROM (SELECT getvariable('q0') AS vec) v, LATERAL (SELECT t.id FROM t ORDER BY array_distance(t.emb, v.vec) LIMIT 10) s;
+
+query I
+SELECT count(*) FROM ((FROM k10_result WHERE qid = 0 EXCEPT ALL FROM join_result) UNION ALL (FROM join_result EXCEPT ALL FROM k10_result WHERE qid = 0));
+----
+0
+
+statement ok
+CREATE OR REPLACE TABLE walk_result AS SELECT 0 AS step, id, emb FROM t WHERE id = 5;
+
+loop i 0 5
+
+statement ok
+SET VARIABLE query_vector = (SELECT emb FROM walk_result WHERE step = {i});
+
+statement ok
+INSERT INTO walk_result SELECT {i} + 1, id, emb FROM t ORDER BY array_distance(emb, getvariable('query_vector')) LIMIT 1 OFFSET 1;
+
+endloop
+
+query II
+EXPLAIN WITH RECURSIVE walk(step, id, emb) AS (SELECT 0, id, emb FROM t WHERE id = 5 UNION ALL SELECT step + 1, n.id, n.emb FROM walk, LATERAL (SELECT t.id, t.emb FROM t ORDER BY array_distance(t.emb, walk.emb) LIMIT 1 OFFSET 1) n WHERE step < 5) SELECT step, id FROM walk;
+----
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_JOIN.*
+
+query I
+SELECT count(*) FROM ((SELECT step, id FROM walk_result EXCEPT ALL (WITH RECURSIVE walk(step, id, emb) AS (SELECT 0, id, emb FROM t WHERE id = 5 UNION ALL SELECT step + 1, n.id, n.emb FROM walk, LATERAL (SELECT t.id, t.emb FROM t ORDER BY array_distance(t.emb, walk.emb) LIMIT 1 OFFSET 1) n WHERE step < 5) SELECT step, id FROM walk)) UNION ALL ((WITH RECURSIVE walk(step, id, emb) AS (SELECT 0, id, emb FROM t WHERE id = 5 UNION ALL SELECT step + 1, n.id, n.emb FROM walk, LATERAL (SELECT t.id, t.emb FROM t ORDER BY array_distance(t.emb, walk.emb) LIMIT 1 OFFSET 1) n WHERE step < 5) SELECT step, id FROM walk) EXCEPT ALL SELECT step, id FROM walk_result));
+----
+0
+
+# ============================================
 # Duplicate query vectors get the same rows, and a NULL query vector has no neighbours: an inner LATERAL drops its row
 # and a LEFT LATERAL pads it with NULLs.
 # ============================================
