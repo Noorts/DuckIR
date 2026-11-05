@@ -48,18 +48,16 @@ jobs:
           BRANCH: ${{ steps.bump.outputs.branch }}
           TITLE: ${{ steps.bump.outputs.commit_message }}
         run: |
-          # extension-ci-tools publishes versions as branches (no Releases
-          # page), so link to the tree view rather than a 404 release URL.
           duckdb_release_url="https://github.com/duckdb/duckdb/releases/tag/${NEW_VERSION}"
-          ci_tools_tree_url="https://github.com/duckdb/extension-ci-tools/tree/${NEW_VERSION}"
           compare_url="https://github.com/duckdb/duckdb/compare/${OLD_VERSION}...${NEW_VERSION}"
 
           {
             printf 'Automated bump from `%s` to `%s`.\n\n' "$OLD_VERSION" "$NEW_VERSION"
             printf '## Release notes\n\n'
             printf -- '- DuckDB %s: %s\n' "$NEW_VERSION" "$duckdb_release_url"
-            printf -- '- extension-ci-tools %s: %s\n' "$NEW_VERSION" "$ci_tools_tree_url"
             printf -- '- Full changelog: %s\n\n' "$compare_url"
+            printf 'Only `duckdb_version` and the duckdb submodule are bumped; '
+            printf 'check whether the extension-ci-tools pin also needs updating.\n\n'
             printf 'Triggered via the Bump DuckDB workflow_dispatch.\n'
           } > pr_body.md
 

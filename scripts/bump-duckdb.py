@@ -3,10 +3,12 @@
 
 Updates:
   - duckdb submodule              -> checked out at <new_version>
-  - extension-ci-tools submodule  -> checked out at <new_version>
   - .github/workflows/MainDistributionPipeline.yml:
-      * duckdb-stable-build job: uses ref, duckdb_version, ci_tools_version
-      * code-quality-check job:  uses ref, duckdb_version, ci_tools_version
+      * duckdb-stable-build job: duckdb_version
+      * code-quality-check job:  duckdb_version
+
+The extension-ci-tools submodule and refs (uses / ci_tools_version) are
+pinned by hand and left untouched.
 
 Designed to run identically on a developer laptop and inside the
 bump-duckdb workflow_dispatch GitHub Action.
@@ -62,7 +64,7 @@ def ensure_clean_tree() -> None:
 def detect_current_version() -> str:
     text = WORKFLOW_PATH.read_text()
     m = re.search(
-        r"_extension_distribution\.yml@(v\d+\.\d+\.\d+)", text
+        r"^\s+duckdb_version:\s*(v\d+\.\d+\.\d+)\s*$", text, re.MULTILINE
     )
     if not m:
         die("could not detect current DuckDB version from workflow file")
@@ -127,14 +129,10 @@ def update_workflow(old: str, new: str) -> None:
     text = WORKFLOW_PATH.read_text()
     original = text
 
-    uses_line = r"    uses: duckdb/extension-ci-tools/\.github/workflows/[\w-]+\.yml@"
     duckdb_line = r"      duckdb_version: "
-    ci_tools_line = r"      ci_tools_version: "
 
     for job in ("duckdb-stable-build", "code-quality-check"):
-        text = _replace_in_job(text, job, uses_line, old, new)
         text = _replace_in_job(text, job, duckdb_line, old, new)
-        text = _replace_in_job(text, job, ci_tools_line, old, new)
 
     if text == original:
         die("workflow file would be unchanged — already on this version?")
@@ -200,11 +198,11 @@ def main() -> int:
 
     branch = args.branch or f"feature/update-duckdb-to-{new_version}"
 
-    # Verify both tags exist upstream before mutating anything (branch,
+    # Verify the tag exists upstream before mutating anything (branch,
     # submodule HEADs, workflow file). This way a missing-tag failure leaves
     # the working tree exactly as we found it, so a rerun once upstream
     # publishes the tag is a clean redo.
-    for path in ("duckdb", "extension-ci-tools"):
+    for path in ("duckdb",):
         submodule = REPO_ROOT / path
         logger.info(f"fetching refs for {path}")
         run(["git", "fetch", "--tags", "origin"], cwd=submodule)
@@ -221,7 +219,6 @@ def main() -> int:
         logger.info(f"created branch {branch}")
 
     update_submodule("duckdb", new_version)
-    update_submodule("extension-ci-tools", new_version)
     update_workflow(old_version, new_version)
 
     logger.info("staged diff:")
