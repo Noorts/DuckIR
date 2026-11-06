@@ -21,12 +21,19 @@ jobs:
       - name: Detect currently pinned DuckDB version
         id: current
         run: |
-          current=$(grep -m1 -oE '_extension_distribution\.yml@v[0-9]+\.[0-9]+\.[0-9]+' \
-            .github/workflows/MainDistributionPipeline.yml | sed 's/.*@//')
-          if [[ -z "$current" ]]; then
-            echo "could not detect current version" >&2
+          # Only the duckdb_version inputs are tracked; extension-ci-tools refs
+          # are pinned by hand. All duckdb_version lines must agree.
+          versions=$(grep -oE '^\s+duckdb_version:\s*v[0-9]+\.[0-9]+\.[0-9]+' \
+            .github/workflows/MainDistributionPipeline.yml | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -u)
+          if [[ -z "$versions" ]]; then
+            echo "could not detect current duckdb_version" >&2
             exit 1
           fi
+          if [[ $(wc -l <<< "$versions") -ne 1 ]]; then
+            echo "inconsistent duckdb_version values:" $versions >&2
+            exit 1
+          fi
+          current="$versions"
           echo "version=$current" >> "$GITHUB_OUTPUT"
           echo "Currently pinned: $current"
 
@@ -72,24 +79,6 @@ jobs:
           fi
 
           echo "bump=true" >> "$GITHUB_OUTPUT"
-
-      - name: Confirm matching extension-ci-tools ref exists
-        if: steps.decide.outputs.bump == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LATEST: ${{ steps.latest.outputs.version }}
-        run: |
-          # extension-ci-tools publishes versioned releases as branches, not
-          # tags (unlike duckdb/duckdb). Accept either ref shape so the check
-          # works regardless of which one upstream uses.
-          if gh api "repos/duckdb/extension-ci-tools/git/refs/tags/$LATEST" >/dev/null 2>&1; then
-            echo "Found tag $LATEST on duckdb/extension-ci-tools."
-          elif gh api "repos/duckdb/extension-ci-tools/git/refs/heads/$LATEST" >/dev/null 2>&1; then
-            echo "Found branch $LATEST on duckdb/extension-ci-tools."
-          else
-            echo "Ref $LATEST not yet published on duckdb/extension-ci-tools (checked tags and branches); will retry on next schedule."
-            exit 1
-          fi
 
       - name: Skip if branch or PR already exists
         if: steps.decide.outputs.bump == 'true'
