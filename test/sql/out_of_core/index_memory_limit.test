@@ -88,6 +88,40 @@ SELECT getvariable('memory_usage') = approx_lower_bound_memory_usage_bytes FROM 
 ----
 true
 
+# A search reserves its heap memory only while it runs: after each kind of search, the index's size again.
+statement ok
+CREATE TABLE m.q AS SELECT id, emb FROM m.t WHERE id < 50;
+
+statement ok
+SELECT id FROM m.t WHERE id % 7 = 3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
+
+statement ok
+SELECT count(*) FROM m.q, LATERAL (SELECT t.id FROM m.t t ORDER BY array_distance(t.emb, q.emb) LIMIT 5);
+
+statement ok
+SELECT count(*) FROM m.q, LATERAL (SELECT t.id FROM m.t t WHERE t.id % 3 = 0 ORDER BY array_distance(t.emb, q.emb) LIMIT 5);
+
+# Few passing rows: one Flat index, searched in bulk.
+statement ok
+SELECT count(*) FROM m.q, LATERAL (SELECT t.id FROM m.t t WHERE t.id % 1000 = 0 ORDER BY array_distance(t.emb, q.emb) LIMIT 5);
+
+statement ok
+SET duckir_vss_experimental_on_the_fly_indexing = 'always';
+
+statement ok
+SELECT count(*) FROM m.q, LATERAL (SELECT t.id FROM m.t t WHERE t.id % 3 = 0 ORDER BY array_distance(t.emb, q.emb) LIMIT 5);
+
+statement ok
+RESET duckir_vss_experimental_on_the_fly_indexing;
+
+statement ok
+SET VARIABLE memory_usage = (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag IN ('EXTENSION', 'ALLOCATOR'));
+
+query I
+SELECT getvariable('memory_usage') = approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 't_idx';
+----
+true
+
 statement ok
 DROP INDEX m.t_idx;
 

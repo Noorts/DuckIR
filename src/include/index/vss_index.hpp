@@ -378,6 +378,19 @@ public:
 		return max_num_clusters;
 	}
 
+	// An estimate of the heap bytes of a search cursor over a row group of num_clusters clusters.
+	idx_t EstimateSearchCursorBytes(const idx_t num_clusters) const {
+		// The query's copies: in f32, and quantized (u8 or SAQ).
+		const idx_t query_bytes = GetNumDimensions() * (sizeof(float) + 2);
+		// The queue of clusters to probe, and the query's distances to their centroids.
+		const idx_t clusters_bytes = num_clusters * 2 * sizeof(uint32_t);
+		// The rows of the largest cluster, about twice the average.
+		const idx_t largest_cluster_rows = 2 * GetRowGroupSize() / MaxValue<idx_t>(num_clusters, 1);
+		// The pruning buffers over the largest cluster: distances, positions and SAQ scales.
+		const idx_t pruning_bytes = largest_cluster_rows * 3 * sizeof(float);
+		return query_bytes + clusters_bytes + pruning_bytes;
+	}
+
 	string GetQuantization() const;
 	PDX::Quantization GetQuantizationType() const {
 		return vss_wrapper->GetQuantization();

@@ -1,6 +1,7 @@
 #include "index/search/vss_index_filtered_scan_physical.hpp"
 #include "duckdb/parallel/event.hpp"
 #include "index/vss_index.hpp"
+#include "index/vss_memory_reservation.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_lock.hpp"
@@ -35,7 +36,8 @@ class PhysicalFilteredScanGlobalSinkState : public GlobalSinkState {
 public:
 	PhysicalFilteredScanGlobalSinkState(ClientContext &context, const PhysicalVSSIndexFilteredScan &op,
 	                                    const VSSIndexPhysicalScanBindData &bind_data)
-	    : context(context), op(op), bind_data(bind_data), limit(bind_data.limit),
+	    : reservation(BufferManager::GetBufferManager(context)), context(context), op(op), bind_data(bind_data),
+	      limit(bind_data.limit),
 	      preprocessed_query_embedding(make_uniq_array<float>(bind_data.index_info.num_dimensions)),
 	      vss_row_ids(nullptr) {
 	}
@@ -56,6 +58,11 @@ public:
 		const idx_t max_num_clusters = index->GetMaxNumClusters();
 		partitions_to_probe_per_row_group_on_first_iteration =
 		    (n_probe == 0 || n_probe > max_num_clusters) ? max_num_clusters : n_probe;
+
+		// Held until the search ends: a cursor and a cluster order per row group.
+		const idx_t cursor_bytes = index->EstimateSearchCursorBytes(max_num_clusters);
+		const idx_t cluster_order_bytes = max_num_clusters * sizeof(uint32_t);
+		reservation.Reserve(index->GetNumRowGroups() * (cursor_bytes + cluster_order_bytes));
 
 		identity_clusters_access_order.resize(max_num_clusters);
 		std::iota(identity_clusters_access_order.begin(), identity_clusters_access_order.end(), 0);
@@ -79,6 +86,8 @@ public:
 	// The query's pin and shared search lock on the index, shared with its other operators on the index. Declared first
 	// so it is destroyed last, after the members that reference index state.
 	shared_ptr<VSSSearchGuard> guard;
+	// The search's heap memory. Freed after the members it covers.
+	VSSMemoryReservation reservation;
 	std::once_flag start_search_once;
 
 	const ClientContext &context;
@@ -132,9 +141,14 @@ unique_ptr<GlobalSinkState> PhysicalVSSIndexFilteredScan::GetGlobalSinkState(Cli
 
 class PhysicalFilteredScanLocalSinkState : public LocalSinkState {
 public:
-	explicit PhysicalFilteredScanLocalSinkState(const idx_t row_group_size) : current_row_group_passing_rowids() {
+	PhysicalFilteredScanLocalSinkState(BufferManager &buffer_manager, const idx_t row_group_size)
+	    : reservation(buffer_manager), current_row_group_passing_rowids() {
+		reservation.Reserve(row_group_size * sizeof(size_t));
 		current_row_group_passing_rowids.reserve(row_group_size);
 	}
+
+	// The staging area's heap memory. Freed after it.
+	VSSMemoryReservation reservation;
 
 	// Temporary row group staging area.
 	idx_t current_row_group_id {0};
@@ -149,7 +163,8 @@ public:
 };
 
 unique_ptr<LocalSinkState> PhysicalVSSIndexFilteredScan::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<PhysicalFilteredScanLocalSinkState>(bind_data->table.GetStorage().GetRowGroupSize());
+	return make_uniq<PhysicalFilteredScanLocalSinkState>(BufferManager::GetBufferManager(context.client),
+	                                                     bind_data->table.GetStorage().GetRowGroupSize());
 }
 
 // Starts the filtered search of a row group with the row ids that passed the SQL predicate, and runs its first

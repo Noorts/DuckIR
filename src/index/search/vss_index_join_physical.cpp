@@ -12,6 +12,7 @@
 
 #include "index/vss_blob_codec.hpp"
 #include "index/vss_index.hpp"
+#include "index/vss_memory_reservation.hpp"
 #include "index/vss_parallel_executor.hpp"
 
 #include "pdx/ivf_searcher.hpp"
@@ -44,7 +45,7 @@ class VSSIndexJoinSearch {
 public:
 	VSSIndexJoinSearch(ClientContext &context, const PhysicalVSSIndexJoin &op)
 	    : guard(AcquireSearchGuard(context, op.table, op.index_info.oid)), index(guard->index), limit(op.limit),
-	      buffer_manager(BufferManager::GetBufferManager(context)) {
+	      buffer_manager(BufferManager::GetBufferManager(context)), reservation(buffer_manager) {
 		auto n_probe = index.GetEffectiveNProbe(context);
 		const idx_t max_num_clusters = index.GetMaxNumClusters();
 		clusters_to_probe_on_first_iteration =
@@ -93,10 +94,6 @@ public:
 		}
 	}
 
-	~VSSIndexJoinSearch() {
-		buffer_manager.FreeReservedMemory(reserved_memory_bytes);
-	}
-
 	// The query's pin and shared search lock on the index, shared with its other operators on the index. Declared first
 	// so it is destroyed last, after the members that reference index state.
 	shared_ptr<VSSSearchGuard> guard;
@@ -104,6 +101,9 @@ public:
 	VSSIndex &index;
 	// The number of nearest rows per query (`k`).
 	const idx_t limit;
+	BufferManager &buffer_manager;
+	// The heap memory of the passing row ids. Freed after them.
+	VSSMemoryReservation reservation;
 
 	idx_t clusters_to_probe_on_first_iteration {0};
 	static constexpr idx_t CLUSTERS_TO_PROBE_PER_FOLLOW_UP_ITERATION = 5;
@@ -120,15 +120,14 @@ public:
 	bool is_filtered {false};
 	vector<std::vector<size_t>> passing_row_ids_per_row_group;
 	vector<std::unique_ptr<PDX::PredicateEvaluator>> shared_predicate_evaluators;
+	// The heap memory of the indexes built on the fly. Freed after them, or dropped with them when their build fails.
+	unique_ptr<VSSMemoryReservation> on_the_fly_indexes_reservation;
 	// Built at Finalize over the passing rows: one Flat index (brute force) or IVF indexes.
 	std::unique_ptr<PDX::ADSamplingPruner> on_the_fly_indexes_pruner;
 	vector<std::unique_ptr<PDX::IPDXIndex>> on_the_fly_indexes;
 	vector<row_t> on_the_fly_indexes_row_ids;
 	idx_t on_the_fly_indexes_clusters_to_probe {0};
 	bool search_flat_index_in_bulk {false};
-	// The join's own reservation, for the on-the-fly indexes' self-managed memory.
-	BufferManager &buffer_manager;
-	idx_t reserved_memory_bytes {0};
 };
 
 // Holds the search state when the table is filtered (the sink runs first).
@@ -167,6 +166,11 @@ unique_ptr<GlobalSinkState> PhysicalVSSIndexJoin::GetGlobalSinkState(ClientConte
 
 class VSSIndexJoinLocalSinkState : public LocalSinkState {
 public:
+	explicit VSSIndexJoinLocalSinkState(BufferManager &buffer_manager) : reservation(buffer_manager) {
+	}
+
+	// The heap memory of the thread's passing row ids. Freed after them.
+	VSSMemoryReservation reservation;
 	idx_t current_row_group_id {0};
 	VSSRowRange current_row_group_range {0, 0};
 	// Sized at the thread's first Sink, once the search started.
@@ -174,7 +178,7 @@ public:
 };
 
 unique_ptr<LocalSinkState> PhysicalVSSIndexJoin::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<VSSIndexJoinLocalSinkState>();
+	return make_uniq<VSSIndexJoinLocalSinkState>(BufferManager::GetBufferManager(context.client));
 }
 
 SinkResultType PhysicalVSSIndexJoin::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
@@ -189,6 +193,7 @@ SinkResultType PhysicalVSSIndexJoin::Sink(ExecutionContext &context, DataChunk &
 
 	chunk.data[0].Flatten();
 	const auto row_ids = FlatVector::GetData<row_t>(chunk.data[0]);
+	l_sink.reservation.Reserve(chunk.size() * sizeof(size_t));
 	// No search starts here (the queries come later), so the rows only go to their row group's list
 	for (idx_t i = 0; i < chunk.size(); i++) {
 		const row_t row_id = row_ids[i];
@@ -211,6 +216,13 @@ SinkCombineResultType PhysicalVSSIndexJoin::Combine(ExecutionContext &context, O
 	auto &l_sink = input.local_state.Cast<VSSIndexJoinLocalSinkState>();
 
 	const annotated_lock_guard<annotated_mutex> guard(g_sink.lock);
+	idx_t num_rows = 0;
+	for (const auto &local_row_ids : l_sink.passing_row_ids_per_row_group) {
+		num_rows += local_row_ids.size();
+	}
+	if (num_rows > 0) {
+		g_sink.search->reservation.Reserve(num_rows * sizeof(size_t));
+	}
 	for (idx_t row_group_idx = 0; row_group_idx < l_sink.passing_row_ids_per_row_group.size(); row_group_idx++) {
 		auto &local_row_ids = l_sink.passing_row_ids_per_row_group[row_group_idx];
 		auto &global_row_ids = g_sink.search->passing_row_ids_per_row_group[row_group_idx];
@@ -279,10 +291,18 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 	}
 	const idx_t max_rows_per_window =
 	    CountMaxRowsPerOnTheFlyIndex(passing_row_ids_per_row_group, row_groups_per_window);
-	// The build's buffers come from the index's memory allocator, which DuckDB charges, and the indexes' self-managed
-	// memory is reserved once they are built. Without the memory for either, the join searches row group by row group
-	// instead.
+	// The build's buffers come from the index's memory allocator, which DuckDB charges, and the indexes' heap memory is
+	// reserved: a Flat index's embeddings before the build, the rest once they are built. Without the memory for either,
+	// the join searches row group by row group instead.
 	try {
+		search.on_the_fly_indexes_reservation = make_uniq<VSSMemoryReservation>(search.buffer_manager);
+		// The row ids of the indexes' rows, kept until the join ends.
+		const idx_t row_ids_bytes = num_rows * sizeof(row_t);
+		// The positions of a window's rows.
+		const idx_t positions_bytes = max_rows_per_window * sizeof(size_t);
+		// A Flat index's embeddings, which it keeps on the heap.
+		const idx_t flat_embeddings_bytes = build_flat ? num_rows * num_dimensions * sizeof(float) : 0;
+		search.on_the_fly_indexes_reservation->Reserve(row_ids_bytes + positions_bytes + flat_embeddings_bytes);
 		auto embeddings =
 		    skmeans::AllocateBuffer<float>(search.index.GetMemoryAllocator(), max_rows_per_window * num_dimensions);
 		std::vector<size_t> positions(max_rows_per_window);
@@ -338,13 +358,14 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 			                                                       std::sqrt(static_cast<double>(num_clusters)))));
 			search.on_the_fly_indexes.push_back(std::move(on_the_fly_index));
 		}
-		// The indexes stay until the join ends.
+		// The indexes stay until the join ends: their self-managed memory beyond the Flat embeddings reserved above.
 		idx_t self_managed_bytes = 0;
 		for (const auto &on_the_fly_index : search.on_the_fly_indexes) {
 			self_managed_bytes += on_the_fly_index->GetSelfManagedMemorySizeInBytes();
 		}
-		search.buffer_manager.ReserveMemory(self_managed_bytes);
-		search.reserved_memory_bytes = self_managed_bytes;
+		if (self_managed_bytes > flat_embeddings_bytes) {
+			search.on_the_fly_indexes_reservation->Reserve(self_managed_bytes - flat_embeddings_bytes);
+		}
 	} catch (std::exception &ex) {
 		if (ErrorData(ex).Type() != ExceptionType::OUT_OF_MEMORY) {
 			throw;
@@ -353,6 +374,7 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 		search.on_the_fly_indexes_row_ids.clear();
 		search.on_the_fly_indexes_clusters_to_probe = 0;
 		search.on_the_fly_indexes_pruner.reset();
+		search.on_the_fly_indexes_reservation.reset();
 		return false;
 	}
 	return true;
@@ -476,9 +498,11 @@ public:
 		// The operator's last columns are the fetched table columns.
 		const vector<LogicalType> fetch_types(op.types.end() - static_cast<std::ptrdiff_t>(op.fetch_column_ids.size()),
 		                                      op.types.end());
-		fetched.Initialize(Allocator::Get(context), fetch_types);
+		fetched.Initialize(BufferAllocator::Get(context), fetch_types);
 	}
 
+	// The heap memory of the thread's search state, reserved at its first Execute. Freed after the members it covers.
+	unique_ptr<VSSMemoryReservation> reservation;
 	const idx_t num_dimensions;
 	const unique_ptr<float[]> raw_query;
 	const unique_ptr<float[]> query;
@@ -703,6 +727,7 @@ static void SearchChunkInBulk(const PhysicalVSSIndexJoin &op, const VSSIndexJoin
                               VSSIndexJoinOperatorState &state) {
 	const idx_t num_dimensions = state.num_dimensions;
 	if (!state.chunk_queries) {
+		state.reservation->Reserve(2 * STANDARD_VECTOR_SIZE * num_dimensions * sizeof(float));
 		state.chunk_raw_queries = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
 		state.chunk_queries = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
 	}
@@ -726,6 +751,21 @@ static void SearchChunkInBulk(const PhysicalVSSIndexJoin &op, const VSSIndexJoin
 	}
 }
 
+// An estimate of the heap bytes of a thread's search state.
+static idx_t EstimateOperatorStateBytes(const VSSIndexJoinSearch &search) {
+	const idx_t num_dimensions = search.index.GetNumDimensions();
+	const idx_t max_num_clusters = search.index.GetMaxNumClusters();
+	const idx_t query_bytes = 2 * num_dimensions * sizeof(float);
+	const idx_t ranking_query_bytes = 2 * num_dimensions;
+	const idx_t sketch_query_table_bytes = 8 * num_dimensions;
+	const idx_t num_indexes =
+	    search.on_the_fly_indexes.empty() ? search.index.GetNumRowGroups() : search.on_the_fly_indexes.size();
+	const idx_t cursor_bytes = search.index.EstimateSearchCursorBytes(max_num_clusters);
+	const idx_t ranked_clusters_bytes = max_num_clusters * sizeof(std::pair<float, idx_t>);
+	return query_bytes + ranking_query_bytes + sketch_query_table_bytes +
+	       num_indexes * (cursor_bytes + ranked_clusters_bytes);
+}
+
 // Called once per input chunk (up to 2048 query vectors)
 OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                  GlobalOperatorState &gstate, OperatorState &state_p) const {
@@ -744,6 +784,10 @@ OperatorResultType PhysicalVSSIndexJoin::Execute(ExecutionContext &context, Data
 	const auto &search = *search_ptr;
 	if (!search.is_filtered && search.index.GetNumRowGroups() == 0) {
 		return OperatorResultType::NEED_MORE_INPUT;
+	}
+	if (!state.reservation) {
+		state.reservation = make_uniq<VSSMemoryReservation>(BufferManager::GetBufferManager(context.client));
+		state.reservation->Reserve(EstimateOperatorStateBytes(search));
 	}
 
 	if (!state.input_started) {
