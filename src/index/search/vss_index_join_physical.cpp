@@ -292,8 +292,8 @@ static bool BuildOnTheFlyIndexes(VSSIndexJoinSearch &search, const idx_t row_gro
 	const idx_t max_rows_per_window =
 	    CountMaxRowsPerOnTheFlyIndex(passing_row_ids_per_row_group, row_groups_per_window);
 	// The build's buffers come from the index's memory allocator, which DuckDB charges, and the indexes' heap memory is
-	// reserved: a Flat index's embeddings before the build, the rest once they are built. Without the memory for either,
-	// the join searches row group by row group instead.
+	// reserved: a Flat index's embeddings before the build, the rest once they are built. Without the memory for
+	// either, the join searches row group by row group instead.
 	try {
 		search.on_the_fly_indexes_reservation = make_uniq<VSSMemoryReservation>(search.buffer_manager);
 		// The row ids of the indexes' rows, kept until the join ends.
@@ -727,7 +727,7 @@ static void SearchChunkInBulk(const PhysicalVSSIndexJoin &op, const VSSIndexJoin
                               VSSIndexJoinOperatorState &state) {
 	const idx_t num_dimensions = state.num_dimensions;
 	if (!state.chunk_queries) {
-		state.reservation->Reserve(2 * STANDARD_VECTOR_SIZE * num_dimensions * sizeof(float));
+		state.reservation->Reserve(2 * num_dimensions * STANDARD_VECTOR_SIZE * sizeof(float));
 		state.chunk_raw_queries = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
 		state.chunk_queries = make_uniq_array<float>(STANDARD_VECTOR_SIZE * num_dimensions);
 	}
