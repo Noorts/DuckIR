@@ -38,7 +38,7 @@ include(FetchContent)
 FetchContent_Declare(
   pdx
   GIT_REPOSITORY https://github.com/cwida/pdx.git
-  GIT_TAG cddd7bfa06a89cb02866b9fe217030ed1cebe704)
+  GIT_TAG ffe79a5ddf454e3c7e4fa3861edfa7df596959c5)
 FetchContent_MakeAvailable(pdx)
 
 # DuckDB's debug flags (-Werror=vla) reach cpuinfo, whose Linux sources declare
