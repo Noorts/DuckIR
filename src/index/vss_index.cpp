@@ -156,6 +156,14 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 			vss_wrapper->CreatePruner();
 			UpdateReservedMemory(static_cast<int64_t>(vss_wrapper->GetSelfManagedMemorySizeInBytes()));
 			LoadRowGroups(*storage_reader, directory, cluster_paging);
+			persisted_row_end = directory.row_groups.empty() ? 0 : directory.row_groups.back().row_end;
+			// If first_reused_row_id is among the persisted options, a row id was reused. The reconcile must rebuild
+			// the affected row groups from the table. See SerializeToDisk for more details.
+			const auto first_reused = persistence_info.options.find("first_reused_row_id");
+			if (first_reused != persistence_info.options.end()) {
+				first_reused_row_id = first_reused->second.GetValue<row_t>();
+				RemoveRowGroupsOverlapping(first_reused_row_id, NumericLimits<row_t>::Maximum());
+			}
 			needs_reconciliation = true;
 		} catch (std::exception &ex) {
 			bind_error = ErrorData(ex);
@@ -711,6 +719,13 @@ ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
 	try {
 		row_ids.Flatten();
 		const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
+		const auto stage = [&](const VSSRowRange &staged) {
+			StageUnindexedRange(staged_row_ranges, staged);
+			// Appends land past the persisted row groups: a row id below persisted_row_end was reused.
+			if (staged.start < persisted_row_end) {
+				first_reused_row_id = MinValue(first_reused_row_id, staged.start);
+			}
+		};
 		// Determine consecutive ranges of row ids.
 		// For example: `1, 2, 3, 5, 6 --> [1, 3] + [5, 6]`
 		VSSRowRange range {row_id_data[0], row_id_data[0] + 1};
@@ -719,10 +734,10 @@ ErrorData VSSIndex::Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) {
 				range.end++;
 				continue;
 			}
-			StageUnindexedRange(staged_row_ranges, range);
+			stage(range);
 			range = {row_id_data[i], row_id_data[i] + 1};
 		}
-		StageUnindexedRange(staged_row_ranges, range);
+		stage(range);
 		has_unindexed_rows = true;
 	} catch (...) {
 		// DuckDB turns an exception here into a fatal error: the next sync reconciles with the table instead
@@ -1060,11 +1075,29 @@ IndexStorageInfo VSSIndex::MakeStorageInfo() const {
 // Called at every checkpoint, also when nothing changed: only the dirty row groups and the directory are rewritten.
 IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
                                            const case_insensitive_map_t<Value> &serialization_options) {
-	auto _lock = rwlock.GetExclusiveLock();
-
 	// Not loaded: the index stays as persisted.
 	if (bind_error.HasError()) {
 		return CopyStorageInfo(persisted_storage_info);
+	}
+	// DuckDB holds its checkpoint locks here, which a running search can wait for: a busy index keeps its persisted
+	// directory and chains.
+	auto _lock = rwlock.TryGetExclusiveLock();
+	if (!_lock) {
+		// Never checkpointed: it persists the empty directory it wrote to the WAL.
+		if (rotation_chain.segments.empty()) {
+			VSSDirectory directory;
+			directory.num_dimensions = static_cast<uint32_t>(GetNumDimensions());
+			WriteDirectory(directory);
+		}
+		WritePartialBlocks(context);
+		auto info = MakeStorageInfo();
+		const lock_guard<mutex> staging(commit_staging_lock);
+		// The persisted chains still hold rows DuckDB dropped before reusing their ids: the next load drops those row
+		// groups.
+		if (first_reused_row_id < persisted_row_end) {
+			info.options.emplace("first_reused_row_id", Value::BIGINT(first_reused_row_id));
+		}
+		return info;
 	}
 	// Reused ids no sync has seen yet: the inbox does not survive a restart, but the stale rows must not be persisted
 	{
@@ -1112,6 +1145,12 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 	const auto reserved = static_cast<int64_t>(reserved_memory_bytes.load());
 	if (self_managed_bytes < reserved) {
 		UpdateReservedMemory(self_managed_bytes - reserved);
+	}
+	// The chains just persisted hold no row whose id was reused.
+	{
+		const lock_guard<mutex> staging(commit_staging_lock);
+		persisted_row_end = directory.row_groups.empty() ? 0 : directory.row_groups.back().row_end;
+		first_reused_row_id = NumericLimits<row_t>::Maximum();
 	}
 	return MakeStorageInfo();
 }

@@ -315,3 +315,36 @@ CHECKPOINT conc;
 endloop
 
 endloop
+
+# A filtered LATERAL search holds the search lock while the scan of its query rows starts, after a slow build side:
+# the checkpoints meanwhile do not wait for the search (a deadlock).
+concurrentloop threadid 0 2
+
+statement ok
+USE conc;
+
+onlyif threadid=0
+statement ok
+SET disabled_optimizers = 'build_side_probe_side';
+
+loop i 0 3
+
+onlyif threadid=0
+statement ok
+SELECT count(*) FROM (SELECT id, emb FROM t4 WHERE id IN (SELECT (r.range % 5)::INTEGER FROM range(400000000) r WHERE r.range % 1000 = 7)) q, LATERAL (SELECT t4.id FROM t4 WHERE t4.id % 3 = 0 ORDER BY array_distance(t4.emb, q.emb) LIMIT 3);
+
+endloop
+
+loop j 0 300
+
+onlyif threadid=1
+statement ok
+INSERT INTO u VALUES (${j});
+
+onlyif threadid=1
+statement ok
+CHECKPOINT conc;
+
+endloop
+
+endloop

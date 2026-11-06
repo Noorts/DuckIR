@@ -97,6 +97,11 @@ private:
 	std::vector<VSSRowRange> staged_row_ranges;
 	std::vector<row_t> staged_deletes;
 	std::atomic<bool> has_staged_deletes {false};
+	// Under commit_staging_lock: the persisted directory's row groups end at persisted_row_end, and since that
+	// checkpoint DuckDB reused their row ids from first_reused_row_id on (it dropped trailing row groups). See
+	// SerializeToDisk.
+	row_t persisted_row_end = 0;
+	row_t first_reused_row_id = NumericLimits<row_t>::Maximum();
 	// Set when the index is loaded from storage or created: its first sync reconciles it with the table
 	// (ReconcileWithTable).
 	std::atomic<bool> needs_reconciliation {false};
