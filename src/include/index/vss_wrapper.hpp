@@ -979,9 +979,11 @@ private:
 				for (row_t row_id = row_group.row_start; row_id < row_group.row_end; row_id++) {
 					const auto id = static_cast<size_t>(row_id);
 					if (row_group.index->Contains(id) && !resident_index->Contains(id)) {
-						row_group.index->Delete(id);
+						row_group.index->Delete(id, /*logical_only=*/true);
 					}
 				}
+				// One merge pass: merging as each delete lands moves rows that later deletes remove anyway
+				row_group.index->CheckClustersHealth();
 			}
 			if (row_group.is_closed) {
 				row_group.index->ShrinkToFit();
