@@ -1,5 +1,5 @@
 # name: test/sql/create/index_create_null_embeddings.test
-# description: Rows with a NULL embedding are absent from the index; searches never return them and filtered searches whose predicate passes them are unaffected. The UPDATE of an ARRAY column is a delete plus an insert, so the NULL rows end up in a row group of their own that has no index row group.
+# description: Rows with a NULL embedding are absent from the index; searches never return them and filtered searches whose predicate passes them are unaffected. The UPDATE of an ARRAY column is a delete plus an insert, so the NULL rows end up in a row group of their own that has no index row group. CREATE INDEX rejects embeddings with NaN, infinite or too large values, and syncs skip them like NULL ones.
 # group: [create]
 
 require parquet
@@ -109,3 +109,60 @@ SELECT COUNT(*) >= 80 FROM (SELECT id FROM memory.t_u4 ORDER BY array_distance(e
 JOIN (SELECT id FROM memory.t_u4_bf ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100) USING (id);
 ----
 true
+
+# NaN, infinite and too large values (their squares overflow) break the clustering: CREATE INDEX rejects them.
+foreach value nan inf -inf 1e30
+
+statement ok
+CREATE OR REPLACE TABLE t2 AS SELECT id, CASE WHEN id = 4000
+THEN list_transform(range({DIMS}), lambda x: CASE WHEN x = 3 THEN '{value}'::FLOAT ELSE 1.0 END)::FLOAT[{DIMS}]
+ELSE emb END AS emb FROM sift WHERE id < 16384;
+
+statement error
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+----
+the embedding of row 4000 has NaN, infinite or too large values
+
+endloop
+
+# Syncs skip them like NULL embeddings: they are not staged again, and searches never return them.
+statement ok
+CREATE OR REPLACE TABLE t2 AS FROM sift WHERE id < 16384;
+
+statement ok
+CREATE INDEX t2_idx ON t2 USING DUCKIR_VSS (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+
+statement ok
+INSERT INTO t2 SELECT id, CASE WHEN id % 1000 = 7
+THEN list_transform(range({DIMS}), lambda x: CASE WHEN x = 3 THEN ['nan', 'inf', '1e30'][id % 3 + 1]::FLOAT ELSE 1.0 END)::FLOAT[{DIMS}]
+ELSE emb END FROM sift WHERE id >= 16384;
+
+query II
+CALL duckir_vss_sync_index('t2_idx');
+----
+t2_idx	true
+
+query II
+CALL duckir_vss_sync_index('t2_idx');
+----
+t2_idx	false
+
+statement ok
+CREATE TABLE t2_no_index AS FROM t2;
+
+statement ok
+CREATE OR REPLACE TABLE t_gt AS SELECT id FROM t2_no_index WHERE NOT (id >= 16384 AND id % 1000 = 7) ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
+
+statement ok
+CREATE OR REPLACE TABLE t_idx_res AS SELECT id FROM t2 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
+
+query I
+SELECT COUNT(*) >= {LIMIT} - 1 FROM t_gt JOIN t_idx_res USING (id);
+----
+true
+
+# The predicate passes them: they are skipped, not mapped onto other rows.
+query I
+SELECT COUNT(*) FROM (SELECT id FROM t2 WHERE id % 1000 < 10 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 100) WHERE id >= 16384 AND id % 1000 = 7;
+----
+0

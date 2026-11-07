@@ -176,7 +176,16 @@ SinkResultType PhysicalCreateVSSIndex::Sink(ExecutionContext &context, DataChunk
 	// Preprocess and accumulate the embeddings into the row group's buffer.
 	D_ASSERT(l_sink.row_group_embeddings_count + num_embeddings <= row_group.count);
 
-	vss_index.PreprocessEmbeddings(FlatVector::GetDataMutable<float>(ArrayVector::GetChildMutable(embedding_column)),
+	// CREATE INDEX rejects the embeddings it cannot cluster.
+	const auto embeddings = FlatVector::GetDataMutable<float>(ArrayVector::GetChildMutable(embedding_column));
+	for (idx_t i = 0; i < num_embeddings; i++) {
+		if (!IsFiniteEmbedding(embeddings + i * g_sink.num_dimensions, g_sink.num_dimensions)) {
+			throw InvalidInputException(
+			    "DuckIR VSS: the embedding of row %lld has NaN, infinite or too large values, which cannot be indexed",
+			    row_id_data[i]);
+		}
+	}
+	vss_index.PreprocessEmbeddings(embeddings,
 	                               reinterpret_cast<float *>(l_sink.row_group_embeddings.GetDataMutable()) +
 	                                   (l_sink.row_group_embeddings_count * g_sink.num_dimensions),
 	                               num_embeddings);

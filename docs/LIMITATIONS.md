@@ -6,6 +6,8 @@
 
 - **No inner product**: `array_inner_product` and `array_negative_inner_product` queries run without the index.
 
+- **Embeddings with `Inf` and `NaN` values are not supported**: `CREATE INDEX` fails on a table that has any while `INSERT`s do not add these to the index.
+
 - **`INSERT` + `SEARCH` in the same transaction**: An uncommitted `INSERT` will not be reflected in a vector search result.
 
 - **Late Materialization on CTEs**: A search inside a CTE that DuckDB inlines at more than one place (e.g., `NOT MATERIALIZED`) loses our opt-out of DuckDB's late materialization (when $k \leq 50$). DuckDB's late materialization adds a second scan of the table, joined back on rowid and sorted again. The results are the same, but slower.
