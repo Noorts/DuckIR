@@ -776,9 +776,9 @@ public:
 		return cross_product_ptr_ptr;
 	}
 
-	// Whether `op` is the distinct query rows of a LATERAL join: a DELIM_GET, or, when DuckDB rewrites the DELIM_JOIN
-	// to a CTE (`delim_join_as_cte`, the default), an AGGREGATE without aggregates over the CTE's rows (a CTE_REF),
-	// with projections above and below it.
+	// Whether `op` is the distinct query rows of a LATERAL join: a DELIM_GET, or an AGGREGATE without aggregates (one
+	// grouping set) with projections above it, whatever DuckDB made of the rows below it (a CTE scan, an inlined VALUES
+	// list or constant, a filter over a recursive CTE).
 	static bool IsQueryRows(const LogicalOperator &op) {
 		const auto skip_projections = [](reference<const LogicalOperator> child) {
 			while (child.get().type == LogicalOperatorType::LOGICAL_PROJECTION && child.get().children.size() == 1) {
@@ -792,11 +792,8 @@ public:
 		if (top.type == LogicalOperatorType::LOGICAL_DELIM_GET) {
 			return true;
 		}
-		if (top.type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY || !top.expressions.empty() ||
-		    top.children.size() != 1) {
-			return false;
-		}
-		return skip_projections(*top.children.front()).get().type == LogicalOperatorType::LOGICAL_CTE_REF;
+		return top.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY && top.expressions.empty() &&
+		       top.children.size() == 1 && top.Cast<LogicalAggregate>().grouping_sets.size() <= 1;
 	}
 
 	// A distance function matched to an index of the scanned table.
