@@ -97,7 +97,8 @@ private:
 	std::vector<VSSRowRange> staged_row_ranges;
 	std::vector<row_t> staged_deletes;
 	std::atomic<bool> has_staged_deletes {false};
-	// Set when the index is loaded from storage: its first sync reconciles it with the table (ReconcileWithTable).
+	// Set when the index is loaded from storage or created: its first sync reconciles it with the table
+	// (ReconcileWithTable).
 	bool needs_reconciliation = false;
 	// Why a persisted index failed to load when DuckDB bound it, raised on first use instead: DuckDB's
 	// TableIndexList::Bind is not exception-safe, and a bind that throws leaves the next one spinning forever.
@@ -126,7 +127,7 @@ private:
 
 	// The first sync after the index was loaded from storage. The index can lack rows the table has (a crash before the
 	// first checkpoint, inserts in WAL replays DuckDB dropped, #26112) and hold rows the table deleted (deletes in
-	// those replays).
+	// those replays). Also the first sync after CREATE INDEX.
 	void ReconcileWithTable(DataTable &table);
 	void ReconcileRowGroup(row_t start, row_t end, const row_t *row_ids, idx_t count,
 	                       const std::function<void(row_t, row_t)> &stage);
@@ -221,6 +222,10 @@ public:
 
 	bool HasUnindexedRows() const {
 		return has_unindexed_rows;
+	}
+
+	void RequireReconciliation() {
+		needs_reconciliation = true;
 	}
 
 	// Detect and rebuild rowgroups whose mirrors no longer match the table rowgroups.
