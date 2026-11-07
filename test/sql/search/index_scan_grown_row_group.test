@@ -41,9 +41,9 @@ SET duckir_vss_experimental_max_cluster_size = 32;
 statement ok
 CREATE INDEX t_idx ON t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
-# The row group still receives rows: the inserted ones split its clusters at 32 rows, into about 2,500 clusters.
+# The inserted rows split its clusters at 32 rows; the last starts a new row group, so the grown one is closed and paged.
 statement ok
-INSERT INTO t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 4096 AND id < 45056;
+INSERT INTO t SELECT id, emb::FLOAT[{DIMS}] FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id >= 4096 AND id < 65537;
 
 statement ok
 SET VARIABLE query_vector = (SELECT vec FROM q);

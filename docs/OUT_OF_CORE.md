@@ -6,6 +6,7 @@ At bind time, DuckIR only loads the part of the index that stays in memory (the 
 
 - Cluster centroids (quantized to 8 bits).
 - A mapping from DuckDB row ids to internal ids.
+- The trailing row group of the table (see [below](#maintenance)).
 
 At 250M vectors of 1024 dimensions (1 TB of disk), you would need around 5 GB of memory for DuckIR to work. We are currently working to lower this number to the MB range.
 
@@ -47,7 +48,7 @@ Each local index creation requires about the memory of one row group: under 2 GB
 
 ## Maintenance
 
-Maintenance operations require, at most, the amount of memory of a single row group.
+Maintenance operations require, at most, the amount of memory of a single row group. In order to maintain `INSERT` performance, we keep the "active" row group in memory. The active row group in DuckDB is the trailing one, which receives new rows on `INSERT`.
 
 ## In-Memory Databases
 
