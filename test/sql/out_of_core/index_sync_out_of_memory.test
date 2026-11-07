@@ -1,5 +1,5 @@
 # name: test/sql/out_of_core/index_sync_out_of_memory.test
-# description: A sync that runs out of memory inside PDX leaves the index usable, and the next sync indexes the rows it could not.
+# description: A sync that runs out of memory inside PDX leaves the index usable, and the next sync indexes the rows it could not; a DELETE commit at the memory limit succeeds and leaves the database usable.
 # group: [out_of_core]
 
 require parquet
@@ -47,3 +47,71 @@ query I
 SELECT count(*) FROM p.t q, LATERAL (SELECT array_distance(emb, q.emb) AS distance FROM p.t ORDER BY array_distance(emb, q.emb) LIMIT 1) s WHERE q.id >= 100000 AND s.distance = 0;
 ----
 1500
+
+# A DELETE commit on an unpaged index, with the memory limit just above the index: the deletes only tombstone, so the
+# commit succeeds and the database stays usable. The merges they left pending run at the next checkpoint.
+statement ok
+DROP TABLE p.t;
+
+statement ok
+SET duckir_vss_cluster_paging = false;
+
+statement ok
+CREATE TABLE p.u AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 122880;
+
+statement ok
+CREATE INDEX u_idx ON p.u USING DUCKIR_VSS (emb) WITH (quantization = 'f32', n_probe = 0, seed = 0);
+
+statement ok
+CREATE TABLE p.u_bf AS FROM p.u WHERE id % 5 = 0;
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+SET VARIABLE query_emb = (SELECT emb FROM p.u WHERE id = 5);
+
+# The first sync after CREATE INDEX: the DELETE below then reaches the index at commit.
+statement ok
+SELECT id FROM p.u ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 3;
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM p.u WHERE id % 5 != 0;
+
+# Measured in its own statement: DuckDB charges ALLOCATOR for its operators' buffers while a query runs.
+statement ok
+SET VARIABLE limit_bytes = (SELECT (sum(memory_usage_bytes) + 4 * 1024 * 1024)::VARCHAR || 'B' FROM duckdb_memory() WHERE tag IN ('ALLOCATOR', 'EXTENSION'));
+
+statement ok
+SET memory_limit = getvariable('limit_bytes');
+
+statement ok
+COMMIT;
+
+statement ok
+SELECT 1;
+
+statement ok
+SET memory_limit = '1GB';
+
+query I nosort deleted
+SELECT id FROM p.u_bf ORDER BY array_distance(emb, getvariable('query_emb')), id LIMIT 10;
+----
+
+query I nosort deleted
+SELECT id FROM p.u ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 10;
+----
+
+statement ok
+CHECKPOINT p;
+
+query I nosort merged
+SELECT id FROM p.u_bf ORDER BY array_distance(emb, getvariable('query_emb')), id LIMIT 10;
+----
+
+query I nosort merged
+SELECT id FROM p.u ORDER BY array_distance(emb, getvariable('query_emb')) LIMIT 10;
+----
