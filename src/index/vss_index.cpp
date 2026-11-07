@@ -246,6 +246,10 @@ optional_idx VSSIndex::LookupRowGroup(const row_t row_id) const {
 	return DispatchWrapper([&](auto &wrapper) { return wrapper.LookupRowGroup(row_id); });
 }
 
+bool VSSIndex::IsEmptyRowGroup(const idx_t row_group_idx) const {
+	return DispatchWrapper([&](auto &wrapper) { return wrapper.IsEmptyRowGroup(row_group_idx); });
+}
+
 VSSRowRange VSSIndex::GetRowGroupRange(const idx_t row_group_idx) const {
 	return DispatchWrapper([&](auto &wrapper) {
 		const auto &row_group = wrapper.GetRowGroup(row_group_idx);
@@ -488,7 +492,7 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			const auto &range = unindexed_row_ranges[i];
 			num_unindexed_rows += static_cast<idx_t>(MinValue<row_t>(range.end, bounds_end) - range.start);
 		}
-		const auto row_group_idx = LookupRowGroup(bounds.row_start);
+		auto row_group_idx = LookupRowGroup(bounds.row_start);
 		std::vector<VSSRowRange> row_group_ranges;
 		for (idx_t i = range_idx; i < unindexed_row_ranges.size() && unindexed_row_ranges[i].start < bounds_end; i++) {
 			row_group_ranges.push_back(
@@ -516,6 +520,12 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			}
 			if (count == 0) {
 				continue;
+			}
+			// Every row of this mirror was deleted from our index:
+			// we remove the mirror and rebuild it from the new rows
+			if (row_group_idx.IsValid() && IsEmptyRowGroup(row_group_idx.GetIndex())) {
+				RemoveRowGroupsOverlapping(bounds.row_start, bounds_end);
+				row_group_idx = optional_idx();
 			}
 			if (row_group_idx.IsValid()) {
 				AppendRows(row_group_idx.GetIndex(), row_ids.get(), embeddings, count, &executor);

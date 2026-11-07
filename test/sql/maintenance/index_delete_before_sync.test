@@ -177,10 +177,44 @@ SELECT id FROM t2 ORDER BY array_distance(emb, {MARKER_B}::FLOAT[{DIMS}]) LIMIT 
 ----
 -2
 
+# Emptied and reloaded over full row groups, whose mirrors were built closed: each reloaded row group is clustered
+# on its own, not appended into its emptied mirror.
+statement ok
+CREATE OR REPLACE TABLE t3 AS SELECT * FROM sift WHERE id < 16384;
+
+statement ok
+CREATE INDEX t3_idx ON t3 USING DUCKIR_VSS (emb) WITH (metric = 'l2sq', quantization = '{quantization}', n_probe = 0, seed = 0);
+
+# The first sync after CREATE INDEX: the DELETE below then reaches the mirrors at once.
+statement ok
+CALL duckir_vss_sync_index('t3_idx');
+
+statement ok
+DELETE FROM t3;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+INSERT INTO t3 SELECT * FROM sift WHERE id >= 16384 AND id < 32767 UNION ALL SELECT -3, {MARKER_A}::FLOAT[{DIMS}];
+
+query I
+SELECT id FROM t3 ORDER BY array_distance(emb, {MARKER_A}::FLOAT[{DIMS}]) LIMIT 1;
+----
+-3
+
+query II
+EXPLAIN SELECT * FROM t3 ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT {LIMIT};
+----
+physical_plan	<REGEX>:.*DUCKIR_VSS_INDEX_SCAN.*Total Clusters: 240[^0-9].*Row Groups: 2[^0-9].*
+
 statement ok
 DROP INDEX t1_idx;
 
 statement ok
 DROP INDEX t2_idx;
+
+statement ok
+DROP INDEX t3_idx;
 
 endloop
