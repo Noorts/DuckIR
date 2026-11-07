@@ -57,6 +57,15 @@ namespace duckdb {
 	    Eigen::Map<const Eigen::VectorXf>(embedding, static_cast<Eigen::Index>(num_dimensions)).squaredNorm());
 }
 
+static constexpr idx_t MAX_SELECTIVITY_N_PROBE_SCALE = 4;
+
+// n_probe scaled by the inverse selectivity (capped): filtered searches examine as many rows as unfiltered ones.
+[[nodiscard]] inline idx_t ScaleNProbeBySelectivity(const idx_t n_probe, const idx_t num_rows,
+                                                    const idx_t num_passing_rows) {
+	const idx_t scale = num_passing_rows == 0 ? 1 : num_rows / num_passing_rows;
+	return n_probe * MinValue<idx_t>(MAX_SELECTIVITY_N_PROBE_SCALE, MaxValue<idx_t>(1, scale));
+}
+
 [[nodiscard]] inline string ConvertBytesToHumanReadableString(const uint64_t bytes) {
 	constexpr uint64_t kB = 1000;
 	constexpr uint64_t MB = kB * 1000;

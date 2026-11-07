@@ -153,9 +153,9 @@ unique_ptr<LocalSinkState> PhysicalVSSIndexFilteredScan::GetLocalSinkState(Execu
 }
 
 // Starts the filtered search of a row group with the row ids that passed the SQL predicate, and runs its first
-// iteration: the n_probe nearest clusters that hold passing tuples. The row group's clusters are ranked once for the
-// query and shared by all of its searches. A row group with at most n_probe passing rows is not ranked: they are in at
-// most n_probe clusters, which the first iteration probes in any order.
+// iteration: the n_probe (scaled by the inverse selectivity) nearest clusters that hold passing tuples. The row group's
+// clusters are ranked once for the query and shared by all of its searches. A row group with at most n_probe passing
+// rows is not ranked: they are in at most n_probe clusters, which the first iteration probes in any order.
 static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(VSSIndex &index,
                                                                       PhysicalFilteredScanGlobalSinkState &g_sink,
                                                                       const idx_t row_group_idx,
@@ -175,7 +175,10 @@ static unique_ptr<PDX::IIterativeSearch> BeginSearchForStagedRowGroup(VSSIndex &
 	auto search_cursor = index.BeginSearchForRowGroup(
 	    row_group_idx, g_sink.preprocessed_query_embedding.get(), g_sink.limit, g_sink.top_k_heap, &passing_rowids,
 	    &clusters_access_order, g_sink.ranking_query.get(), g_sink.sketch_query_table.get());
-	search_cursor->Next(g_sink.partitions_to_probe_per_row_group_on_first_iteration);
+	const auto row_group_range = index.GetRowGroupRange(row_group_idx);
+	search_cursor->Next(ScaleNProbeBySelectivity(g_sink.partitions_to_probe_per_row_group_on_first_iteration,
+	                                             static_cast<idx_t>(row_group_range.end - row_group_range.start),
+	                                             passing_rowids.size()));
 	return search_cursor;
 }
 

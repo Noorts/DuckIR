@@ -448,13 +448,19 @@ SinkFinalizeType PhysicalVSSIndexJoin::Finalize(Pipeline &pipeline, Event &event
 	}
 	// If we do not build on-the-fly indexes, we search row group by row group normally
 	// Each row group's filter is the same for every query: built once here.
+	idx_t num_rows_of_row_groups_with_passing_rows = 0;
 	for (idx_t row_group_idx = 0; row_group_idx < passing_row_ids_per_row_group.size(); row_group_idx++) {
 		if (!passing_row_ids_per_row_group[row_group_idx].empty()) {
 			search.shared_predicate_evaluators[row_group_idx] =
 			    search.index.GetRowGroupIndex(row_group_idx)
 			        .CreateSharedPredicateEvaluator(passing_row_ids_per_row_group[row_group_idx]);
+			const auto row_group_range = search.index.GetRowGroupRange(row_group_idx);
+			num_rows_of_row_groups_with_passing_rows += static_cast<idx_t>(row_group_range.end - row_group_range.start);
 		}
 	}
+	// A query's first round probes more clusters, which hold fewer passing rows each.
+	search.clusters_to_probe_on_first_iteration = ScaleNProbeBySelectivity(
+	    search.clusters_to_probe_on_first_iteration, num_rows_of_row_groups_with_passing_rows, num_passing_rows);
 	return SinkFinalizeType::READY;
 }
 
