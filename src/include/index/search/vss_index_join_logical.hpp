@@ -2,9 +2,10 @@
 
 #include "duckdb/planner/operator/logical_extension_operator.hpp"
 
+#include "index/search/vss_search_guard.hpp"
+
 namespace duckdb {
 
-class Index;
 class DuckTableEntry;
 
 // Searches the index once for each query row of its first child, and emits each query row with its K nearest rows of
@@ -13,10 +14,10 @@ class DuckTableEntry;
 // columns fetched by rowid.
 class LogicalVSSIndexJoin : public LogicalExtensionOperator {
 public:
-	LogicalVSSIndexJoin(DuckTableEntry &table, Index &index, idx_t limit, ColumnBinding query_binding,
+	LogicalVSSIndexJoin(DuckTableEntry &table, VSSIndexPlanInfo index_info, idx_t limit, ColumnBinding query_binding,
 	                    vector<ColumnIndex> column_ids, vector<ColumnBinding> column_bindings)
 	    : LogicalExtensionOperator(), query_binding(query_binding), column_ids(std::move(column_ids)),
-	      column_bindings(std::move(column_bindings)), table(table), index(index), limit(limit) {
+	      column_bindings(std::move(column_bindings)), table(table), index_info(std::move(index_info)), limit(limit) {
 	}
 
 	// children[0] emits the query rows. The optional children[1] emits the rowids of the table's rows that pass the
@@ -30,7 +31,7 @@ public:
 	vector<ColumnBinding> column_bindings;
 
 	DuckTableEntry &table;
-	Index &index;
+	VSSIndexPlanInfo index_info;
 	// The number of nearest rows per query (`k`).
 	const idx_t limit;
 

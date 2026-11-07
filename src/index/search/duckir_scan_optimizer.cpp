@@ -801,7 +801,7 @@ public:
 
 	// A distance function matched to an index of the scanned table.
 	struct IndexMatch {
-		optional_ptr<VSSIndex> index;
+		VSSIndexPlanInfo index_info;
 		// The distance function's argument that holds the query vector.
 		optional_ptr<Expression> query_argument;
 		// When the indexed argument is a plain column: the embedding's binding as the distance function reads it, and
@@ -818,14 +818,15 @@ public:
 	                          const std::function<bool(const Expression &)> &is_query_argument, IndexMatch &match) {
 		auto &table_info = *get.GetTable()->GetStorage().GetDataTableInfo();
 		vector<reference<Expression>> bindings;
+		unique_ptr<VSSSearchGuard> matched_index;
 
 		table_info.BindIndexes(context, VSSIndex::TYPE_NAME);
 		for (auto entry : table_info.GetIndexes().IndexEntries()) {
 			if (entry->GetBindState() != IndexBindState::BOUND || entry->GetIndexType() != VSSIndex::TYPE_NAME) {
 				continue;
 			}
-			// Shared access while matching. A bound index object stays in place until the index is dropped, so the
-			// plan keeps the pointer after this handle releases its lock.
+			// Shared access while matching. The plan keeps only the index's VSSIndexPlanInfo: a concurrent DROP INDEX
+			// can destroy the index before the query runs (AcquireSearchGuard finds it again).
 			auto index = entry->GetReadHandle<VSSIndex>();
 
 			// Reset the bindings
@@ -866,11 +867,9 @@ public:
 					continue;
 				}
 			}
-			// The read handle only exposes a const index, but the plan's operators search it (non-const) after this
-			// handle is released. TODO: Keep the IndexEntry in the plan and take a handle at execution time instead, as
-			// DuckDB does (e.g. IndexKeyBindData), which removes this cast.
 			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-			match.index = const_cast<VSSIndex *>(index.operator->());
+			matched_index = make_uniq<VSSSearchGuard>(const_cast<VSSIndex &>(*index.operator->()));
+			match.index_info.oid = entry->GetIndexOid();
 			match.query_argument = query_expr_ref.get();
 			if (index_expr_ref.get().GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 				match.embedding_binding = index_expr_ref.get().Cast<BoundColumnRefExpression>().Binding();
@@ -878,16 +877,20 @@ public:
 				TryTraceToTableScan(chain, traced_binding);
 				match.embedding_column_position = traced_binding.column_index.GetIndex();
 			}
-			return true;
+			break;
 		}
-		// No index found
-		return false;
+		if (!matched_index) {
+			// No index found
+			return false;
+		}
+		// GetPlanInfo goes outside the loop, otherwise it contends with DuckDB's locks
+		match.index_info = matched_index->index.GetPlanInfo(match.index_info.oid);
+		return true;
 	}
 
 	// Copies a constant query vector (a FLOAT array, or a BLOB of our encoding) into a float array of the index's
 	// dimension. nullptr when the BLOB's dimension differs from the index's.
-	static unsafe_unique_array<float> TryDecodeConstantQuery(const VSSIndex &index, const Value &query) {
-		const auto num_dimensions = index.GetNumDimensions();
+	static unsafe_unique_array<float> TryDecodeConstantQuery(const idx_t num_dimensions, const Value &query) {
 		auto query_embedding = make_unsafe_uniq_array<float>(num_dimensions);
 
 		if (query.type().id() == LogicalTypeId::BLOB) {
@@ -1100,13 +1103,13 @@ public:
 		auto &get = get_ptr->Cast<LogicalGet>();
 		auto &duck_table = get.GetTable()->Cast<DuckTableEntry>();
 
-		auto query_embedding =
-		    TryDecodeConstantQuery(*match.index, match.query_argument->Cast<BoundConstantExpression>().GetValue());
+		auto query_embedding = TryDecodeConstantQuery(match.index_info.num_dimensions,
+		                                              match.query_argument->Cast<BoundConstantExpression>().GetValue());
 		if (!query_embedding) {
 			return false;
 		}
 		// With an OFFSET the TopN stays in the plan and skips the first `offset` of the rows we return.
-		auto bind_data = make_uniq<VSSIndexScanBindData>(duck_table, *match.index, top_n.limit + top_n.offset,
+		auto bind_data = make_uniq<VSSIndexScanBindData>(duck_table, match.index_info, top_n.limit + top_n.offset,
 		                                                 std::move(query_embedding));
 
 		DetachDynamicFilters(get, chain);
@@ -1118,7 +1121,7 @@ public:
 
 			// Replace the table scan, and the projections above it that forward its columns, with the index scan.
 			auto vss_index_scan = make_uniq<LogicalVSSIndexScan>(
-			    duck_table, bind_data->index, bind_data->limit, std::move(bind_data->query_embedding),
+			    duck_table, bind_data->index_info, bind_data->limit, std::move(bind_data->query_embedding),
 			    std::move(output_column_ids), std::move(output_bindings));
 
 			projection.children.clear();
@@ -1141,7 +1144,7 @@ public:
 
 			// Insert a VSSIndexFilteredScan operator above the rowid child.
 			auto vss_index_filtered_scan = make_uniq<LogicalVSSIndexFilteredScan>(
-			    duck_table, bind_data->index, bind_data->limit, std::move(bind_data->query_embedding),
+			    duck_table, bind_data->index_info, bind_data->limit, std::move(bind_data->query_embedding),
 			    std::move(output_column_ids), std::move(output_bindings));
 			vss_index_filtered_scan->expressions.push_back(
 			    make_uniq<BoundColumnRefExpression>(LogicalType::ROW_TYPE, rowid_binding));
@@ -1439,7 +1442,7 @@ public:
 		const bool is_filtered =
 		    chain_filters_rows || get.table_filters.HasFilters() || get.table_filters.HasMultiColumnFilters();
 
-		auto index_join = make_uniq<LogicalVSSIndexJoin>(duck_table, *match.index, limit, query_binding,
+		auto index_join = make_uniq<LogicalVSSIndexJoin>(duck_table, match.index_info, limit, query_binding,
 		                                                 std::move(output_column_ids), std::move(output_bindings));
 		const auto num_query_rows = cross_product.children[query_rows_side]->EstimateCardinality(input.context);
 		index_join->children.push_back(std::move(cross_product.children[query_rows_side]));

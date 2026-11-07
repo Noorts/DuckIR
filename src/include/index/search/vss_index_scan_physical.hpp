@@ -3,18 +3,20 @@
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 
+#include "index/search/vss_search_guard.hpp"
+
 namespace duckdb {
 
-class Index;
 class DuckTableEntry;
 
 struct VSSIndexScanBindData {
-	VSSIndexScanBindData(DuckTableEntry &table, Index &index, idx_t limit, unsafe_unique_array<float> query_embedding)
-	    : table(table), index(index), limit(limit), query_embedding(std::move(query_embedding)) {
+	VSSIndexScanBindData(DuckTableEntry &table, VSSIndexPlanInfo index_info, idx_t limit,
+	                     unsafe_unique_array<float> query_embedding)
+	    : table(table), index_info(std::move(index_info)), limit(limit), query_embedding(std::move(query_embedding)) {
 	}
 
 	DuckTableEntry &table;
-	Index &index;
+	VSSIndexPlanInfo index_info;
 	// The limit (the K in KNN search).
 	const idx_t limit;
 	unsafe_unique_array<float> query_embedding;

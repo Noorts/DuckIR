@@ -7,7 +7,7 @@
 namespace duckdb {
 
 PhysicalOperator &LogicalVSSIndexFilteredScan::CreatePlan(ClientContext &context, PhysicalPlanGenerator &planner) {
-	auto bind_data = make_uniq<VSSIndexPhysicalScanBindData>(table, index, limit, std::move(query_embedding));
+	auto bind_data = make_uniq<VSSIndexPhysicalScanBindData>(table, index_info, limit, std::move(query_embedding));
 	auto &physical_op = planner.Make<PhysicalVSSIndexFilteredScan>(types, std::move(bind_data), column_ids, limit);
 
 	// The child operator should output row_ids (from a modified Get)

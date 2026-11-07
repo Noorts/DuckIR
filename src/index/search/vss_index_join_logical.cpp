@@ -14,8 +14,8 @@ PhysicalOperator &LogicalVSSIndexJoin::CreatePlan(ClientContext &context, Physic
 	}
 	const auto query_column = static_cast<idx_t>(query_position - query_row_bindings.begin());
 
-	auto &physical_op =
-	    planner.Make<PhysicalVSSIndexJoin>(types, table, index, limit, query_column, column_ids, estimated_cardinality);
+	auto &physical_op = planner.Make<PhysicalVSSIndexJoin>(types, table, index_info, limit, query_column, column_ids,
+	                                                       estimated_cardinality);
 	// The query rows, then (when the table is filtered) the rowids of the rows that pass the predicate.
 	for (auto &child : children) {
 		physical_op.children.push_back(planner.CreatePlan(*child));

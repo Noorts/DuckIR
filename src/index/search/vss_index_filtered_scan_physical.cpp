@@ -35,8 +35,8 @@ class PhysicalFilteredScanGlobalSinkState : public GlobalSinkState {
 public:
 	PhysicalFilteredScanGlobalSinkState(ClientContext &context, const PhysicalVSSIndexFilteredScan &op,
 	                                    const VSSIndexPhysicalScanBindData &bind_data)
-	    : search_lock(bind_data.index.Cast<VSSIndex>().SyncAndLockForSearch(context, bind_data.table.GetStorage())),
-	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<VSSIndex>()),
+	    : guard(AcquireSearchGuard(context, bind_data.table, bind_data.index_info.oid)), context(context), op(op),
+	      limit(bind_data.limit), index(guard->index),
 	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), vss_row_ids(nullptr) {
 		// Preprocess the query embedding.
 		index.PreprocessEmbeddings(bind_data.query_embedding.get(), preprocessed_query_embedding.get(), 1);
@@ -61,11 +61,9 @@ public:
 		late_passing_rowids.resize(index.GetNumRowGroups());
 	}
 
-	// Held for the duration of execution to serialize searches against index
-	// maintenance. Declared first so it is constructed first and destroyed
-	// last, ensuring the lock is held while all other members (which reference
-	// index state) are torn down.
-	unique_ptr<StorageLockKey> search_lock;
+	// The query's pin and shared search lock on the index, shared with its other operators on the index. Declared first
+	// so it is constructed first and destroyed last, after the members that reference index state.
+	shared_ptr<VSSSearchGuard> guard;
 
 	const ClientContext &context;
 	const PhysicalVSSIndexFilteredScan &op;
@@ -134,7 +132,7 @@ public:
 };
 
 unique_ptr<LocalSinkState> PhysicalVSSIndexFilteredScan::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<PhysicalFilteredScanLocalSinkState>(bind_data->index.Cast<VSSIndex>());
+	return make_uniq<PhysicalFilteredScanLocalSinkState>(sink_state->Cast<PhysicalFilteredScanGlobalSinkState>().index);
 }
 
 // Starts the filtered search of a row group with the row ids that passed the SQL predicate, and runs its first
@@ -183,7 +181,7 @@ SinkResultType PhysicalVSSIndexFilteredScan::Sink(ExecutionContext &context, Dat
                                                   OperatorSinkInput &input) const {
 	auto &l_sink = input.local_state.Cast<PhysicalFilteredScanLocalSinkState>();
 	auto &g_sink = input.global_state.Cast<PhysicalFilteredScanGlobalSinkState>();
-	auto &index = bind_data->index.Cast<VSSIndex>();
+	auto &index = g_sink.index;
 
 	if (input_chunk.size() == 0) {
 		return SinkResultType::NEED_MORE_INPUT;
@@ -485,15 +483,15 @@ SourceResultType PhysicalVSSIndexFilteredScan::GetDataInternal(ExecutionContext 
 
 // Defines this operator's details shown in the query plan.
 InsertionOrderPreservingMap<string> PhysicalVSSIndexFilteredScan::ParamsToString() const {
-	auto &index = bind_data->index.Cast<VSSIndex>();
+	// As of planning: EXPLAIN has no execution state, and the profiler calls this while the query holds the index.
+	const auto &index_info = bind_data->index_info;
 	InsertionOrderPreservingMap<string> result;
 	result["Table"] = bind_data->table.name.GetIdentifierName();
-	result["DuckIR VSS Index"] = bind_data->index.GetIndexName().GetIdentifierName();
+	result["DuckIR VSS Index"] = index_info.name;
 	result["Projections"] = ColumnNamesToString(bind_data->table, column_ids);
-	result["Total Clusters"] = StringUtil::Format("%zu", index.GetTotalNumClusters());
-	result["Row Groups"] = StringUtil::Format("%zu", index.GetNumRowGroups());
-	const idx_t index_in_memory_size = bind_data->index.Cast<BoundIndex>().GetInMemorySize();
-	result["Index Size"] = ConvertBytesToHumanReadableString(index_in_memory_size);
+	result["Total Clusters"] = StringUtil::Format("%zu", index_info.total_num_clusters);
+	result["Row Groups"] = StringUtil::Format("%zu", index_info.num_row_groups);
+	result["Index Size"] = ConvertBytesToHumanReadableString(index_info.in_memory_size);
 	SetEstimatedCardinality(result, estimated_cardinality);
 
 	return result;

@@ -25,8 +25,8 @@ class VSSScanGlobalSourceState : public GlobalSourceState {
 public:
 	VSSScanGlobalSourceState(ClientContext &context, const PhysicalVSSIndexScan &op,
 	                         const VSSIndexScanBindData &bind_data, const vector<ColumnIndex> &operator_column_ids)
-	    : search_lock(bind_data.index.Cast<VSSIndex>().SyncAndLockForSearch(context, bind_data.table.GetStorage())),
-	      context(context), op(op), limit(bind_data.limit), index(bind_data.index.Cast<VSSIndex>()),
+	    : guard(AcquireSearchGuard(context, bind_data.table, bind_data.index_info.oid)), context(context), op(op),
+	      limit(bind_data.limit), index(guard->index),
 	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), search_started(false),
 	      search_completed(false), vss_row_ids(nullptr), vss_row_ids_idx(0) {
 		// Preprocess the query embedding.
@@ -54,11 +54,9 @@ public:
 		local_storage.InitializeScan(bind_data.table.GetStorage(), local_storage_state.local_state, nullptr);
 	}
 
-	// Held for the duration of execution to serialize searches against index
-	// maintenance. Declared first so it is constructed first and destroyed
-	// last, ensuring the lock is held while all other members (which reference
-	// index state) are torn down.
-	unique_ptr<StorageLockKey> search_lock;
+	// The query's pin and shared search lock on the index, shared with its other operators on the index. Declared first
+	// so it is constructed first and destroyed last, after the members that reference index state.
+	shared_ptr<VSSSearchGuard> guard;
 
 	ClientContext &context;
 	const PhysicalVSSIndexScan &op;
@@ -219,12 +217,13 @@ SourceResultType PhysicalVSSIndexScan::GetDataInternal(ExecutionContext &context
 InsertionOrderPreservingMap<string> PhysicalVSSIndexScan::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
 	result["Table"] = bind_data->table.name.GetIdentifierName();
-	result["DuckIR VSS Index"] = bind_data->index.GetIndexName().GetIdentifierName();
+	// As of planning: EXPLAIN has no execution state, and the profiler calls this while the query holds the index.
+	const auto &index_info = bind_data->index_info;
+	result["DuckIR VSS Index"] = index_info.name;
 	result["Projections"] = ColumnNamesToString(bind_data->table, column_ids);
-	result["Total Clusters"] = StringUtil::Format("%zu", bind_data->index.Cast<VSSIndex>().GetTotalNumClusters());
-	result["Row Groups"] = StringUtil::Format("%zu", bind_data->index.Cast<VSSIndex>().GetNumRowGroups());
-	const idx_t index_in_memory_size = bind_data->index.Cast<BoundIndex>().GetInMemorySize();
-	result["Index Size"] = ConvertBytesToHumanReadableString(index_in_memory_size);
+	result["Total Clusters"] = StringUtil::Format("%zu", index_info.total_num_clusters);
+	result["Row Groups"] = StringUtil::Format("%zu", index_info.num_row_groups);
+	result["Index Size"] = ConvertBytesToHumanReadableString(index_info.in_memory_size);
 	SetEstimatedCardinality(result, estimated_cardinality);
 
 	return result;
