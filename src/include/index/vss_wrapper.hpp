@@ -691,13 +691,25 @@ public:
 					merge_ran_out_of_memory = true;
 				}
 			}
-			row_group->persisted_chain.Free(allocator);
 			VSSBlockChainWriter writer(allocator);
 			VSSChainOutputStream out(writer);
-			if (copy_temporary_chain) {
-				row_group->temporary_chain.CopyTo(buffer_manager, out);
-			} else {
-				row_group->index->SaveToStream(out);
+			try {
+				row_group->persisted_chain.Free(allocator);
+				if (copy_temporary_chain) {
+					row_group->temporary_chain.CopyTo(buffer_manager, out);
+				} else {
+					row_group->index->SaveToStream(out);
+				}
+			} catch (std::exception &ex) {
+				if (ErrorData(ex).Type() != ExceptionType::OUT_OF_MEMORY) {
+					throw;
+				}
+				// Without the memory to free its old chain or write its new one, the row group has no chain, which the
+				// directory leaves out: the next load builds it from the table. As above, it keeps its home and stays
+				// dirty. A free that ran out of memory leaves its other segments allocated for good.
+				row_group->persisted_chain = VSSBlockChain();
+				writer.Finish().Free(allocator);
+				persist_with_unwritten_deletes = true;
 			}
 			row_group->persisted_chain = writer.Finish();
 			if (!persist_with_unwritten_deletes) {
@@ -731,6 +743,10 @@ public:
 	// With each chain's segments, so that a range of a chain can be read without walking it (ReadRange).
 	void AddRowGroupEntries(VSSDirectory &directory) const {
 		for (const auto &row_group : row_groups) {
+			// Its checkpoint ran out of memory: the next load builds it from the table.
+			if (row_group->persisted_chain.segments.empty()) {
+				continue;
+			}
 			directory.row_groups.push_back({row_group->row_start, row_group->row_end, row_group->persisted_chain});
 		}
 	}
