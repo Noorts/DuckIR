@@ -47,6 +47,11 @@ public:
 	bool ParallelOperator() const override {
 		return true;
 	}
+	OperatorFinalResultType OperatorFinalize(Pipeline &pipeline, Event &event, ClientContext &context,
+	                                         OperatorFinalizeInput &input) const override;
+	bool RequiresOperatorFinalize() const override {
+		return true;
+	}
 
 	// Sink interface: the rowids of the table's rows that pass the predicate, when the table is filtered.
 	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override;

@@ -25,22 +25,9 @@ class VSSScanGlobalSourceState : public GlobalSourceState {
 public:
 	VSSScanGlobalSourceState(ClientContext &context, const PhysicalVSSIndexScan &op,
 	                         const VSSIndexScanBindData &bind_data, const vector<ColumnIndex> &operator_column_ids)
-	    : guard(AcquireSearchGuard(context, bind_data.table, bind_data.index_info.oid)), context(context), op(op),
-	      limit(bind_data.limit), index(guard->index),
-	      preprocessed_query_embedding(make_uniq_array<float>(index.GetNumDimensions())), search_started(false),
-	      search_completed(false), vss_row_ids(nullptr), vss_row_ids_idx(0) {
-		// Preprocess the query embedding.
-		index.PreprocessEmbeddings(bind_data.query_embedding.get(), preprocessed_query_embedding.get(), 1);
-		ranking_query = index.EncodeQueryForRanking(preprocessed_query_embedding.get());
-		sketch_query_table = index.CreateSketchQueryTable(preprocessed_query_embedding.get());
-
-		// Determine number of clusters to probe per row group. The cluster count varies per row group, but a single
-		// upper bound is used here. We use the largest row group's count: for smaller row groups the per-row-group
-		// searcher clamps internally.
-		const auto n_probe = index.GetEffectiveNProbe(context);
-		const auto max_num_clusters = index.GetMaxNumClusters();
-		num_clusters_to_probe_per_row_group = (n_probe == 0 || n_probe > max_num_clusters) ? max_num_clusters : n_probe;
-
+	    : context(context), op(op), limit(bind_data.limit),
+	      preprocessed_query_embedding(make_uniq_array<float>(bind_data.index_info.num_dimensions)),
+	      search_started(false), search_completed(false), vss_row_ids(nullptr), vss_row_ids_idx(0) {
 		// Set up column IDs for fetching data from storage.
 		column_ids.reserve(operator_column_ids.size());
 		for (auto &id : operator_column_ids) {
@@ -54,15 +41,37 @@ public:
 		local_storage.InitializeScan(bind_data.table.GetStorage(), local_storage_state.local_state, nullptr);
 	}
 
+	// Takes the guard when the index search starts.
+	void StartSearch(const VSSIndexScanBindData &bind_data) {
+		guard = AcquireSearchGuard(context, bind_data.table, bind_data.index_info.oid);
+		auto &index = guard->index;
+		index.PreprocessEmbeddings(bind_data.query_embedding.get(), preprocessed_query_embedding.get(), 1);
+		ranking_query = index.EncodeQueryForRanking(preprocessed_query_embedding.get());
+		sketch_query_table = index.CreateSketchQueryTable(preprocessed_query_embedding.get());
+
+		// Determine number of clusters to probe per row group. The cluster count varies per row group, but a single
+		// upper bound is used here. We use the largest row group's count: for smaller row groups the per-row-group
+		// searcher clamps internally.
+		const auto n_probe = index.GetEffectiveNProbe(context);
+		const auto max_num_clusters = index.GetMaxNumClusters();
+		num_clusters_to_probe_per_row_group = (n_probe == 0 || n_probe > max_num_clusters) ? max_num_clusters : n_probe;
+	}
+
+	// Drops the guard once the result row ids are known.
+	void EndSearch() {
+		sketch_query_table.reset();
+		ranking_query.reset();
+		guard.reset();
+	}
+
 	// The query's pin and shared search lock on the index, shared with its other operators on the index. Declared first
-	// so it is constructed first and destroyed last, after the members that reference index state.
+	// so it is destroyed last, after the members that reference index state.
 	shared_ptr<VSSSearchGuard> guard;
 
 	ClientContext &context;
 	const PhysicalVSSIndexScan &op;
 	// The limit (the K in KNN search).
 	const idx_t limit;
-	VSSIndex &index;
 
 	const unique_ptr<float[]> preprocessed_query_embedding;
 	unique_ptr<PDX::CentroidRankingQuery> ranking_query;
@@ -98,13 +107,13 @@ public:
 	}
 
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
-		auto &index = g_state.index;
-
-		auto search_cursor = index.BeginSearchForRowGroup(
-		    row_group_id, g_state.preprocessed_query_embedding.get(), g_state.limit, g_state.top_k_heap, nullptr,
-		    nullptr, g_state.ranking_query.get(), g_state.sketch_query_table.get());
-		search_cursor->Next(g_state.num_clusters_to_probe_per_row_group);
-
+		// The cursor goes before FinishTask, after which the search can end.
+		{
+			auto search_cursor = g_state.guard->index.BeginSearchForRowGroup(
+			    row_group_id, g_state.preprocessed_query_embedding.get(), g_state.limit, g_state.top_k_heap, nullptr,
+			    nullptr, g_state.ranking_query.get(), g_state.sketch_query_table.get());
+			search_cursor->Next(g_state.num_clusters_to_probe_per_row_group);
+		}
 		event->FinishTask();
 		return TaskExecutionResult::TASK_FINISHED;
 	}
@@ -130,7 +139,7 @@ public:
 	void Schedule() override {
 		auto &context = GetClientContext();
 		vector<shared_ptr<Task>> tasks;
-		for (idx_t row_group_id = 0; row_group_id < g_state.index.GetNumRowGroups(); row_group_id++) {
+		for (idx_t row_group_id = 0; row_group_id < g_state.guard->index.GetNumRowGroups(); row_group_id++) {
 			tasks.push_back(
 			    make_uniq<VSSScanSearchTask>(shared_from_this(), context, g_state, g_state.op, row_group_id));
 		}
@@ -149,6 +158,7 @@ public:
 		for (size_t i = 0; i < result_rowids.size(); i++) {
 			(*g_state.vss_row_ids)[i] = result_rowids[i].index;
 		}
+		g_state.EndSearch();
 
 		g_state.search_completed = true;
 
@@ -174,6 +184,7 @@ SourceResultType PhysicalVSSIndexScan::GetDataInternal(ExecutionContext &context
 
 	// Trigger parallel search of all row groups.
 	if (!g_state.search_started.exchange(true)) {
+		g_state.StartSearch(*bind_data);
 		auto &executor = Executor::Get(context.client);
 		auto event = make_shared_ptr<VSSScanSearchEvent>(executor, g_state);
 		executor.AddEvent(event);
