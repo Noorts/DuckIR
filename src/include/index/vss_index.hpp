@@ -152,7 +152,8 @@ private:
 	// and disjoint. A range that overlaps staged ones (DuckDB replaying a commit from the WAL) is merged with them.
 	static void StageUnindexedRange(std::vector<VSSRowRange> &ranges, VSSRowRange range);
 
-	static void RemoveUnindexedRow(std::vector<VSSRowRange> &ranges, row_t row_id);
+	// Takes deleted rows out of `ranges` in one pass: a Delete splits the staged ranges of a bulk insert.
+	static void RemoveUnindexedRows(std::vector<VSSRowRange> &ranges, const row_t *row_ids, idx_t count);
 
 	// Deletes these rows from the index and from unindexed_row_ranges, under the exclusive search lock. A sync applies
 	// the staged deletes before it moves the inbox's ranges to unindexed_row_ranges: a reused row id's new row stays.

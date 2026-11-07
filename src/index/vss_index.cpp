@@ -731,9 +731,7 @@ void VSSIndex::Delete(IndexLock &lock, DataChunk &entries, Vector &row_ids) {
 		const idx_t count = entries.size();
 		row_ids.Flatten();
 		const auto row_id_data = FlatVector::GetData<row_t>(row_ids);
-		for (idx_t i = 0; i < count; i++) {
-			RemoveUnindexedRow(staged_row_ranges, row_id_data[i]);
-		}
+		RemoveUnindexedRows(staged_row_ranges, row_id_data, count);
 		staged_deletes.insert(staged_deletes.end(), row_id_data, row_id_data + count);
 		if (!search_lock) {
 			has_staged_deletes = true;
@@ -770,43 +768,50 @@ void VSSIndex::StageUnindexedRange(std::vector<VSSRowRange> &ranges, const VSSRo
 	}
 }
 
-// A deleted row that was never indexed has nothing left to index: take it out of its staged range.
-void VSSIndex::RemoveUnindexedRow(std::vector<VSSRowRange> &ranges, const row_t row_id) {
-	// Find staged range [start, end) that contains row_id, if any
-	auto it = std::upper_bound(ranges.begin(), ranges.end(), row_id,
-	                           [](row_t id, const VSSRowRange &range) { return id < range.start; });
-	if (it == ranges.begin()) {
+// Deleted rows that were never indexed have nothing left to index: take them out of their staged ranges. Only the
+// ranges between the smallest and the largest row id are rebuilt, and spliced back at once.
+void VSSIndex::RemoveUnindexedRows(std::vector<VSSRowRange> &ranges, const row_t *const row_ids, const idx_t count) {
+	if (ranges.empty() || count == 0) {
 		return;
 	}
-	--it;
-	// row_id is not staged if it falls in a gap
-	if (row_id >= it->end) {
+	std::vector<row_t> sorted_ids(row_ids, row_ids + count);
+	std::sort(sorted_ids.begin(), sorted_ids.end());
+	// The first range that ends after the smallest row id, and the first that starts after the largest one.
+	const auto first = std::upper_bound(ranges.begin(), ranges.end(), sorted_ids.front(),
+	                                    [](row_t id, const VSSRowRange &range) { return id < range.end; });
+	const auto last = std::upper_bound(first, ranges.end(), sorted_ids.back(),
+	                                   [](row_t id, const VSSRowRange &range) { return id < range.start; });
+	if (first == last) {
 		return;
 	}
-	// row_id is the first of the range, we just shrink the range by moving the start up one
-	if (it->start == row_id) {
-		it->start++;
-	} else if (it->end == row_id + 1) { // idem (with the tail)
-		it->end--;
-	} else {
-		// row_id is in the middle of the range, we split it into two ranges
-		const VSSRowRange tail {row_id + 1, it->end};
-		it->end = row_id;
-		ranges.insert(it + 1, tail);
-		return;
+	std::vector<VSSRowRange> rebuilt;
+	auto id = sorted_ids.begin();
+	for (auto it = first; it != last; ++it) {
+		row_t start = it->start;
+		for (; id != sorted_ids.end() && *id < it->end; ++id) {
+			// Row ids in the gap before the range, or repeated, are skipped
+			if (*id < start) {
+				continue;
+			}
+			if (*id > start) {
+				rebuilt.push_back({start, *id});
+			}
+			start = *id + 1;
+		}
+		if (start < it->end) {
+			rebuilt.push_back({start, it->end});
+		}
 	}
-	// If the range is now empty, remove it
-	if (it->start == it->end) {
-		ranges.erase(it);
-	}
+	const auto position = ranges.erase(first, last);
+	ranges.insert(position, rebuilt.begin(), rebuilt.end());
 }
 
 void VSSIndex::ApplyStagedDeletes(const row_t *const row_ids, const idx_t count) {
 	for (idx_t i = 0; i < count; i++) {
 		// PDX Delete is idempotent: if the row was never indexed, it is a no-op
 		DeleteRow(row_ids[i]);
-		RemoveUnindexedRow(unindexed_row_ranges, row_ids[i]);
 	}
+	RemoveUnindexedRows(unindexed_row_ranges, row_ids, count);
 }
 
 // Called by DROP INDEX.
