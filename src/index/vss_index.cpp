@@ -296,15 +296,16 @@ void VSSIndex::DeleteStaleRowIds(const std::vector<VSSRowRange> &ranges) {
 
 idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, float *const embeddings,
                           idx_t &rows_returned, row_t *const row_ids, const bool rotate,
-                          PDX::ParallelExecutor *const executor, const idx_t max_rows) {
+                          PDX::ParallelExecutor *const executor, const idx_t max_rows, const bool all_committed) {
 	rows_returned = 0;
 	if (start >= end) {
 		return 0;
 	}
 	// Scans every committed row, whatever the calling transaction's snapshot. The mirror
 	// holds the committed state, and rows a query must not see are dropped when it fetches its results.
-	const TransactionData committed(MAX_TRANSACTION_ID,
-	                                VisibilityBound::Through(DuckTransactionManager::Get(db).GetLastCommit()));
+	const TransactionData committed(
+	    MAX_TRANSACTION_ID, all_committed ? VisibilityBound::AllCommitted()
+	                                      : VisibilityBound::Through(DuckTransactionManager::Get(db).GetLastCommit()));
 	const vector<StorageIndex> column_ids {StorageIndex(GetColumnIds()[0]), StorageIndex()};
 	TableScanState scan_state;
 	scan_state.Initialize(column_ids);
@@ -444,8 +445,11 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 		try {
 			auto embeddings_buffer = allocate_embeddings(bounds.count);
 			const auto embeddings = reinterpret_cast<float *>(embeddings_buffer.GetDataMutable());
+			// As of every commit: a DELETE in flight already removed some of these rows from the index. The rows of an
+			// INSERT in flight it brings are in the inbox, whose ids DeleteStaleRowIds evicts later in this sync.
 			const idx_t count = FetchRows(table, bounds.row_start, bounds_end, embeddings, rows_returned, row_ids.get(),
-			                              /*rotate=*/true, &executor);
+			                              /*rotate=*/true, &executor, NumericLimits<idx_t>::Maximum(),
+			                              /*all_committed=*/true);
 			if (count > 0) {
 				SetUpIndexForRowGroup(row_ids.get(), embeddings, count, bounds.row_start, bounds.count,
 				                      IsClosedRowGroup(table, bounds), &executor);
@@ -483,11 +487,11 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			has_staged_deletes = false;
 		}
 		ApplyStagedDeletes(committed_deletes.data(), committed_deletes.size());
-		// New rows at reused ids replace the stale ones a mirror still holds
-		DeleteStaleRowIds(committed_ranges);
 		for (const auto &range : committed_ranges) {
 			StageUnindexedRange(unindexed_row_ranges, range);
 		}
+		// New rows at reused ids replace the stale ones a mirror still holds
+		DeleteStaleRowIds(unindexed_row_ranges);
 	}
 
 	// Unindexed rows, gathered per DuckDB row group: a row group without a mirror is clustered once from all of its
