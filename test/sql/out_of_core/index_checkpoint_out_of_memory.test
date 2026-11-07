@@ -54,3 +54,68 @@ query I
 SELECT count(*) FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s;
 ----
 1000
+
+# One open row group, which stays on the heap once a sync appended to it.
+statement ok
+CREATE TABLE p.u AS SELECT id, emb::FLOAT[{DIMS}] AS emb FROM read_parquet('test/assets/sift-128-euclidean-245760.parquet') WHERE id < 100000;
+
+statement ok
+CREATE INDEX u_idx ON p.u USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
+
+statement ok
+CHECKPOINT p;
+
+statement ok
+SET VARIABLE q = (SELECT emb FROM p.u WHERE id = 7);
+
+statement ok
+SET memory_limit = '120MB';
+
+statement ok
+INSERT INTO p.u SELECT id + 1000000, emb FROM p.u WHERE id % 10000 = 1;
+
+statement ok
+SELECT id FROM p.u ORDER BY array_distance(emb, getvariable('q')) LIMIT 10;
+
+# Without the memory to rewrite it, the checkpoint leaves it out and the database stays valid.
+statement ok
+CHECKPOINT p;
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+SET memory_limit = '1GB';
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/index_checkpoint_out_of_memory.db' AS p;
+
+statement ok
+SET duckir_vss_n_probe = 0;
+
+statement ok
+CREATE TABLE p.u_bf AS FROM p.u;
+
+statement ok
+SET VARIABLE q = (SELECT emb FROM p.u WHERE id = 7);
+
+statement ok
+SET VARIABLE q1 = (SELECT emb FROM p.u WHERE id = 1);
+
+# The load built it from the table: exact results, inserted rows included.
+query I rowsort u_knn
+SELECT id FROM p.u ORDER BY array_distance(emb, getvariable('q')) LIMIT 10;
+----
+
+query I rowsort u_knn
+SELECT id FROM p.u_bf ORDER BY array_distance(emb, getvariable('q')) LIMIT 10;
+----
+
+query I
+SELECT count(*) FROM (SELECT id FROM p.u ORDER BY array_distance(emb, getvariable('q1')) LIMIT 2) WHERE id IN (1, 1000001);
+----
+2
