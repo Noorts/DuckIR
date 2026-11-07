@@ -286,6 +286,14 @@ void VSSIndex::RemoveRowGroupsOverlapping(const row_t start, const row_t end) {
 	DispatchWrapper([&](auto &wrapper) { wrapper.RemoveRowGroupsOverlapping(start, end); });
 }
 
+void VSSIndex::DeleteStaleRowIds(const std::vector<VSSRowRange> &ranges) {
+	DispatchWrapper([&](auto &wrapper) {
+		for (const auto &range : ranges) {
+			wrapper.DeleteStaleRowIds(range.start, range.end);
+		}
+	});
+}
+
 idx_t VSSIndex::FetchRows(DataTable &table, const row_t start, const row_t end, float *const embeddings,
                           idx_t &rows_returned, row_t *const row_ids, const bool rotate,
                           PDX::ParallelExecutor *const executor, const idx_t max_rows) {
@@ -475,6 +483,8 @@ void VSSIndex::SyncWithTable(ClientContext &context, DataTable &table) {
 			has_staged_deletes = false;
 		}
 		ApplyStagedDeletes(committed_deletes.data(), committed_deletes.size());
+		// New rows at reused ids replace the stale ones a mirror still holds
+		DeleteStaleRowIds(committed_ranges);
 		for (const auto &range : committed_ranges) {
 			StageUnindexedRange(unindexed_row_ranges, range);
 		}
@@ -1029,6 +1039,11 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 	// Not loaded: the index stays as persisted.
 	if (bind_error.HasError()) {
 		return CopyStorageInfo(persisted_storage_info);
+	}
+	// Reused ids no sync has seen yet: the inbox does not survive a restart, but the stale rows must not be persisted
+	{
+		const lock_guard<mutex> staging(commit_staging_lock);
+		DeleteStaleRowIds(staged_row_ranges);
 	}
 	PersistDirtyRowGroups([&]() { WritePartialBlocks(context); });
 	// A SAQ model that is not persisted yet comes from a fit since the last checkpoint, whose rotation replaced the
