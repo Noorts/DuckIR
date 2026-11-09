@@ -48,7 +48,7 @@ duckdb-vss is the official DuckDB extension for vector search. Here is how DuckI
 > ⁴ After inserting 1K rows.\
 > ⁵ Tested with 100M 1024-dimensional embeddings (500 GB) in 8 GB of RAM. DuckIR respects DuckDB's `memory_limit`.\
 > ⁶ One worker per row group (122,880 rows by default).\
-> ⁷ Needs `PRAGMA hnsw_compact_index` (43 s). Every checkpoint after a delete rewrites the whole index.
+> ⁷ Needs `PRAGMA hnsw_compact_index`. Every checkpoint after a delete rewrites the whole index.
 
 ## Usage
 
