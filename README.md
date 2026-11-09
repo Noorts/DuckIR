@@ -23,6 +23,32 @@
 > [!WARNING]
 > **Status: Alpha.** Production use is not advised. Dropping and recreating indexes might be needed between updates. Check our known [limitations](/docs/LIMITATIONS.md).
 
+## Comparison to [duckdb-vss](https://github.com/duckdb/duckdb-vss)
+duckdb-vss is the official DuckDB extension for vector search. Here is how DuckIR compares:
+
+| _1M OpenAI embeddings (d=1536)_  | **duckdb-vss**          | **DuckIR**                   | **Improvement**                    |
+|------------------------------------------|-------------------------|------------------------------|------------------------------------|
+| Indexing time                            | 250 s                   | 15 s                         | **17× faster**                     |
+| Ingestion¹                               | 590 rows / s            | 10,500 rows / s              | **18× faster**                     |
+| Index size on disk                       | 6.29 GB                 | 1.78 (`u8`) · 1.01 (`u4`) GB | **3.5 · 6.2× smaller**             |
+| Search² (recall@10 = 0.95)               | 270 QPS                 | 434 QPS                      | **1.6× faster**                    |
+| Filtered Search³ (50% · 10% · 1% · 0.1%) | 4 · 11 · 16 · 3 QPS     | 115 · 109 · 175 · 312 QPS    | **29× · 10× · 11× · 104× faster**  |
+| First query after a restart              | 10.6 s                  | 0.1 s                        | **109× sooner**                    |
+| I/O on `CHECKPOINT`⁴                     | 6.4 GB written          | 0.2 GB written               | **32× less I/O**                   |
+|                                          |                         |                              |                                    |
+| Index larger than memory                 | No                      | Yes⁵                         | Out-of-core search and indexing    |
+| Deletes                                  | Needs manual compaction | Handled as they come         | No compaction, never needs rebuild |
+| Parallelism                              | 1 search, 1 worker      | 1 search, N workers⁶         | Scalable                           |
+| Crash recovery                           | Experimental, no WAL recovery | WAL recovery                 | Robust                             |
+
+> Tested on a Zen 4 machine, 3.7 GHz, 64 GB RAM, NVMe disk, 12 cores, using DuckDB v2.0.0. We measure performance on a single thread, except index construction (12 threads). All DuckIR measurements use `u8` quantization. duckdb-vss runs with `hnsw_enable_experimental_persistence = true`.\
+> ¹ 10K rows issued in a single `INSERT` statement. Streaming `INSERT`s 100 rows at a time result in 200 rows/s in duckdb-vss vs 2,130 rows/s in DuckIR.\
+> ² In both extensions, single queries cap at ~1,000 QPS due to DuckDB's query planning.\
+> ³ Filters on an `int` column whose passing rows are scattered at random.\
+> ⁴ After an insertion of 1K rows.\
+> ⁵ DuckIR has been tested with up to 100M 1024-dimensional embeddings (500 GB of data) with 8 GB of RAM. DuckIR allocates through DuckDB's buffer manager, so it respects `memory_limit`.\
+> ⁶ 1 worker per DuckDB row group (122,880 rows by default).
+
 ## Usage
 
 ### From Hugging Face to DuckIR
@@ -116,9 +142,9 @@ Available index options:
 - `quantization`: The precision of the embeddings stored inside the index.
   - `f32`: full precision, no compression.
   - `u8`: *default*; scalar quantization, 1 byte per dimension, ×4 compression; ~1% quality loss relative to `f32`.
-  - `u4`: SAQ, 4 bits per dimension, ×8 compression; needs at least 64 dimensions; <1% quality loss relative to `u8` in most embedding datasets (Cohere, MXBAI, OpenAI).
+  - `u4`: SAQ, 4 bits per dimension, ×8 compression; needs at least 64 dimensions; 0.5-3% quality loss relative to `u8` in most embedding datasets (Cohere, MXBAI, OpenAI, Jina).
 - `n_probe`: Controls the effort spent during vector search: higher values increase recall, but also increase search latency. This `n_probe` index option is remembered by the index. You can override it at search time using `duckir_vss_n_probe` (see below).
-  - `[0, 2147483647]`. *Default* is `24`. This is per row group, which typically has ~480 lists. Set `n_probe` to `0` to run a brute force search.
+  - `[0, 2147483647]`. *Default* is `24`. This is per row group, which typically has ~480 clusters. Set `n_probe` to `0` to run a brute force search.
 - `seed`
   - `[-2147483648, 2147483647]`. *Default* is random.
 - `cluster_sketches`: Whether the index keeps a 1-bit sketch of every embedding, which makes searches faster when the index does not fit in memory (see [Out-of-Core](/docs/OUT_OF_CORE.md#pruning-via-1-bit-rabitq-sketches)).
@@ -146,7 +172,7 @@ You can set the number of clusters to probe per search using `SET duckir_vss_n_p
 
 ### Filtered Vector Search
 
-We support arbitrary predicates: **any predicate DuckDB can evaluate on the table's columns**, including but not limited to: conjunctions, disjunctions, comparisons, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT EXISTS`, expressions over a column, volatile predicates, filters over `embedding[i]`, subqueries as filters, `IN (<subquery>)` (SEMI JOINs), and `list_contains`. 
+We support arbitrary predicates: **any predicate DuckDB can evaluate on the table's columns**, including but not limited to: conjunctions, disjunctions, comparisons, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT EXISTS`, expressions over a column, volatile predicates, filters over `embedding[i]`, subqueries as filters, `IN (<subquery>)` (SEMI JOINs), and `list_contains`.
 
 Index search also kicks in if the predicate is rewritten as a `HASH JOIN` (e.g., `WHERE id IN (SELECT item_id FROM purchases)`), even if it goes out-of-core or the join key is compressed.
 
@@ -169,7 +195,7 @@ SELECT id
 FROM t
 ORDER BY array_distance(
   embedding,
-  [0.2502, 0.7944, ..., -0.5050]
+  [0.2502, 0.7944, ..., -0.5050]::FLOAT[d]
 )
 LIMIT 10;
 ```
@@ -178,9 +204,9 @@ However, by doing so, your query throughput will be capped by DuckDB's query pla
 
 ## Our Secret Sauce
 
-When you create a `DUCKIR_VSS` index, we internally create one local index per DuckDB row group (by default, one per 122,880 rows). This enables lightweight maintenance, morsel-driven parallelism, and pushing down SQL predicates onto the vector search.   
+When you create a `DUCKIR_VSS` index, we internally create one local index per DuckDB row group (by default, one per 122,880 rows). This enables lightweight maintenance, morsel-driven parallelism, and pushing down SQL predicates onto the vector search.
 
-To learn more about the techniques inside the `DUCKIR_VSS` index, check out the following docs:   
+To learn more about the techniques inside the `DUCKIR_VSS` index, check out the following docs:
 
 - [Vector Index](/docs/VECTOR_INDEX.md)
 - [Maintenance](/docs/MAINTENANCE.md)
@@ -201,8 +227,8 @@ See [LIMITATIONS.md](/docs/LIMITATIONS.md)
 
 The extension would not be possible without the underlying technologies and the lessons learned from other extensions.
 
-- **[Vector search research](/docs/VECTOR_INDEX.md)**: We take inspiration and ideas from many vector search research papers (e.g., [PDX](https://github.com/cwida/PDX), [SuperKMeans](https://github.com/cwida/SuperKMeans), [RaBitQ](https://github.com/VectorDB-NTU/RaBitQ-Library), [SPFresh](https://arxiv.org/abs/2410.14452), [SAQ](https://arxiv.org/abs/2509.12086)). 
-- **[DuckDB-VSS](https://github.com/duckdb/duckdb-vss)**: We've taken inspiration from the VSS interface, and we reuse parts of the VSS extension's code.
+- **[Vector search research](/docs/VECTOR_INDEX.md)**: We take inspiration and ideas from many vector search research papers (e.g., [PDX](https://github.com/cwida/PDX), [SuperKMeans](https://github.com/cwida/SuperKMeans), [RaBitQ](https://github.com/VectorDB-NTU/RaBitQ-Library), [SPFresh](https://arxiv.org/abs/2410.14452), [SAQ](https://arxiv.org/abs/2509.12086)).
+- **[duckdb-vss](https://github.com/duckdb/duckdb-vss)**: We've taken inspiration from the VSS interface, and we reuse parts of the VSS extension's code.
 
 ## License
 

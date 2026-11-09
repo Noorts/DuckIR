@@ -32,7 +32,7 @@ Embeddings are stored in the [PDX layout for 8-bit values](https://github.com/cw
 
 ### `u4`: ×8 compression
 
-`u4` stores 4 bits per dimension. Remarkably, the quality loss is measured at less than 1% relative to `u8` in embedding datasets (Cohere, MXBAI, OpenAI). `u4` is an implementation of [SAQ](https://dl.acm.org/doi/pdf/10.1145/3769824).
+`u4` stores 4 bits per dimension. Remarkably, the quality loss is measured at 0.5-3% relative to `u8` in embedding datasets (Cohere, MXBAI, OpenAI, Jina). `u4` is an implementation of [SAQ](https://dl.acm.org/doi/pdf/10.1145/3769824).
 
 SAQ allocates more bits to more important dimensions. Vectors are PCA-rotated, and then a DP algorithm on a sample chooses how many bits to allocate to each segment.
 
@@ -42,11 +42,11 @@ We have made SAQ's speed competitive:
 
 - [**PDX 8-bit layout**](https://github.com/cwida/PDX#8-bits) in the first SAQ chunk (64 dimensions) for fast distance calculations.
 - **PDX-like pruning**: For every chunk of 64 dimensions, we try to prune vectors in a vectorized fashion.
-- Since vectors are PCA-rotated, we can't use our existing ADSampling-based pruning. We incorporate [DADE-based](https://arxiv.org/pdf/2411.17229) pruning. This is faster and more efficient than the pruning strategy presented in SAQ's paper. The pruning bounds are calibrated in `CalibrateSAQPruningBound`.
+- Since vectors are PCA-rotated, we can't use our existing ADSampling-based pruning. We incorporate [DADE-based](https://arxiv.org/pdf/2411.17229) pruning. This is faster and more efficient than the pruning strategy presented in SAQ's paper.
 
-**Our PDX scan is 1.5× - 3.0× faster** than SAQ's own kernels with AVX-512 across 6 vector embedding datasets (OpenAI/1536, MXBAI/1024, arXiv/768, GIST/960, CLIP/512, and Yandex/200).
+**Our PDX scan is 1.5-3.0× faster** than SAQ's own kernels with AVX-512 across 6 vector embedding datasets (OpenAI/1536, MXBAI/1024, arXiv/768, GIST/960, CLIP/512, and Yandex/200).
 
-Additionally, we opt out of SAQ's dynamic bit allocation at lower dimensionalities ($d < 256$), where we observe SAQ brings no benefit to plain 4-bit RaBitQ.
+Additionally, we opt out of SAQ's dynamic bit allocation at lower dimensionalities ($d < 256$), where we observe SAQ brings no benefit over plain 4-bit RaBitQ.
 
 ## Cluster Order
 

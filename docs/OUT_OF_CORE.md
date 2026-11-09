@@ -8,7 +8,7 @@ At bind time, DuckIR only loads the part of the index that stays in memory (the 
 - A mapping from DuckDB row ids to internal ids.
 - The trailing row group of the table (see [below](#maintenance)).
 
-At 250M vectors of 1024 dimensions (1 TB of disk), you would need around 5 GB of memory for DuckIR to work. We are currently working to lower this number to the MB range.
+**Minimum memory recommendation**: 8 GB of memory is enough for every index size we've tested, up to 100M 1024-dimensional embeddings.
 
 ## Vector Search Queries
 
@@ -34,7 +34,7 @@ While we cannot leverage a "1-bit RaBitQ + candidate reranking" strategy, we can
 
 These 1-bit sketches also live out-of-core and use a tiered cache (hot vs. cold). Under memory pressure, our cache design makes DuckDB evict data in this order: cold clusters (evicted first), hot clusters, cold sketches, hot sketches (evicted last).
 
-Sketches result in 2×-24× faster queries under memory pressure, while recall remains unchanged. However, note that sketches are not beneficial when a cluster's data is in memory, because PDX distance kernels are usually as fast as the 1-bit sketch check. Therefore, our default policy for checking sketches is `when_cluster_not_cached`. To turn sketch checks off, run `SET duckir_vss_cluster_sketch_check = 'never';` before issuing queries.
+Sketches result in 2-24× faster queries under memory pressure, while recall remains unchanged. However, note that sketches are not beneficial when a cluster's data is in memory, because PDX distance kernels are usually as fast as the 1-bit sketch check. Therefore, our default policy for checking sketches is `when_cluster_not_cached`. To turn sketch checks off, run `SET duckir_vss_cluster_sketch_check = 'never';` before issuing queries.
 
 By default, sketches are built and maintained alongside the index, adding some overhead to index creation (+4% for `f32`, +10% for `u8`, +20% for `u4`) and memory usage. If you know your embeddings will fit in memory, you can opt out of building sketches when you create the index: `CREATE INDEX ... USING DUCKIR_VSS (emb) WITH (cluster_sketches = false);`.
 

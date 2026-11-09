@@ -20,7 +20,7 @@ When the index is loaded, it is validated against the table, so it never misses 
 
 ## Inserts and Deletes
 
-`INSERT`s trigger a row group materialization on the next sync. This might seem bad at first sight. But note that, unless a compaction happens, only the active row group (the last one) is materialized in memory during a sync.
+`INSERT`s trigger a row group materialization on the next sync. This might seem costly, but unless a compaction happens, only the active row group (the last one) is materialized in memory during a sync.
 
 `DELETE`s only touch resident data (tombstones). The persisted chain keeps deleted rows, and every bind reconciles the index with the table. When deletes pass 10% of the row group's rows, we mark the row group as dirty, so that it is rewritten in the next checkpoint.
 

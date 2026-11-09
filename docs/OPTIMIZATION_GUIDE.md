@@ -3,14 +3,15 @@
 Follow these guidelines to get the best performance out of DuckIR for your use case.
 
 - [Creating the Index](#creating-the-index)
-  - [Choosing a Quantization](#choosing-a-quantization-f32-u8-u4)
-  - [Choosing a Distance Metric](#choosing-a-distance-metric-cosine-l2sq)
+  - [Choosing a Quantization (`f32`, `u8`, `u4`)](#choosing-a-quantization-f32-u8-u4)
+  - [Choosing a Distance Metric (`cosine`, `l2sq`)](#choosing-a-distance-metric-cosine-l2sq)
   - [When Your Data Fits in Memory](#when-your-data-fits-in-memory)
 - [Querying](#querying)
   - [Tuning `n_probe`](#tuning-n_probe)
   - [Highest Query Throughput](#highest-query-throughput)
-  - [Bulk Queries](#bulk-queries-lateral-join)
+  - [Bulk Queries (`LATERAL JOIN`)](#bulk-queries-lateral-join)
   - [Slow Queries?](#slow-queries)
+- [DuckDB Settings](#duckdb-settings)
 
 ## Creating the Index
 
@@ -24,6 +25,19 @@ Follow these guidelines to get the best performance out of DuckIR for your use c
   - **When to use**: Small datasets where memory or disk space is not a concern.
   - **When to avoid**: Your data is larger than memory, or your disk is slow (e.g., EBS or hard drive).
 
+What to expect from `f32` → `u8` → `u4`:
+
+| Dataset | Recall@10 (`n_probe=24`) |
+|---|---|
+| mxbai (769K × 1024) | 0.976 → 0.967 → 0.963 |
+| jina (1.4M × 768) | 0.925 → 0.923 → 0.897 |
+| openai5m (5M × 1536) | 0.958 → 0.948 → 0.931 |
+| cohere100m (100M × 1024) | (doesn't fit) → 0.946 → 0.937 |
+
+In terms of **p50 latency** (`f32` → `u8` → `u4`):
+- In memory: `u8` is up to 1.5× faster than `f32`, and `u4` matches `u8`.
+- When every query reads from disk: `u8` is 2× faster than `f32`, and `u4` 10-40% faster than `u8`.
+
 ### Choosing a Distance Metric (`cosine`, `l2sq`)
 
 This depends on your embedding model and sometimes on your use case. We recommend [Weaviate's guide to distance metrics](https://weaviate.io/blog/distance-metrics-in-vector-search). If your embeddings are normalized (most models' are), both metrics rank the same.
@@ -36,9 +50,8 @@ If your data fits in memory, you can deactivate our optimizations for out-of-cor
 - Deactivate paging before issuing queries: `SET duckir_vss_cluster_paging=false`
 - Create your vector index without 1-bit sketches: `CREATE INDEX ... USING DUCKIR_VSS (emb) WITH (cluster_sketches = false);`
 
-#### Considerations
-
-- Note that all queries issued to DuckDB will contend for memory with DuckIR. Therefore, if your workload runs more than vector search, we recommend keeping our defaults.
+> [!NOTE]
+> All queries issued to DuckDB will contend for memory with DuckIR. Therefore, if your workload runs more than vector search, we recommend keeping our defaults.
 
 ## Querying
 
@@ -53,7 +66,7 @@ What to expect from `n_probe` 24 → 96 with `u8`, with the index in memory:
 | mxbai (769K × 1024) | 0.967 → 0.986 | 1.2× higher |
 | jina (1.4M × 768) | 0.923 → 0.968 | 1.2× higher |
 | openai5m (5M × 1536) | 0.948 → 0.975 | 1.6× higher |
-| cohere10m (10M × 1024) | 0.890 → 0.957 | 1.9× higher |
+| cohere100m (100M × 1024) | 0.946 → 0.977 | 1.5× higher |
 
 ### Highest Query Throughput
 
@@ -64,7 +77,7 @@ SELECT id
 FROM t
 ORDER BY array_distance(
   embedding,
-  [0.2502, 0.7944, ..., -0.5050]
+  [0.2502, 0.7944, ..., -0.5050]::FLOAT[d]
 )
 LIMIT 10;
 ```
@@ -130,4 +143,10 @@ ORDER BY qs.qid, d.distance;
 
 ### Slow Queries?
 
-Make sure the index is being used by prepending `EXPLAIN` to your query and checking that a `DUCKIR_VSS` operator is in the plan. If it's missing for a query you think the index should serve, please [open an issue](https://github.com/Noorts/DuckIR/issues).
+Make sure the index is being used by prepending `EXPLAIN` to your query and checking that a `DUCKIR_VSS` or `Duckir Vss` operator is in the plan. If it's missing for a query you think the index should serve, please [open an issue](https://github.com/Noorts/DuckIR/issues).
+
+## DuckDB Settings
+
+We recommend disabling the ALP family of compression methods by running: `SET disabled_compression_methods = 'alp,alprd'`. `INSERT`s will see a substantial throughput increase. Run it before loading your data.
+
+The ALP family of compression methods (`alp` and `alprd`) fails to compress embedding data, sometimes making it larger. This setting disables ALP for the whole database. Unfortunately, DuckDB can't disable compression methods for `ARRAY` columns alone.

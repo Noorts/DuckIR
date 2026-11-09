@@ -47,9 +47,9 @@ docs:
     Why DuckIR:
 
     - **Search fully integrated with DuckDB**, from query execution and predicate pushdown to transactional correctness, checkpoints, and crash recovery.
-    - **Filtered search** on any predicate DuckDB can evaluate. 
+    - **Filtered search** on any predicate DuckDB can evaluate.
     - **Lightweight maintenance** of indexes alongside your table, with no full rebuilds.
-    - **Out-of-core** execution and persistence. 
+    - **Out-of-core** execution and persistence.
     - **Morsel-driven parallelism**, one row group at a time, as DuckDB does.
     - **Fast vector indexing and search**. Index millions of vectors in seconds and search them in milliseconds.
 

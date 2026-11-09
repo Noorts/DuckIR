@@ -82,7 +82,7 @@ make test
 This runs every SQLLogicTest in `test/`, including the slow ones (`.test_slow`). `make test_debug` runs them on the debug build. To run a single test:
 
 ```sh
-build/release/test/unittest "test/sql/search/index_scan_monotonic_recall.test"
+build/release/test/unittest "test/sql/search/index_scan_blob_query.test"
 ```
 
 See [test/README.md](test/README.md) for more details.

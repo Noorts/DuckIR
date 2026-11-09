@@ -6,13 +6,15 @@
 
 - **No inner product**: `array_inner_product` and `array_negative_inner_product` queries run without the index.
 
-- **Embeddings with `Inf` and `NaN` values are not supported**: `CREATE INDEX` fails on a table that has any while `INSERT`s do not add these to the index.
+- **Embeddings with `Inf` and `NaN` values are not supported**: `CREATE INDEX` fails on a table that has any such embeddings, and `INSERT`s do not add these to the index.
+
+- **`NULL` embeddings are not supported**: Rows with a `NULL` value in the indexed column are excluded from indexing and searches.
 
 - **`INSERT` + `SEARCH` in the same transaction**: An uncommitted `INSERT` will not be reflected in a vector search result.
 
 - **Late Materialization on CTEs**: A search inside a CTE that DuckDB inlines at more than one place (e.g., `NOT MATERIALIZED`) loses our opt-out of DuckDB's late materialization (when $k \leq 50$). DuckDB's late materialization adds a second scan of the table, joined back on rowid and sorted again. The results are the same, but slower.
 
-- **Maximum `k`**: In `LATERAL` joins, we only support a maximum `k` (`k + o` with an `OFFSET`) of DuckDB's `STANDARD_VECTOR_SIZE` (default: 2048).
+- **Maximum `k`**: In `LATERAL` joins, we only support a maximum `k` (`k + o` with an `OFFSET`) of DuckDB's `STANDARD_VECTOR_SIZE` (default: 2,048).
 
 - **Only FLOAT[d]**: We don't support `DOUBLE[d]` or other `ARRAY` types. You can cast with `::FLOAT[d]` when you store the column, as we do in our Hugging Face example. The index key must be the column itself (expressions are rejected).
 
@@ -25,7 +27,7 @@
 - `IN`/`EXISTS` subqueries whose result is larger than the indexed table.
 - Correlated subqueries
 - Joins with other tables. This doesn't use the index: `JOIN categories c ON t.cat = c.id WHERE c.name = 'x' ORDER BY ... LIMIT 10`. This will: `WHERE t.cat IN (SELECT id FROM categories WHERE name = 'x')`.
-- Searches that read a value that a subquery computes (e.g., `id * 2 AS x`) with $k > 50$.   
+- Searches that read a value that a subquery computes (e.g., `id * 2 AS x`) with $k > 50$.
 - Query vector cannot come from a scalar subquery: Query vectors must be a constant, a parameter, or:
 
   ```sql
