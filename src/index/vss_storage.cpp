@@ -247,6 +247,11 @@ void VSSClusterCache::Bind(const PDX::IPDXIndex &index_p, const VSSTemporaryChai
 	BindIndex(index_p, cluster_data_start_p);
 }
 
+void VSSClusterCache::MoveHomeToPersistedChain(const VSSBlockChain &chain_p) {
+	temporary_chain = nullptr;
+	chain = &chain_p;
+}
+
 void VSSClusterCache::BindIndex(const PDX::IPDXIndex &index_p, const idx_t cluster_data_start_p) {
 	index = &index_p;
 	cluster_data_start = cluster_data_start_p;

@@ -173,6 +173,7 @@ public:
 	// Called right after the row group's resident data is loaded (PageRowGroup).
 	void Bind(const PDX::IPDXIndex &index, const VSSBlockChain &chain, idx_t cluster_data_start);
 	void Bind(const PDX::IPDXIndex &index, const VSSTemporaryChain &chain, idx_t cluster_data_start);
+	void MoveHomeToPersistedChain(const VSSBlockChain &chain);
 
 	const char *Acquire(uint32_t cluster_id) override;
 	void Release(uint32_t cluster_id) override;

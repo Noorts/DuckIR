@@ -98,6 +98,7 @@ static void FlushRowGroup(CreateVSSIndexGlobalSinkState &g_sink, CreateVSSIndexL
 	if (!l_sink.has_row_group) {
 		return;
 	}
+	g_sink.global_index->Cast<VSSIndex>().ReserveTableScanMetadata(l_sink.row_group.count);
 	if (l_sink.row_group_embeddings_count > 0) {
 		DuckDBParallelExecutor executor(context, g_sink.default_threads_per_build);
 		g_sink.global_index->Cast<VSSIndex>().SetUpIndexForRowGroup(

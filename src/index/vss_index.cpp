@@ -176,6 +176,15 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 // Indexes are destroyed before DuckDB's buffer manager (DatabaseInstance::~DatabaseInstance).
 VSSIndex::~VSSIndex() {
 	UpdateReservedMemory(-static_cast<int64_t>(reserved_memory_bytes.load()));
+	buffer_manager.FreeReservedMemory(table_scan_reserved_bytes.load());
+}
+
+void VSSIndex::ReserveTableScanMetadata(const idx_t num_rows) {
+	const idx_t block_size = table_io_manager.GetBlockManagerForRowData().GetBlockSize();
+	const idx_t column_bytes = num_rows * vss_wrapper->GetNumDimensions() * sizeof(float);
+	const idx_t bytes = (column_bytes + block_size - 1) / block_size * DUCKDB_TABLE_SCAN_METADATA_BYTES_PER_BLOCK;
+	buffer_manager.ReserveMemory(bytes);
+	table_scan_reserved_bytes += bytes;
 }
 
 void VSSIndex::UpdateReservedMemory(const int64_t delta) {
@@ -911,6 +920,7 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 	result->is_normalized = IsNormalized();
 	result->cluster_sketches = vss_wrapper->BuildsClusterSketches();
 	result->approximate_lower_bound_memory_usage_bytes = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
+	result->table_scan_reserved_bytes = static_cast<int64_t>(table_scan_reserved_bytes.load());
 	if (storage_reader) {
 		const auto &counters = storage_reader->counters;
 		result->cluster_acquires = static_cast<int64_t>(counters.cluster_acquires.load());
