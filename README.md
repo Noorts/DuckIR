@@ -31,7 +31,7 @@ duckdb-vss is the official DuckDB extension for vector search. Here is how DuckI
 | Indexing time                            | 250 s                   | 15 s                         | **17× faster**                     |
 | Ingestion ¹                               | 590 rows / s            | 10,500 rows / s              | **18× faster**                     |
 | Index size on disk                       | 6.29 GB                 | 1.78 GB | **3.5× smaller**             |
-| Search ² (recall@10 = 0.95)               | 270 QPS                 | 434 QPS                      | **1.6× faster**                    |
+| Search ² (recall@10 = 0.95)               | 254 QPS                 | 434 QPS                      | **1.7× faster**                    |
 | Filtered Search ³ | 3-16 QPS     | 109-312 QPS    | **10×-104× faster**  |
 | First query after a restart              | 10.6 s                  | 0.1 s                        | **109× sooner**                    |
 | I/O on `CHECKPOINT` ⁴                     | 6.4 GB written          | 0.2 GB written               | **32× less**                   |
@@ -41,11 +41,11 @@ duckdb-vss is the official DuckDB extension for vector search. Here is how DuckI
 | Workers per search                              | 1       | N ⁶         | Scalable                           |
 | Crash recovery                           | Experimental | WAL recovery                 | Robust                             |
 
-> Zen 4 (12 cores, 3.7 GHz), 64 GB RAM, NVMe, DuckDB v2.0.0. Single-threaded, except index construction (12 threads). DuckIR uses `u8` quantization. duckdb-vss runs with `hnsw_enable_experimental_persistence = true`.\
+> [Tested](/benchmarks/duckir_vs_vss.py) on Zen 4 (12 cores, 3.7 GHz), 64 GB RAM, NVMe, DuckDB v2.0.0. Single-threaded, except index construction (12 threads). DuckIR uses its default `u8` quantization. duckdb-vss runs with `hnsw_enable_experimental_persistence = true`.\
 > ¹ One `INSERT` of 10K rows. With `INSERT`s of 100 rows: 200 vs 2,130 rows/s.\
 > ² Both cap at ~1,000 QPS, due to DuckDB's query planning.\
 > ³ 50%, 10%, 1% and 0.1% of rows passing a filter on an `int` column, scattered at random. duckdb-vss pre-filtering is enabled.\
-> ⁴ After inserting 1K rows.\
+> ⁴ After inserting 10K rows.\
 > ⁵ Tested with 100M 1024-dimensional embeddings (500 GB) in 8 GB of RAM. DuckIR respects DuckDB's `memory_limit`.\
 > ⁶ One worker per row group (122,880 rows by default).\
 > ⁷ Needs `PRAGMA hnsw_compact_index`. Every checkpoint after a delete rewrites the whole index.
