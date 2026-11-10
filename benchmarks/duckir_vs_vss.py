@@ -5,9 +5,7 @@
 # ///
 """DuckIR vs duckdb-vss on 1M OpenAI embeddings (d = 1536).
 
-This script reproduces the comparison table in our README.
-
-Run it with uv:
+This script reproduces the comparison table in our README. Run it with uv:
 
   uv run benchmarks/duckir_vs_vss.py <subcommand> --system <vss|duckir>
 
@@ -19,7 +17,7 @@ Subcommands:
   restart    First query after a restart, with the database dropped from the page cache (1 thread)
   ingest     Ingestion and I/O on CHECKPOINT (1 thread). It changes the database, so it runs last.
 
-Data: the openai vectors as raw little-endian float32 (rows x 1536, no header) and their exact nearest neighbours.
+Data: openai vectors as raw little-endian float32 (rows x 1536, no header) and their exact nearest neighbours.
 If you lack the dataset, this script will download openai-1536-angular.hdf5 (12 GB, from Google Drive), converts its
 train and test arrays into the two files below, and computes the ground truth with numpy.
   VB_DATA_DIR       holds data_openai.bin (999,000 rows) and data_openai_test.bin (1,000 queries)
