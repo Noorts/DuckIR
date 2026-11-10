@@ -32,7 +32,7 @@ What to expect from `f32` → `u8` → `u4`:
 | mxbai (769K × 1024) | 0.976 → 0.967 → 0.963 |
 | jina (1.4M × 768) | 0.925 → 0.923 → 0.897 |
 | openai5m (5M × 1536) | 0.958 → 0.948 → 0.931 |
-| cohere100m (100M × 1024) | (doesn't fit) → 0.946 → 0.937 |
+| cohere113m (113M × 1024) | (doesn't fit) → 0.946 → 0.937 |
 
 In terms of **p50 latency** (`f32` → `u8` → `u4`):
 - In memory: `u8` is up to 1.5× faster than `f32`, and `u4` matches `u8`.
@@ -66,7 +66,7 @@ What to expect from `n_probe` 24 → 96 with `u8`, with the index in memory:
 | mxbai (769K × 1024) | 0.967 → 0.986 | 1.2× higher |
 | jina (1.4M × 768) | 0.923 → 0.968 | 1.2× higher |
 | openai5m (5M × 1536) | 0.948 → 0.975 | 1.6× higher |
-| cohere100m (100M × 1024) | 0.946 → 0.977 | 1.5× higher |
+| cohere113m (113M × 1024) | 0.946 → 0.977 | 1.5× higher |
 
 ### Highest Query Throughput
 

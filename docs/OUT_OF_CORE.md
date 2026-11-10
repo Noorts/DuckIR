@@ -8,7 +8,7 @@ At bind time, DuckIR only loads the part of the index that stays in memory (the 
 - A mapping from DuckDB row ids to internal ids.
 - The trailing row group of the table (see [below](#maintenance)).
 
-**Minimum memory recommendation**: 8 GB of memory is enough for every index size we've tested, up to 100M 1024-dimensional embeddings.
+**Minimum memory recommendation**: 8 GB of memory is enough for every index size we've tested, up to 113M 1024-dimensional embeddings.
 
 ## Vector Search Queries
 
