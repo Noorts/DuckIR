@@ -230,6 +230,10 @@ private:
 
 static constexpr uint32_t VSS_STORAGE_VERSION = 8;
 
+// A checkpoint syncs the database file each time the row group chains it wrote add up to this, so few of its pages stay
+// dirty: a cgroup charges dirty pages to the process and cannot reclaim them before they are written back.
+static constexpr idx_t MAX_UNSYNCED_CHECKPOINT_BYTES = 256ULL * 1024 * 1024;
+
 // The root chain: where the rotation, the SAQ model (empty when there is none) and the row groups are.
 struct VSSDirectory {
 	struct RowGroupEntry {

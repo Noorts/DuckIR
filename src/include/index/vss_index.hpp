@@ -182,7 +182,7 @@ private:
 	// Frees the current directory chain and writes `directory` into a new one.
 	void WriteDirectory(const VSSDirectory &directory);
 	IndexStorageInfo MakeStorageInfo() const;
-	void PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks);
+	void PersistDirtyRowGroups(const std::function<void(idx_t persisted_bytes)> &write_partial_blocks);
 	void WriteTemporaryChains();
 	void AddRowGroupEntries(VSSDirectory &directory) const;
 	void ResetPersistedChains();

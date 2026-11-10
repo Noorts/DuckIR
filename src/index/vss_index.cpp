@@ -1018,7 +1018,7 @@ IndexStorageInfo VSSIndex::CopyStorageInfo(const IndexStorageInfo &info) {
 	return copy;
 }
 
-void VSSIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
+void VSSIndex::PersistDirtyRowGroups(const std::function<void(idx_t persisted_bytes)> &write_partial_blocks) {
 	const bool merge_ran_out_of_memory = DispatchWrapper([&](auto &wrapper) {
 		return wrapper.PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
 		                                     cluster_paging);
@@ -1104,7 +1104,15 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 		const lock_guard<mutex> staging(commit_staging_lock);
 		DeleteStaleRowIds(staged_row_ranges);
 	}
-	PersistDirtyRowGroups([&]() { WritePartialBlocks(context); });
+	idx_t bytes_written_since_sync = 0;
+	PersistDirtyRowGroups([&](const idx_t persisted_bytes) {
+		WritePartialBlocks(context);
+		bytes_written_since_sync += persisted_bytes;
+		if (bytes_written_since_sync >= MAX_UNSYNCED_CHECKPOINT_BYTES) {
+			table_io_manager.GetIndexBlockManager().FileSync();
+			bytes_written_since_sync = 0;
+		}
+	});
 	// A SAQ model that is not persisted yet comes from a fit since the last checkpoint, whose rotation replaced the
 	// persisted one: both are written.
 	const auto saq_model = vss_wrapper->GetSAQModel();

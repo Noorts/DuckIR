@@ -647,7 +647,8 @@ public:
 	// each rewritten row group is paged again from its new chain.
 	// This method is called from SerializeToDisk, at CHECKPOINT. So this never runs for an :memory: database.
 	// Returns whether a merge ran out of memory: its row group can then lack rows, which a reconcile brings back.
-	bool PersistDirtyRowGroups(FixedSizeAllocator &allocator, const std::function<void()> &write_partial_blocks,
+	bool PersistDirtyRowGroups(FixedSizeAllocator &allocator,
+	                           const std::function<void(idx_t persisted_bytes)> &write_partial_blocks,
 	                           optional_ptr<VSSBlockChainReader> reader, BufferManager &buffer_manager,
 	                           const bool page_clusters) {
 		bool merge_ran_out_of_memory = false;
@@ -717,7 +718,7 @@ public:
 				row_group->num_unwritten_deletes = 0;
 				row_group->is_dirty = false;
 			}
-			write_partial_blocks();
+			write_partial_blocks(row_group->persisted_chain.num_bytes);
 			if (page_clusters) {
 				// The new chain has its blocks now, and writing them can have moved other chains' segments.
 				reader->UpdateBlockPointers(allocator.GetInfo());
