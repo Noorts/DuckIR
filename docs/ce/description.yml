@@ -46,13 +46,13 @@ docs:
 
     Why DuckIR:
 
-    - **Search fully integrated with DuckDB**, from query execution and predicate pushdown to transactional correctness, checkpoints, and crash recovery.
+    - **Vector search fully integrated with DuckDB**, from query execution and predicate pushdown to transactional correctness, checkpoints, and crash recovery.
+    - **Fast vector indexing and search**. Index millions of vectors in seconds and search them in milliseconds.
+    - **Out-of-core:** Create and search indexes larger than memory.
     - **Filtered search** on any predicate DuckDB can evaluate.
     - **Lightweight maintenance** of indexes alongside your table, with no full rebuilds.
-    - **Out-of-core** execution and persistence.
     - **Morsel-driven parallelism**, one row group at a time, as DuckDB does.
-    - **Fast vector indexing and search**. Index millions of vectors in seconds and search them in milliseconds.
 
-    > **Status: alpha. Indexes might need recreating between versions.**
+    > **Status: Alpha. Indexes might need to be recreated after an extension update.**
 
     See our [documentation](https://github.com/Noorts/DuckIR) for maintenance, persistence, out-of-core search, and the known limitations.

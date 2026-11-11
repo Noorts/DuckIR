@@ -8,7 +8,7 @@ At bind time, DuckIR only loads the part of the index that stays in memory (the 
 - A mapping from DuckDB row ids to internal ids.
 - The trailing row group of the table (see [below](#maintenance)).
 
-**Minimum memory recommendation**: 8 GB of memory is enough for every index size we've tested, up to 113M 1024-dimensional embeddings.
+**Minimum memory recommendation**: 8 GB of memory is enough for every index size we've tested, up to 113M 1024-dimensional embeddings (450 GB of embeddings).
 
 ## Vector Search Queries
 
@@ -46,6 +46,8 @@ Local indexes are created in parallel, one row group per DuckDB worker. Indexes 
 
 Each local index creation requires about the memory of one row group: under 2 GB for the default 122,880 rows, even uncompressed (d < 1536).
 
+After a `CREATE INDEX`, we recommend closing and reopening the database to free the memory DuckDB reserved for scanning the indexed column, which it doesn't count toward `memory_limit` (see [#95](https://github.com/Noorts/DuckIR/pull/95)). You can do this with `DETACH mydb` / `ATTACH 'mydb.duckdb'` or restarting DuckDB.
+
 ## Maintenance
 
 Maintenance operations require, at most, the amount of memory of a single row group. In order to maintain `INSERT` performance, we keep the "active" row group in memory. The active row group in DuckDB is the trailing one, which receives new rows on `INSERT`.
@@ -53,3 +55,16 @@ Maintenance operations require, at most, the amount of memory of a single row gr
 ## In-Memory Databases
 
 We recommend using DuckDB with a database file. In an in-memory database (`:memory:`), nothing is ever checkpointed, so an index larger than `memory_limit` writes its parts to the temporary files every time DuckDB evicts them.
+
+## +100M Rows: What to Expect
+
+We have tested DuckIR using the full MS MARCO v2.1 corpus, embedded by Cohere, available on [Hugging Face](https://huggingface.co/datasets/Cohere/msmarco-v2.1-embed-english-v3). This is around 450 GB of embeddings (113M × 1024). We used a Zen 4 CPU with 12 cores and an NVMe disk. Results:
+
+| RAM (DuckDB `memory_limit`) | Index | `CREATE INDEX` | Search p50 (ms) | p90 | p99 |
+|---|---|---|---|---|---|
+| 64 GB (44 GB) | `u8` | 18 min | 79 | 93 | 168 |
+| 64 GB (44 GB) | `u4` | 14 min | 59 | 68 | 107 |
+| 8 GB (6.3 GB) | `u8` | 27 min | 608 | 718 | 793 |
+| 8 GB (6.3 GB) | `u4` | 26 min | 813 | 963 | 1,099 |
+
+All searches are measured cold at recall@10 = 0.95.

@@ -14,7 +14,7 @@
 
 - **Late Materialization on CTEs**: A search inside a CTE that DuckDB inlines at more than one place (e.g., `NOT MATERIALIZED`) loses our opt-out of DuckDB's late materialization (when $k \leq 50$). DuckDB's late materialization adds a second scan of the table, joined back on rowid and sorted again. The results are the same, but slower.
 
-- **Maximum `k`**: In `LATERAL` joins, we only support a maximum `k` (`k + o` with an `OFFSET`) of DuckDB's `STANDARD_VECTOR_SIZE` (default: 2,048).
+- **Maximum `k`**: In `LATERAL` joins, we only support a maximum `k` (`k + o` with an `OFFSET`) equal to DuckDB's `STANDARD_VECTOR_SIZE` (default: 2,048).
 
 - **Only FLOAT[d]**: We don't support `DOUBLE[d]` or other `ARRAY` types. You can cast with `::FLOAT[d]` when you store the column, as we do in our Hugging Face example. The index key must be the column itself (expressions are rejected).
 

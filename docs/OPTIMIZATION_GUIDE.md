@@ -17,13 +17,13 @@ Follow these guidelines to get the best performance out of DuckIR for your use c
 
 ### Choosing a Quantization (`f32`, `u8`, `u4`)
 
+- **`f32`**: 4 bytes per dimension (no compression).
+  - **When to use**: Small datasets where memory or disk space is not a concern.
+  - **When to avoid**: Your data is larger than memory, or your disk is slow (e.g., EBS or hard drive).
 - **`u8`**: *Our default*, 1 byte per dimension (×4 compression). Within 1% of `f32`'s recall on most modern embeddings.
 - **`u4`**: Half a byte per dimension (×8 compression). Smallest index; fastest when the index is read from disk.
   - **When to use**: Your disk is slow (e.g., EBS or hard drive).
   - **When to avoid**: Out-of-distribution queries and [data that drifts](/docs/LIMITATIONS.md) (search quality can degrade).
-- **`f32`**: 4 bytes per dimension (no compression).
-  - **When to use**: Small datasets where memory or disk space is not a concern.
-  - **When to avoid**: Your data is larger than memory, or your disk is slow (e.g., EBS or hard drive).
 
 What to expect from `f32` → `u8` → `u4`:
 

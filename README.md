@@ -1,23 +1,25 @@
-<h1 align="center">
-  DuckIR
-</h1>
+
+<p align="center">
+        <img src="/docs/diagrams/header.png" alt="DuckIR: A DuckDB extension for Information Retrieval">
+</p>
+
 <h4 align="center">
   A DuckDB extension for Information Retrieval
 </h4>
 <p align="center">
   Vector Search ✅ | Full Text Search (WIP ⏱️) | Hybrid Search (WIP ⏱️)
 </p>
-<br>
+<hr>
 
 ## Why DuckIR?
 
-- **Search fully integrated with DuckDB**: Query execution, predicate pushdown, transactional correctness, checkpoints, and crash recovery.
+- **Vector search fully integrated with DuckDB**: Query execution, predicate pushdown, transactional correctness, checkpoints, and crash recovery.
+- **Fast vector indexing and search**: Index millions of vectors in seconds and search them in milliseconds.
 - **Indexes larger than memory**: We handle creating indexes and searching over embeddings [beyond memory limits](/docs/OUT_OF_CORE.md).
-- **Maintenance**: Our index [updates](/docs/MAINTENANCE.md) alongside your table. DuckIR never needs full index rebuilds because our index mirrors DuckDB's row groups.
+- **Filtered search** on any predicate DuckDB can evaluate.
+- **Lightweight maintenance**: Our index [updates](/docs/MAINTENANCE.md) alongside your table. DuckIR never needs full index rebuilds because our index mirrors DuckDB's row groups.
 - **Morsel-driven parallelism**: Operators work one row group at a time, as DuckDB does.
 - **Portable**: Linux (x86, ARM), macOS, Wasm, Windows (x86).
-- **Fast Vector Indexing and Search**: Index millions of vectors in seconds and search them in milliseconds.
-- **Filtered Search** on any predicate DuckDB can evaluate.
 - *FTS and Hybrid Search are WIP*.
 
 > [!WARNING]
@@ -29,10 +31,10 @@ duckdb-vss is the official DuckDB extension for vector search. Here is how DuckI
 |  | **duckdb-vss**          | **DuckIR**                   | **Improvement**                    |
 |------------------------------------------|------------------------:|-----------------------------:|-----------------------------------:|
 | Indexing time                            | 250 s                   | 11 s                         | **23× faster**                     |
-| Ingestion ¹                               | 590 rows / s            | 10,500 rows / s              | **18× faster**                     |
+| Ingestion ¹                               | 590 rows/s            | 10,500 rows/s              | **18× faster**                     |
 | Index size on disk                       | 6.29 GB                 | 1.78 GB | **3.5× smaller**             |
 | Search ² (recall@10 = 0.95)               | 254 QPS                 | 434 QPS                      | **1.7× faster**                    |
-| Filtered Search ³ | 3-16 QPS     | 109-312 QPS    | **10×-104× faster**  |
+| Filtered Search ³ | 3-16 QPS     | 109-312 QPS    | **10-104× faster**  |
 | First query after a restart              | 10.6 s                  | 0.1 s                        | **109× sooner**                    |
 | I/O on `CHECKPOINT` ⁴                     | 6.4 GB written          | 0.2 GB written               | **32× less**                   |
 |                                          |                         |                              |                                    |
@@ -43,8 +45,8 @@ duckdb-vss is the official DuckDB extension for vector search. Here is how DuckI
 
 > [Tested](/benchmarks/duckir_vs_vss.py) on Zen 4 (12 cores, 3.7 GHz), 64 GB RAM, NVMe, DuckDB v2.0.0. Single-threaded, except index construction (12 threads). DuckIR uses its default `u8` quantization. duckdb-vss runs with `hnsw_enable_experimental_persistence = true`.\
 > ¹ One `INSERT` of 10K rows. With `INSERT`s of 100 rows: 200 vs 2,130 rows/s.\
-> ² Both cap at ~1,000 QPS, due to DuckDB's query planning.\
-> ³ 50%, 10%, 1% and 0.1% of rows passing a filter on an `int` column, scattered at random. duckdb-vss pre-filtering is enabled.\
+> ² Both cap at ~1,000 QPS due to DuckDB's query planning.\
+> ³ 50%, 10%, 1% and 0.1% of rows passing a filter on an `int` column, scattered at random. duckdb-vss' pre-filtering is on (its default).\
 > ⁴ After inserting 10K rows.\
 > ⁵ [Tested](/docs/OUT_OF_CORE.md#100m-rows-what-to-expect) with 113M 1024-dimensional embeddings in 8 GB of RAM. DuckIR respects DuckDB's `memory_limit`.\
 > ⁶ One worker per row group (122,880 rows by default).\
@@ -66,7 +68,7 @@ duckdb-vss is the official DuckDB extension for vector search. Here is how DuckI
     LOAD '<Fill in>/DuckIR/build/release/extension/duckir/duckir.duckdb_extension';
     ```
 
-3. Create a DuckDB table:
+3. Create a DuckDB table and the `DUCKIR_VSS` index:
 
     ```sql
     CREATE TABLE movies (
@@ -139,7 +141,7 @@ Available index options:
 
 - `metric`
   - `'l2sq'` (*default*; squared Euclidean distance, optimizes `array_distance`)
-  - `'cosine'` (cosine similarity, optimizes `array_cosine_distance`).
+  - `'cosine'` (cosine similarity, optimizes `array_cosine_distance`)
 - `quantization`: The precision of the embeddings stored inside the index.
   - `f32`: full precision, no compression.
   - `u8`: *default*; scalar quantization, 1 byte per dimension, ×4 compression; ~1% quality loss relative to `f32`.
@@ -221,8 +223,11 @@ See [LIMITATIONS.md](/docs/LIMITATIONS.md)
 ## Roadmap
 
 - Q1'2027: Full Text Search and Hybrid Search with local indexes.
-- Q1'2027: Beta release
+- Q1'2027: Beta release.
 - Q2'2027: Integration in [DuckLake](https://ducklake.select/).
+
+## Contributing
+We're committed to improving the extension and we appreciate your feedback. You can help out by [reporting bugs](https://github.com/Noorts/DuckIR/issues/new?labels=bug), submitting fix [pull requests](https://github.com/Noorts/DuckIR/pulls), and [suggesting features](https://github.com/Noorts/DuckIR/issues/new?labels=enhancement).
 
 ## Acknowledgements
 
