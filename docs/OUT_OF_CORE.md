@@ -8,7 +8,7 @@ At bind time, DuckIR only loads the part of the index that stays in memory (the 
 - A mapping from DuckDB row ids to internal ids.
 - The trailing row group of the table (see [below](#maintenance)).
 
-**Minimum memory recommendation**: 8 GB of memory is enough for every index size we've tested, up to 113M 1024-dimensional embeddings (450 GB of embeddings).
+**Minimum memory recommendation**: 8 GiB of memory is enough for every index size we've tested, up to 113M 1024-dimensional embeddings (450 GB of embeddings).
 
 ## Vector Search Queries
 
@@ -60,11 +60,12 @@ We recommend using DuckDB with a database file. In an in-memory database (`:memo
 
 We have tested DuckIR using the full MS MARCO v2.1 corpus, embedded by Cohere, available on [Hugging Face](https://huggingface.co/datasets/Cohere/msmarco-v2.1-embed-english-v3). This is around 450 GB of embeddings (113M × 1024). We used a Zen 4 CPU with 12 cores and an NVMe disk. Results:
 
-| RAM (DuckDB `memory_limit`) | Index | `CREATE INDEX` | Search p50 (ms) | p90 | p99 |
+| RAM | Index | `CREATE INDEX` | Search p50 (ms) | p90 | p99 |
 |---|---|---|---|---|---|
-| 64 GB (44 GB) | `u8` | 18 min | 79 | 93 | 168 |
-| 64 GB (44 GB) | `u4` | 14 min | 59 | 68 | 107 |
-| 8 GB (6.3 GB) | `u8` | 27 min | 608 | 718 | 793 |
-| 8 GB (6.3 GB) | `u4` | 26 min | 813 | 963 | 1,099 |
+| 64 GiB | `u8` | 18 min | 79 | 93 | 168 |
+| 64 GiB | `u4` | 14 min | 59 | 68 | 107 |
+| 8 GiB | `u8` | 27 min | 608 | 718 | 793 |
+| 8 GiB | `u4` | 26 min | 813 | 963 | 1,099 |
 
 All searches are measured cold at recall@10 = 0.95.
+Note: With only 8 GiB of memory, we had to set DuckDB's `memory_limit` slightly below its default (6 GiB instead of 6.4 GiB). This is because DuckDB's allocator doesn't count towards `memory_limit` what `jemalloc` actually uses to allocate our blocks on Linux. 
