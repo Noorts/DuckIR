@@ -9,7 +9,6 @@
 <p align="center">
   Vector Search ✅ | Full Text Search (WIP ⏱️) | Hybrid Search (WIP ⏱️)
 </p>
-<hr>
 
 ## Why DuckIR?
 
@@ -17,7 +16,7 @@
 - **Fast vector indexing and search**: Index millions of vectors in seconds and search them in milliseconds.
 - **Indexes larger than memory**: We handle creating indexes and searching over embeddings [beyond memory limits](/docs/OUT_OF_CORE.md).
 - **Filtered search** on any predicate DuckDB can evaluate.
-- **Lightweight maintenance**: Our index [updates](/docs/MAINTENANCE.md) alongside your table. DuckIR never needs full index rebuilds because our index mirrors DuckDB's row groups.
+- **Lightweight maintenance**: Our index [updates](/docs/MAINTENANCE.md) alongside your table and never needs a full rebuild.
 - **Morsel-driven parallelism**: Operators work one row group at a time, as DuckDB does.
 - **Portable**: Linux (x86, ARM), macOS, Wasm, Windows (x86).
 - *FTS and Hybrid Search are WIP*.
