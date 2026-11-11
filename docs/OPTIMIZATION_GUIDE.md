@@ -32,7 +32,7 @@ What to expect from `f32` → `u8` → `u4`:
 | mxbai (769K × 1024) | 0.976 → 0.967 → 0.963 |
 | jina (1.4M × 768) | 0.925 → 0.923 → 0.897 |
 | openai5m (5M × 1536) | 0.958 → 0.948 → 0.931 |
-| cohere113m (113M × 1024) | (doesn't fit) → 0.946 → 0.937 |
+| cohere113m (113M × 1024) | XXX → 0.946 → 0.937 |
 
 In terms of **p50 latency** (`f32` → `u8` → `u4`):
 - In memory: `u8` is up to 1.5× faster than `f32`, and `u4` matches `u8`.
