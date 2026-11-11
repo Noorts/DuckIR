@@ -339,6 +339,8 @@ def main():
     for name in ('build', 'search', 'filtered', 'restart', 'first_query', 'ingest'):
         commands.add_parser(name).add_argument('--system', required=True, choices=['vss', 'duckir'])
     args = parser.parse_args()
+    if args.system == 'duckir' and not os.path.exists(EXTENSION):
+        sys.exit(f'DuckIR extension not found at {EXTENSION}. Build it (see DEVELOPMENT.md) or set VB_EXTENSION.')
     prepare_data()
     globals()['cmd_' + args.cmd](args)
 
