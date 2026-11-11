@@ -1,6 +1,6 @@
 # Maintenance
 
-Our vector index updates alongside your table, keeping transactional correctness. Our maintenance is lightweight:
+Our vector index updates alongside your table, keeping transactional correctness. Our maintenance is lightweight. On 384-d embeddings:
 
 - `INSERT`s: ~30K / sec
 - `DELETE`s: ~7K-300K / sec

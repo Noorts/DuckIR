@@ -8,7 +8,7 @@ At bind time, DuckIR only loads the part of the index that stays in memory (the 
 - A mapping from DuckDB row ids to internal ids.
 - The trailing row group of the table (see [below](#maintenance)).
 
-At 250M vectors of 1024 dimensions (1 TB of disk), you would need around 5 GB of memory for DuckIR to work. We are currently working to lower this number to the MB range.
+**Minimum memory recommendation**: 8 GiB of memory is enough for every index size we've tested, up to 113M 1024-dimensional embeddings (450 GB of embeddings).
 
 ## Vector Search Queries
 
@@ -34,7 +34,7 @@ While we cannot leverage a "1-bit RaBitQ + candidate reranking" strategy, we can
 
 These 1-bit sketches also live out-of-core and use a tiered cache (hot vs. cold). Under memory pressure, our cache design makes DuckDB evict data in this order: cold clusters (evicted first), hot clusters, cold sketches, hot sketches (evicted last).
 
-Sketches result in 2×-24× faster queries under memory pressure, while recall remains unchanged. However, note that sketches are not beneficial when a cluster's data is in memory, because PDX distance kernels are usually as fast as the 1-bit sketch check. Therefore, our default policy for checking sketches is `when_cluster_not_cached`. To turn sketch checks off, run `SET duckir_vss_cluster_sketch_check = 'never';` before issuing queries.
+Sketches result in 2-24× faster queries under memory pressure, while recall remains unchanged. However, note that sketches are not beneficial when a cluster's data is in memory, because PDX distance kernels are usually as fast as the 1-bit sketch check. Therefore, our default policy for checking sketches is `when_cluster_not_cached`. To turn sketch checks off, run `SET duckir_vss_cluster_sketch_check = 'never';` before issuing queries.
 
 By default, sketches are built and maintained alongside the index, adding some overhead to index creation (+4% for `f32`, +10% for `u8`, +20% for `u4`) and memory usage. If you know your embeddings will fit in memory, you can opt out of building sketches when you create the index: `CREATE INDEX ... USING DUCKIR_VSS (emb) WITH (cluster_sketches = false);`.
 
@@ -46,6 +46,8 @@ Local indexes are created in parallel, one row group per DuckDB worker. Indexes 
 
 Each local index creation requires about the memory of one row group: under 2 GB for the default 122,880 rows, even uncompressed (d < 1536).
 
+After a `CREATE INDEX`, we recommend closing and reopening the database to free the memory DuckDB reserved for scanning the indexed column, which it doesn't count toward `memory_limit` (see [#95](https://github.com/Noorts/DuckIR/pull/95)). You can do this with `DETACH mydb` / `ATTACH 'mydb.duckdb'` or restarting DuckDB.
+
 ## Maintenance
 
 Maintenance operations require, at most, the amount of memory of a single row group. In order to maintain `INSERT` performance, we keep the "active" row group in memory. The active row group in DuckDB is the trailing one, which receives new rows on `INSERT`.
@@ -53,3 +55,17 @@ Maintenance operations require, at most, the amount of memory of a single row gr
 ## In-Memory Databases
 
 We recommend using DuckDB with a database file. In an in-memory database (`:memory:`), nothing is ever checkpointed, so an index larger than `memory_limit` writes its parts to the temporary files every time DuckDB evicts them.
+
+## +100M Rows: What to Expect
+
+We have tested DuckIR using the full MS MARCO v2.1 corpus, embedded by Cohere, available on [Hugging Face](https://huggingface.co/datasets/Cohere/msmarco-v2.1-embed-english-v3). This is around 450 GB of embeddings (113M × 1024). We used a Zen 4 CPU with 12 cores and an NVMe disk. Results:
+
+| RAM | Index | `CREATE INDEX` | Search p50 (ms) | p90 | p99 |
+|---|---|---|---|---|---|
+| 64 GiB | `u8` | 18 min | 79 | 93 | 168 |
+| 64 GiB | `u4` | 14 min | 59 | 68 | 107 |
+| 8 GiB | `u8` | 27 min | 608 | 718 | 793 |
+| 8 GiB | `u4` | 26 min | 813 | 963 | 1,099 |
+
+All searches are measured cold at recall@10 = 0.95.
+Note: With only 8 GiB of memory, we had to set DuckDB's `memory_limit` slightly below its default (6 GiB instead of 6.4 GiB). This is because DuckDB's allocator doesn't count towards `memory_limit` what `jemalloc` actually uses to allocate our blocks on Linux. 

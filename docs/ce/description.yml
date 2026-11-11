@@ -41,42 +41,18 @@ docs:
     ORDER BY array_cosine_distance(embedding, getvariable('q'))
     LIMIT 5;
 
-    -- Probe more clusters per row group for a higher recall
-    SET duckir_vss_n_probe = 48;
-
   extended_description: |
     DuckIR is a DuckDB extension for Information Retrieval. Vector Search is ready, and Full Text Search and Hybrid Search are on their way.
 
-    We create a local index per DuckDB row group. Each local index is a [PDX-IVF](https://github.com/cwida/PDX) index, maintained with the [LIRE protocol](https://dl.acm.org/doi/pdf/10.1145/3600006.3613166). This design gives DuckIR:
+    Why DuckIR:
 
-    - **Search fully integrated with DuckDB**, from query execution and predicate pushdown to transactional correctness, checkpoints, and crash recovery.
-    - **Filtered search on any predicate DuckDB can evaluate.** The filters are evaluated first, pushing down the predicates whenever possible.
-    - **Indexes larger than memory.** Clusters are paged from the database file when a search needs them, and DuckDB's eviction queues keep the hot ones in memory.
-    - **Lightweight maintenance.** The index updates alongside your table and never needs a full rebuild.
-    - **Persistence.** The index is saved with the database file, and a checkpoint only rewrites the local indexes that changed.
-    - **Morsel-driven parallelism.** Operators work one row group at a time, as DuckDB does.
-    - **Fast vector indexing and search.** Index millions of vectors in seconds and search them in milliseconds.
+    - **Vector search fully integrated with DuckDB**, from query execution and predicate pushdown to transactional correctness, checkpoints, and crash recovery.
+    - **Fast vector indexing and search**. Index millions of vectors in seconds and search them in milliseconds.
+    - **Out-of-core:** Create and search indexes larger than memory.
+    - **Filtered search** on any predicate DuckDB can evaluate.
+    - **Lightweight maintenance** of indexes alongside your table, with no full rebuilds.
+    - **Morsel-driven parallelism**, one row group at a time, as DuckDB does.
 
-    ### Creating an Index
-
-    ```sql
-    CREATE INDEX t1_idx ON t1 USING DUCKIR_VSS (embedding) WITH (metric = 'l2sq', quantization = 'u8');
-    ```
-
-    | Option | Values |
-    |---|---|
-    | `metric` | `'l2sq'` (*default*, optimizes `array_distance`) or `'cosine'` (optimizes `array_cosine_distance`) |
-    | `quantization` | `f32` (no compression), `u8` (*default*, ×4 compression) or `u4` ([SAQ](https://dl.acm.org/doi/pdf/10.1145/3769824), ×8 compression) |
-    | `n_probe` | Clusters to probe per row group. *Default* is `24`. You can override this index option at search time with `SET duckir_vss_n_probe = 48`. |
-    | `seed` | *Default* is random |
-    | `cluster_sketches` | `true` (*default*) or `false`. 1-bit sketches of the embeddings, which make searches faster when the index does not fit in memory |
-
-    ### Vector Search
-
-    The index is used for queries of the form `ORDER BY <distance_function>(embedding, q) LIMIT k`, with any `WHERE` predicate and an optional `OFFSET`. The table can also be a view or a CTE. A `LATERAL` join runs many queries at once.
-
-    DuckDB parses a list literal and binds it element by element, which costs more than the vector search itself. For the highest query throughput, pass the query vector as a `BLOB`, with `duckir_vss_encode_query('[0.25, ..., -0.50]')` or by binding its raw `float32` bytes as a parameter.
-
-    > **Status: alpha.** Production use is not advised. Dropping and recreating indexes might be needed between updates.
+    > **Status: Alpha. Indexes might need to be recreated after an extension update.**
 
     See our [documentation](https://github.com/Noorts/DuckIR) for maintenance, persistence, out-of-core search, and the known limitations.
