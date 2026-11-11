@@ -24,4 +24,4 @@ When the index is loaded, it is validated against the table, so it never misses 
 
 `DELETE`s only touch resident data (tombstones). The persisted chain keeps deleted rows, and every bind reconciles the index with the table. When deletes pass 10% of the row group's rows, we mark the row group as dirty, so that it is rewritten in the next checkpoint.
 
-Check [PR#35](https://github.com/Noorts/DuckIR/pull/35) for a more detailed explanation of persistence in DuckIR.
+Check [PR#35](https://github.com/cwida/DuckIR/pull/35) for a more detailed explanation of persistence in DuckIR.

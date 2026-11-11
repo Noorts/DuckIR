@@ -54,5 +54,5 @@
 
 You can check whether your query is currently being optimized by prepending the `EXPLAIN` keyword to your search query and checking if a `DUCKIR_VSS` or `Duckir Vss` operator is part of the query plan.
 
-See [#27](https://github.com/Noorts/DuckIR/pull/27) for a full list of supported query shapes.
+See [#27](https://github.com/cwida/DuckIR/pull/27) for a full list of supported query shapes.
 
