@@ -34,6 +34,7 @@ struct VSSIndexStats {
 	bool is_normalized;
 	bool cluster_sketches;
 	int64_t approximate_lower_bound_memory_usage_bytes;
+	int64_t table_scan_reserved_bytes;
 	int64_t cluster_acquires;
 	int64_t cluster_cache_misses;
 	int64_t cluster_bytes_fetched;
@@ -42,6 +43,12 @@ struct VSSIndexStats {
 	int64_t cluster_sketch_bytes_fetched;
 	int64_t blocks_read;
 };
+
+// DuckDB keeps a metadata object of about 700 bytes on its heap for each 256 KiB block a scan loads
+// Unfortunately, this is kept outside of memory_limit, until the database closes.
+// This triggers OOM when the ARRAY[float] column is large.
+// Therefore, CREATE INDEX reserves this memory for the blocks it reads.
+static constexpr idx_t DUCKDB_TABLE_SCAN_METADATA_BYTES_PER_BLOCK = 700;
 
 class VSSIndex : public BoundIndex {
 public:
@@ -64,7 +71,8 @@ private:
 	// - EXTENSION: the rest of the index (its self-managed memory: the rotation matrix, centroids, the row-id map,
 	//   tombstones, struct sizes), which DuckDB cannot see, reserved by UpdateReservedMemory (and the join's on-the-fly
 	//   indexes' self-managed memory by the join); plus the DuckDB buffers allocated with this tag (temporary chains,
-	//   cached clusters, the row-group embeddings of builds and syncs).
+	//   cached clusters, the row-group embeddings of builds and syncs). And, in the session that created the index,
+	//   DuckDB's metadata for the segments CREATE INDEX scanned.
 	// In-memory size (GetInMemorySizeInBytes) = allocated (PDX's GetAllocatedSizeInBytes) + self-managed
 	// (GetSelfManagedMemorySizeInBytes). Only the self-managed memory is reserved, so no byte counts twice.
 	// Declared before the wrapper, whose PDX buffers it frees.
@@ -112,6 +120,8 @@ private:
 
 	BufferManager &buffer_manager;
 	std::atomic<idx_t> reserved_memory_bytes {0};
+	// See ReserveTableScanMetadata
+	std::atomic<idx_t> table_scan_reserved_bytes {0};
 	// Reserves `delta` more bytes, or frees `-delta`. Throws DuckDB's out-of-memory error when nothing more can be
 	// evicted.
 	void UpdateReservedMemory(int64_t delta);
@@ -182,7 +192,7 @@ private:
 	// Frees the current directory chain and writes `directory` into a new one.
 	void WriteDirectory(const VSSDirectory &directory);
 	IndexStorageInfo MakeStorageInfo() const;
-	void PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks);
+	void PersistDirtyRowGroups(const std::function<void(idx_t persisted_bytes)> &write_partial_blocks);
 	void WriteTemporaryChains();
 	void AddRowGroupEntries(VSSDirectory &directory) const;
 	void ResetPersistedChains();
@@ -273,6 +283,8 @@ public:
 	void FitSAQModelForCreate(ClientContext &context, DataTable &table);
 	void SetUpIndexForRowGroup(const row_t *row_ids, float *embeddings, idx_t num_embeddings, row_t row_start,
 	                           idx_t count, bool is_closed, PDX::ParallelExecutor *executor);
+	// Makes room for DuckDB's metadata for the scan of the indexed column on CREATE INDEX.
+	void ReserveTableScanMetadata(idx_t num_rows);
 	uint64_t EstimateBuildPeakBytes(idx_t num_embeddings) const;
 
 	// !`passing_row_ids` are size_t because they go straight into PDX's IPDXIndex::BeginIterativeSearch.

@@ -60,6 +60,11 @@ SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distan
 statement ok
 CHECKPOINT p;
 
+# In the same session, each row group reads its clusters from the copy the checkpoint made of its temporary chain.
+query II nosort homed
+SELECT q.qid, s.id FROM p.q q, LATERAL (SELECT id FROM p.t ORDER BY array_distance(emb, q.vec) LIMIT 10) s ORDER BY ALL;
+----
+
 statement ok
 SET memory_limit = '1GB';
 

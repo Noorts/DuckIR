@@ -76,6 +76,10 @@ static const IndexInfoColumn INDEX_INFO_COLUMNS[] = {
      [](const IndexInfoColumnInput &input) {
 	     return Value::BIGINT(input.stats.approximate_lower_bound_memory_usage_bytes);
      }},
+    {"table_scan_reserved_bytes", LogicalType::BIGINT,
+     [](const IndexInfoColumnInput &input) {
+	     return Value::BIGINT(input.stats.table_scan_reserved_bytes);
+     }},
     {"cluster_acquires", LogicalType::BIGINT,
      [](const IndexInfoColumnInput &input) {
 	     return Value::BIGINT(input.stats.cluster_acquires);

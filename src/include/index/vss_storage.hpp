@@ -173,6 +173,7 @@ public:
 	// Called right after the row group's resident data is loaded (PageRowGroup).
 	void Bind(const PDX::IPDXIndex &index, const VSSBlockChain &chain, idx_t cluster_data_start);
 	void Bind(const PDX::IPDXIndex &index, const VSSTemporaryChain &chain, idx_t cluster_data_start);
+	void MoveHomeToPersistedChain(const VSSBlockChain &chain);
 
 	const char *Acquire(uint32_t cluster_id) override;
 	void Release(uint32_t cluster_id) override;
@@ -229,6 +230,9 @@ private:
 };
 
 static constexpr uint32_t VSS_STORAGE_VERSION = 8;
+
+// A checkpoint syncs the database file each time the row group chains it wrote add up 256 MiB.
+static constexpr idx_t MAX_UNSYNCED_CHECKPOINT_BYTES = 256ULL * 1024 * 1024;
 
 // The root chain: where the rotation, the SAQ model (empty when there is none) and the row groups are.
 struct VSSDirectory {

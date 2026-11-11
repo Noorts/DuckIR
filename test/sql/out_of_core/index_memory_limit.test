@@ -35,12 +35,12 @@ SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag IN ('EXTENSION', '
 statement ok
 CREATE INDEX t_idx ON m.t USING DUCKIR_VSS (emb) WITH (quantization = 'f32');
 
-# CREATE INDEX charges the index's size, measured apart from the query that compares it.
+# CREATE INDEX charges the index's size and DuckDB's metadata for the blocks it scanned, measured apart from the query that compares them.
 statement ok
 SET VARIABLE memory_usage = (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag IN ('EXTENSION', 'ALLOCATOR'));
 
 query I
-SELECT getvariable('memory_usage') = approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 't_idx';
+SELECT getvariable('memory_usage') = approx_lower_bound_memory_usage_bytes + table_scan_reserved_bytes AND table_scan_reserved_bytes > 0 FROM duckir_vss_index_info() WHERE index_name = 't_idx';
 ----
 true
 
@@ -61,7 +61,7 @@ statement ok
 SET VARIABLE memory_usage = (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag IN ('EXTENSION', 'ALLOCATOR'));
 
 query I
-SELECT getvariable('memory_usage') = approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 't_idx';
+SELECT getvariable('memory_usage') = approx_lower_bound_memory_usage_bytes + table_scan_reserved_bytes FROM duckir_vss_index_info() WHERE index_name = 't_idx';
 ----
 true
 
@@ -79,12 +79,12 @@ SET checkpoint_threshold = '10GB';
 statement ok
 SELECT id FROM m.t ORDER BY array_distance(emb, {QUERY_EMB}::FLOAT[{DIMS}]) LIMIT 10;
 
-# A loaded index charges its size.
+# A loaded index charges its size: it scanned no blocks, so it reserves no metadata.
 statement ok
 SET VARIABLE memory_usage = (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag IN ('EXTENSION', 'ALLOCATOR'));
 
 query I
-SELECT getvariable('memory_usage') = approx_lower_bound_memory_usage_bytes FROM duckir_vss_index_info() WHERE index_name = 't_idx';
+SELECT getvariable('memory_usage') = approx_lower_bound_memory_usage_bytes AND table_scan_reserved_bytes = 0 FROM duckir_vss_index_info() WHERE index_name = 't_idx';
 ----
 true
 

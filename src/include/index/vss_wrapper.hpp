@@ -647,7 +647,8 @@ public:
 	// each rewritten row group is paged again from its new chain.
 	// This method is called from SerializeToDisk, at CHECKPOINT. So this never runs for an :memory: database.
 	// Returns whether a merge ran out of memory: its row group can then lack rows, which a reconcile brings back.
-	bool PersistDirtyRowGroups(FixedSizeAllocator &allocator, const std::function<void()> &write_partial_blocks,
+	bool PersistDirtyRowGroups(FixedSizeAllocator &allocator,
+	                           const std::function<void(idx_t persisted_bytes)> &write_partial_blocks,
 	                           optional_ptr<VSSBlockChainReader> reader, BufferManager &buffer_manager,
 	                           const bool page_clusters) {
 		bool merge_ran_out_of_memory = false;
@@ -717,12 +718,18 @@ public:
 				row_group->num_unwritten_deletes = 0;
 				row_group->is_dirty = false;
 			}
-			write_partial_blocks();
+			write_partial_blocks(row_group->persisted_chain.num_bytes);
 			if (page_clusters) {
 				// The new chain has its blocks now, and writing them can have moved other chains' segments.
 				reader->UpdateBlockPointers(allocator.GetInfo());
-				// An open row group on the heap stays there
-				if (!persist_with_unwritten_deletes && (row_group->is_closed || row_group->cluster_cache)) {
+				// A row group whose temporary chain was JUST copied to its persisted chain (e.g., CREATE INDEX)
+				// will end up here after a checkpoint. On these cases PageRowGroup was already
+				// called by WriteTemporaryChain. The resident index and the cluster cache match the temporary chain.
+				// We just need to set its home to the persisted chain.
+				if (!persist_with_unwritten_deletes && copy_temporary_chain && row_group->cluster_cache) {
+					row_group->cluster_cache->MoveHomeToPersistedChain(row_group->persisted_chain);
+				} else if (!persist_with_unwritten_deletes && (row_group->is_closed || row_group->cluster_cache)) {
+					// In any other cases we need to build its chain and cluster cache from scratch
 					PageRowGroup(*row_group, *reader, buffer_manager);
 				}
 			}

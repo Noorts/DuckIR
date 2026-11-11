@@ -176,6 +176,15 @@ VSSIndex::VSSIndex(const Identifier &name, IndexConstraintType index_constraint_
 // Indexes are destroyed before DuckDB's buffer manager (DatabaseInstance::~DatabaseInstance).
 VSSIndex::~VSSIndex() {
 	UpdateReservedMemory(-static_cast<int64_t>(reserved_memory_bytes.load()));
+	buffer_manager.FreeReservedMemory(table_scan_reserved_bytes.load());
+}
+
+void VSSIndex::ReserveTableScanMetadata(const idx_t num_rows) {
+	const idx_t block_size = table_io_manager.GetBlockManagerForRowData().GetBlockSize();
+	const idx_t column_bytes = num_rows * vss_wrapper->GetNumDimensions() * sizeof(float);
+	const idx_t bytes = (column_bytes + block_size - 1) / block_size * DUCKDB_TABLE_SCAN_METADATA_BYTES_PER_BLOCK;
+	buffer_manager.ReserveMemory(bytes);
+	table_scan_reserved_bytes += bytes;
 }
 
 void VSSIndex::UpdateReservedMemory(const int64_t delta) {
@@ -911,6 +920,7 @@ unique_ptr<VSSIndexStats> VSSIndex::GetStats(const ClientContext &context) const
 	result->is_normalized = IsNormalized();
 	result->cluster_sketches = vss_wrapper->BuildsClusterSketches();
 	result->approximate_lower_bound_memory_usage_bytes = static_cast<int64_t>(vss_wrapper->GetInMemorySizeInBytes());
+	result->table_scan_reserved_bytes = static_cast<int64_t>(table_scan_reserved_bytes.load());
 	if (storage_reader) {
 		const auto &counters = storage_reader->counters;
 		result->cluster_acquires = static_cast<int64_t>(counters.cluster_acquires.load());
@@ -1018,7 +1028,7 @@ IndexStorageInfo VSSIndex::CopyStorageInfo(const IndexStorageInfo &info) {
 	return copy;
 }
 
-void VSSIndex::PersistDirtyRowGroups(const std::function<void()> &write_partial_blocks) {
+void VSSIndex::PersistDirtyRowGroups(const std::function<void(idx_t persisted_bytes)> &write_partial_blocks) {
 	const bool merge_ran_out_of_memory = DispatchWrapper([&](auto &wrapper) {
 		return wrapper.PersistDirtyRowGroups(*allocator, write_partial_blocks, storage_reader.get(), buffer_manager,
 		                                     cluster_paging);
@@ -1104,7 +1114,15 @@ IndexStorageInfo VSSIndex::SerializeToDisk(QueryContext context,
 		const lock_guard<mutex> staging(commit_staging_lock);
 		DeleteStaleRowIds(staged_row_ranges);
 	}
-	PersistDirtyRowGroups([&]() { WritePartialBlocks(context); });
+	idx_t bytes_written_since_sync = 0;
+	PersistDirtyRowGroups([&](const idx_t persisted_bytes) {
+		WritePartialBlocks(context);
+		bytes_written_since_sync += persisted_bytes;
+		if (bytes_written_since_sync >= MAX_UNSYNCED_CHECKPOINT_BYTES) {
+			table_io_manager.GetIndexBlockManager().FileSync();
+			bytes_written_since_sync = 0;
+		}
+	});
 	// A SAQ model that is not persisted yet comes from a fit since the last checkpoint, whose rotation replaced the
 	// persisted one: both are written.
 	const auto saq_model = vss_wrapper->GetSAQModel();
