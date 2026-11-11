@@ -214,6 +214,7 @@ To learn more about the techniques inside the `DUCKIR_VSS` index, check out the 
 - [Maintenance](/docs/MAINTENANCE.md)
 - [Persistence](/docs/PERSISTENCE.md)
 - [Out-of-Core](/docs/OUT_OF_CORE.md)
+- [Optimization Guide](/docs/OPTIMIZATION_GUIDE.md)
 
 ## Limitations
 
