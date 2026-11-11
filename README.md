@@ -227,7 +227,7 @@ See [LIMITATIONS.md](/docs/LIMITATIONS.md)
 - Q2'2027: Integration in [DuckLake](https://ducklake.select/).
 
 ## Contributing
-We're committed to improving the extension and we appreciate your feedback. You can help out by [reporting bugs](https://github.com/Noorts/DuckIR/issues/new?labels=bug), submitting fix [pull requests](https://github.com/Noorts/DuckIR/pulls), and [suggesting features](https://github.com/Noorts/DuckIR/issues/new?labels=enhancement).
+We're committed to improving the extension and we appreciate your feedback. You can help out by [reporting bugs](https://github.com/cwida/DuckIR/issues/new?labels=bug), submitting fix [pull requests](https://github.com/cwida/DuckIR/pulls), and [suggesting features](https://github.com/cwida/DuckIR/issues/new?labels=enhancement).
 
 ## Acknowledgements
 

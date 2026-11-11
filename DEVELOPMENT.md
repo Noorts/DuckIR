@@ -42,7 +42,7 @@ Add the `export` to your shell profile, so that every build finds vcpkg.
 ## Build
 
 ```sh
-git clone --recurse-submodules https://github.com/Noorts/DuckIR.git
+git clone --recurse-submodules https://github.com/cwida/DuckIR.git
 cd DuckIR
 GEN=ninja DUCKDB_VERSION=v2.0.0 make
 ```

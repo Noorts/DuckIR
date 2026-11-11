@@ -46,7 +46,7 @@ Local indexes are created in parallel, one row group per DuckDB worker. Indexes 
 
 Each local index creation requires about the memory of one row group: under 2 GB for the default 122,880 rows, even uncompressed (d < 1536).
 
-After a `CREATE INDEX`, we recommend closing and reopening the database to free the memory DuckDB reserved for scanning the indexed column, which it doesn't count toward `memory_limit` (see [#95](https://github.com/Noorts/DuckIR/pull/95)). You can do this with `DETACH mydb` / `ATTACH 'mydb.duckdb'` or restarting DuckDB.
+After a `CREATE INDEX`, we recommend closing and reopening the database to free the memory DuckDB reserved for scanning the indexed column, which it doesn't count toward `memory_limit` (see [#95](https://github.com/cwida/DuckIR/pull/95)). You can do this with `DETACH mydb` / `ATTACH 'mydb.duckdb'` or restarting DuckDB.
 
 ## Maintenance
 

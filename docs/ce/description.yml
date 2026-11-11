@@ -13,7 +13,7 @@ extension:
     - peterboncz
 
 repo:
-  github: Noorts/DuckIR
+  github: cwida/DuckIR
   ref: "0000000000000000000000000000000000000000"
 
 docs:
@@ -55,4 +55,4 @@ docs:
 
     > **Status: Alpha. Indexes might need to be recreated after an extension update.**
 
-    See our [documentation](https://github.com/Noorts/DuckIR) for maintenance, persistence, out-of-core search, and the known limitations.
+    See our [documentation](https://github.com/cwida/DuckIR) for maintenance, persistence, out-of-core search, and the known limitations.

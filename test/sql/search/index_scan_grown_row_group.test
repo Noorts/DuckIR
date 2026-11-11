@@ -1,5 +1,5 @@
 # name: test/sql/search/index_scan_grown_row_group.test
-# description: Regression test for https://github.com/Noorts/DuckIR/pull/47: n_probe = 0 probes every cluster of a row group that SPFresh splits grew past the 480 clusters a full row group is built with. The scan, the filtered scan and the join clamped n_probe to 480, and now to the largest row group's cluster count.
+# description: Regression test for https://github.com/cwida/DuckIR/pull/47: n_probe = 0 probes every cluster of a row group that SPFresh splits grew past the 480 clusters a full row group is built with. The scan, the filtered scan and the join clamped n_probe to 480, and now to the largest row group's cluster count.
 # group: [search]
 
 require parquet
