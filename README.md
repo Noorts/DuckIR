@@ -10,6 +10,14 @@
   Vector Search ✅ | Full Text Search (WIP ⏱️) | Hybrid Search (WIP ⏱️)
 </p>
 
+<div align="center">
+    <a href="https://duckdb.org/community_extensions/extensions/duckir#compatibility-matrix"><img src="https://img.shields.io/badge/DuckDB-≥%20v2.0.0-red?logo=duckdb" alt="DuckDB supported versions" /></a>
+    <a href="https://duckdb.org/community_extensions/extensions/duckir"><img src="https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fduckdb%2Fcommunity-extensions%2Fmain%2Fextensions%2Fduckir%2Fdescription.yml&query=%24.extension.version&label=version&prefix=v" alt="Published version" /></a>
+    <a href="https://duckdb.org/community_extensions/download_metrics"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcommunity-extensions.duckdb.org%2Fdownloads-last-week.json&query=%24.duckir&label=downloads%2Fweek&color=yellow" alt="Weekly download count" /></a>
+    <a href="https://github.com/cwida/DuckIR/blob/main/LICENSE"><img src="https://img.shields.io/github/license/cwida/DuckIR" alt="License" /></a>
+    <a href="https://github.com/cwida/DuckIR/stargazers"><img src="https://img.shields.io/github/stars/cwida/DuckIR" alt="GitHub stars" /></a>
+</div>
+
 ## Why DuckIR?
 
 - **Vector search fully integrated with DuckDB**: Query execution, predicate pushdown, transactional correctness, checkpoints, and crash recovery.
