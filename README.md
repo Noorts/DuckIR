@@ -55,17 +55,24 @@ duckdb-vss is the official DuckDB extension for vector search. Here is how DuckI
 
 ### From Hugging Face to DuckIR
 
-1. Start a DuckDB v2.0.0 instance and allow loading unsigned extensions.
+1. Start a [DuckDB](https://duckdb.org/installation) v2.0.0 shell instance.
 
     ```bash
-    duckdb -unsigned
+    duckdb
     ```
 
-2. Load the extension you built (see [DEVELOPMENT.md](DEVELOPMENT.md)) by providing a full path to it.
+2. Load the extension. Either:
+     - (*Recommended*) Install and load the community extension:
 
-    ```sql
-    LOAD '<Fill in>/DuckIR/build/release/extension/duckir/duckir.duckdb_extension';
-    ```
+        ```sql
+        INSTALL AND LOAD duckir FROM community;
+        ```
+
+     - Or build the extension from source (see [DEVELOPMENT.md](DEVELOPMENT.md)), start DuckDB with `-unsigned`, and then load it:
+
+        ```sql
+        LOAD '<...>/DuckIR/build/release/extension/duckir/duckir.duckdb_extension';
+        ```
 
 3. Create a DuckDB table and the `DUCKIR_VSS` index:
 
